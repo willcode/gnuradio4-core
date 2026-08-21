@@ -19,6 +19,7 @@ endfunction()
 set(_CORE_TESTS
     qa_buffer
     qa_BufferEdgeCases
+    qa_ByteRing
     qa_AtomicBitset
     qa_AtomicRef
     qa_Value
