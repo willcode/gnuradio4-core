@@ -39,6 +39,7 @@ set(_CORE_TESTS
     qa_SchedulerExchange
     qa_SchedulerLifecycle
     qa_SettingsConcurrency
+    qa_TagForwarding
     qa_Tensor
     qa_TensorMath
     qa_SVD
