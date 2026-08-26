@@ -38,6 +38,7 @@ set(_CORE_TESTS
     qa_PmtCollections
     qa_Port
     qa_Profiler
+    qa_SchedulerDrain
     qa_SchedulerExchange
     qa_SchedulerLifecycle
     qa_Settings
@@ -96,6 +97,7 @@ set(_CORE_DEADLOCK_TESTS
     qa_DestructionSafety
     qa_GraphEdit
     qa_MessagePlane
+    qa_SchedulerDrain
     qa_SchedulerExchange
     qa_SchedulerLifecycle
     qa_SettingsConcurrency)
