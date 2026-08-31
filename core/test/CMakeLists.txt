@@ -42,6 +42,7 @@ set(_CORE_TESTS
     qa_SchedulerExchange
     qa_SchedulerLifecycle
     qa_Settings
+    qa_SettingsBase
     qa_SettingsConcurrency
     qa_SettingsTable
     qa_TagForwarding
