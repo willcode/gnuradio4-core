@@ -45,6 +45,7 @@ set(_CORE_TESTS
     qa_SchedulerRegistration
     qa_SchedulerLifecycle
     qa_SchedulerStartStop
+    qa_RuntimeTest
     qa_Settings
     qa_SettingsBase
     qa_SettingsConcurrency
@@ -85,7 +86,7 @@ message(
 )
 
 if(NOT GR_ENABLE_BLOCK_REGISTRY)
-  list(REMOVE_ITEM _CORE_TESTS qa_BlockRegistration qa_ErasedRuntime qa_SchedulerRegistration)
+  list(REMOVE_ITEM _CORE_TESTS qa_BlockRegistration qa_ErasedRuntime qa_RuntimeTest qa_SchedulerRegistration)
 endif()
 
 foreach(TEST_NAME IN LISTS _CORE_TESTS)
