@@ -43,6 +43,10 @@ public:
     virtual void start() = 0;
     virtual void stop()  = 0;
 
+    // runs on the calling thread until the graph stops; not composable from start()/stop() or the
+    // lifecycle transitions, because the scheduler's pending-stop latch is private to it
+    virtual std::expected<void, Error> runAndWait() = 0;
+
     virtual void requestWorkQuiescence() = 0;
     virtual void releaseWorkQuiescence() = 0;
 };
@@ -95,6 +99,8 @@ public:
             }
         });
     }
+
+    std::expected<void, Error> runAndWait() override { return this->blockRef().runAndWait(); }
 
     void requestWorkQuiescence() override { this->blockRef().requestWorkQuiescence(); }
     void releaseWorkQuiescence() override { this->blockRef().releaseWorkQuiescence(); }

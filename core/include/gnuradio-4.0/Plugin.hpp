@@ -15,7 +15,7 @@
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 
-#define GR_PLUGIN_CURRENT_ABI_VERSION 1
+#define GR_PLUGIN_CURRENT_ABI_VERSION 2
 
 class GNURADIO_EXPORT gr_plugin_base {
 public:
