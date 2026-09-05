@@ -10,9 +10,9 @@ add_library(
   src/PluginLoader.cpp
   src/PmtTypeHelpers.cpp)
 
-# creating a scheduler by name needs a registry to look it up in
+# building a graph by name needs a registry to look the names up in
 if(GR_ENABLE_BLOCK_REGISTRY)
-  target_sources(gnuradio-core PRIVATE src/SchedulerRegistration.cpp)
+  target_sources(gnuradio-core PRIVATE src/Runtime.cpp src/SchedulerRegistration.cpp)
 endif()
 
 add_library(gnuradio4::gnuradio-core ALIAS gnuradio-core)
@@ -67,6 +67,7 @@ else()
   install(
     DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "Runtime.hpp" EXCLUDE
     PATTERN "SchedulerRegistration.hpp" EXCLUDE)
 endif()
 
