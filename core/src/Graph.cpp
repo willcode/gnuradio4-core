@@ -1,6 +1,7 @@
 #include <gnuradio-4.0/Graph.hpp>
 #include <gnuradio-4.0/Graph_yaml_importer.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
+#include <gnuradio-4.0/RecipeInstantiation.hpp>
 
 namespace gr {
 
@@ -38,7 +39,36 @@ std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::strin
         // resolvable inside the subgraph
         auto subGraphModel = std::unique_ptr<BlockModel>(std::make_unique<GraphWrapper<Graph>>(Graph(*_pluginLoader, std::move(initialSettings))).release());
         return addBlock(std::move(subGraphModel));
-    } else if (std::shared_ptr<BlockModel> block_load = _pluginLoader->instantiate(type, initialSettings); block_load) {
+    }
+
+    // a block built from a YAML definition consumes only the parameters that definition exports --
+    // its interior is derived from them, so their values have to be known before the interior
+    // exists -- and refuses everything else by name, including the `name` a caller supplies. Those
+    // parameters therefore travel with the instantiation and the rest is staged afterwards, which
+    // is what the reader does with the same block written in a file. A registered or plugin-
+    // provided type declares nothing and takes its whole map at construction, exactly as before.
+    detail::RecipeParameterSplit split = detail::splitRecipeParameters(*_pluginLoader, type, std::move(initialSettings));
+    if (split.fromDefinition) {
+        const auto nameIt       = split.remaining.find("name");
+        const auto blockName    = nameIt == split.remaining.end() ? std::string_view{} : nameIt->second.value_or(std::string_view{});
+        const auto instantiated = _pluginLoader->instantiateOrError(type, split.exported);
+        if (!instantiated.has_value()) {
+            throw gr::exception(std::format("Unable to create block '{}' of type '{}': {}", blockName, type, instantiated.error().message));
+        }
+        if (*instantiated) {
+            const std::shared_ptr<BlockModel>& newBlock = addBlock(*instantiated);
+            // a composite has no setting of `name` any more than of an exported parameter, so the
+            // label is applied the way the reader applies a file's
+            if (!blockName.empty()) {
+                newBlock->setName(std::string(blockName));
+            }
+            newBlock->settings().loadParametersFromPropertyMap(split.remaining);
+            return newBlock;
+        }
+    }
+
+    initialSettings = std::move(split.remaining);
+    if (std::shared_ptr<BlockModel> block_load = _pluginLoader->instantiate(type, initialSettings); block_load) {
         return addBlock(block_load);
     } else if (std::shared_ptr<SchedulerModel> scheduler_load = _pluginLoader->instantiateScheduler(type, initialSettings); scheduler_load) {
         return addBlock(SchedulerModel::asBlockModelPtr(scheduler_load));
@@ -71,7 +101,29 @@ std::expected<std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>
         }
         newBlock = std::move(*pinned);
     } else {
-        newBlock = _pluginLoader->instantiate(type, properties);
+        // the replacement is instantiated the way emplaceBlock instantiates a new block: a type built
+        // from a YAML definition takes only the parameters that definition exports and refuses
+        // everything else by name, so those travel with the instantiation and the rest is staged
+        // afterwards, while any other type takes its whole map at construction
+        detail::RecipeParameterSplit split = detail::splitRecipeParameters(*_pluginLoader, type, properties);
+        if (split.fromDefinition) {
+            const auto nameIt       = split.remaining.find("name");
+            const auto blockName    = nameIt == split.remaining.end() ? std::string_view{} : nameIt->second.value_or(std::string_view{});
+            const auto instantiated = _pluginLoader->instantiateOrError(type, split.exported);
+            if (!instantiated.has_value()) {
+                throw gr::exception(std::format("Unable to create block '{}' of type '{}': {}", blockName, type, instantiated.error().message));
+            }
+            newBlock = *instantiated;
+            if (newBlock) {
+                if (!blockName.empty()) {
+                    newBlock->setName(std::string(blockName));
+                }
+                newBlock->settings().loadParametersFromPropertyMap(split.remaining);
+            }
+        }
+        if (!newBlock) {
+            newBlock = _pluginLoader->instantiate(type, split.remaining);
+        }
     }
     if (!newBlock) {
         return std::unexpected(Error(std::format("Can not create block {}", type)));
