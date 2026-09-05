@@ -514,29 +514,37 @@ public:
         return result;
     }
 
-    std::shared_ptr<gr::BlockModel> instantiate(std::string_view name, const property_map& params = property_map{}) {
+    /// Instantiates and keeps the reason a definition refused: a null value is an ordinary miss --
+    /// nothing of that name is registered, as a block, a plugin or a YAML definition -- while an
+    /// unexpected carries what the definition said, which for a recipe names the parameter it
+    /// wanted. instantiate() is this with the reason printed and dropped.
+    std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateOrError(std::string_view name, const property_map& params = property_map{}) {
         // Try to create a node from the global registry
         if (auto result = _registry->create(name, params)) {
-            return result;
+            return std::shared_ptr<gr::BlockModel>(std::move(result));
         }
 
         if (auto* plugin = pluginForBlockName(name); plugin != nullptr) {
-            return plugin->createBlock(name, params);
+            return std::shared_ptr<gr::BlockModel>(plugin->createBlock(name, params));
         }
 
         if (const auto def = _yamlRegistry.definitionForBlockName(name)) {
-            auto result = detail::instantiateBlockFromYamlDefinition(*this, *def, params);
-            if (!result) {
-                std::print("Error: YAML block instantiation failed for '{}': {} ({})\n", name, result.error().message, result.error().srcLoc());
-                return {};
-            }
-            return *result;
+            return detail::instantiateBlockFromYamlDefinition(*this, *def, params);
         }
 
         // a miss is an ordinary probe result (block, scheduler and YAML lookups are tried in
-        // sequence): the null return is the signal, and the caller that treats it as terminal
+        // sequence): the null value is the signal, and the caller that treats it as terminal
         // reports it together with what was requested
-        return {};
+        return std::shared_ptr<gr::BlockModel>{};
+    }
+
+    std::shared_ptr<gr::BlockModel> instantiate(std::string_view name, const property_map& params = property_map{}) {
+        auto result = instantiateOrError(name, params);
+        if (!result) {
+            std::print("Error: YAML block instantiation failed for '{}': {} ({})\n", name, result.error().message, result.error().srcLoc());
+            return {};
+        }
+        return *result;
     }
 
     /// every version of `name` a create can reach: the registry's, else those the plugin owning the name holds
@@ -624,21 +632,26 @@ public:
     auto availableBlocks() const { return _registry->keys(); }
     auto availableSchedulers() const { return _schedulerRegistry->keys(); }
 
-    std::shared_ptr<gr::BlockModel> instantiate(std::string_view name, const property_map& params = {}) {
+    /// see the non-WASM PluginLoader::instantiateOrError
+    std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateOrError(std::string_view name, const property_map& params = {}) {
         if (auto result = _registry->create(name, params)) {
-            return result;
+            return std::shared_ptr<gr::BlockModel>(std::move(result));
         }
 
         if (const auto def = _yamlRegistry.definitionForBlockName(name)) {
-            auto result = detail::instantiateBlockFromYamlDefinition(*this, *def, params);
-            if (!result) {
-                std::print("Error: YAML block instantiation failed for '{}': {} ({})\n", name, result.error().message, result.error().srcLoc());
-                return nullptr;
-            }
-            return *result;
+            return detail::instantiateBlockFromYamlDefinition(*this, *def, params);
         }
 
-        return nullptr;
+        return std::shared_ptr<gr::BlockModel>{};
+    }
+
+    std::shared_ptr<gr::BlockModel> instantiate(std::string_view name, const property_map& params = {}) {
+        auto result = instantiateOrError(name, params);
+        if (!result) {
+            std::print("Error: YAML block instantiation failed for '{}': {} ({})\n", name, result.error().message, result.error().srcLoc());
+            return nullptr;
+        }
+        return *result;
     }
 
     /// see the non-WASM PluginLoader::blockVersions
