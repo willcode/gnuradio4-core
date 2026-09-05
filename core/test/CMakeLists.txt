@@ -96,6 +96,25 @@ if(NOT GR_ENABLE_BLOCK_REGISTRY)
   target_compile_definitions(qa_GraphEdit PRIVATE GR_TEST_WITHOUT_BLOCK_REGISTRY)
 endif()
 
+if(GR_ENABLE_BLOCK_REGISTRY)
+  # the wiring half includes Runtime.hpp alone; the factory half is the only place a block type is named
+  add_executable(qa_RuntimeConsumer qa_RuntimeConsumer.cpp qa_RuntimeConsumerBlocks.cpp)
+  setup_test(qa_RuntimeConsumer)
+
+  find_program(GR_CASCADE_GATE_CLANG NAMES clang++)
+  if(GR_CASCADE_GATE_CLANG)
+    add_test(
+      NAME qa_RuntimeCascade
+      COMMAND
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_runtime_cascade.sh ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        ${CMAKE_CURRENT_BINARY_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/../../meta/include ${vir-simd_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/magic_enum)
+    set_tests_properties(qa_RuntimeCascade PROPERTIES ENVIRONMENT "CXX_FOR_CASCADE_GATE=${GR_CASCADE_GATE_CLANG}")
+  else()
+    message(STATUS "clang++ not found: the erased-runtime cascade gate is not configured")
+  endif()
+endif()
+
 # regression tests for control-plane wedges: a failure shows up as a hang, so cap them
 set(_CORE_DEADLOCK_TESTS
     qa_DestructionSafety
