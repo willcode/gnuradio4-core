@@ -41,6 +41,7 @@ set(_CORE_TESTS
     qa_Profiler
     qa_SchedulerDrain
     qa_SchedulerExchange
+    qa_SchedulerRegistration
     qa_SchedulerLifecycle
     qa_SchedulerStartStop
     qa_Settings
@@ -83,7 +84,7 @@ message(
 )
 
 if(NOT GR_ENABLE_BLOCK_REGISTRY)
-  list(REMOVE_ITEM _CORE_TESTS qa_BlockRegistration)
+  list(REMOVE_ITEM _CORE_TESTS qa_BlockRegistration qa_SchedulerRegistration)
 endif()
 
 foreach(TEST_NAME IN LISTS _CORE_TESTS)
