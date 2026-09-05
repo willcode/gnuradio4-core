@@ -263,7 +263,7 @@ struct YamlDefinitionsLoader {
     }
 };
 
-std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateBlockFromYamlDefinition(gr::PluginLoader& loader, const YamlDefinitionsLoader::Definition& def) noexcept;
+std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateBlockFromYamlDefinition(gr::PluginLoader& loader, const YamlDefinitionsLoader::Definition& def, const property_map& parameters = {}) noexcept;
 
 /**
  * @brief Instantiates the one version a caller named, or says why it could not.
@@ -687,7 +687,7 @@ public:
         }
 
         if (const auto def = _yamlRegistry.definitionForBlockName(name)) {
-            return detail::instantiateBlockFromYamlDefinition(*this, *def);
+            return detail::instantiateBlockFromYamlDefinition(*this, *def, params);
         }
 
         // a miss is an ordinary probe result (block, scheduler and YAML lookups are tried in
@@ -798,7 +798,7 @@ public:
         }
 
         if (const auto def = _yamlRegistry.definitionForBlockName(name)) {
-            return detail::instantiateBlockFromYamlDefinition(*this, *def);
+            return detail::instantiateBlockFromYamlDefinition(*this, *def, params);
         }
 
         return std::shared_ptr<gr::BlockModel>{};
