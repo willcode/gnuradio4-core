@@ -13,8 +13,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include <gnuradio-4.0/Graph.hpp>
-#include <gnuradio-4.0/Scheduler.hpp>
+#include <gnuradio-4.0/Block.hpp>
+
+#include "RuntimeTest.hpp"
 
 /**
  * @brief The diagnostic for a block that reports success without making progress.
@@ -161,17 +162,14 @@ const boost::ut::suite<"block diagnostics"> _blockDiagnostics = [] {
     "a block that returns OK without progress is named on stderr, once, while the graph keeps spinning"_test = [] {
         StderrCapture capture;
 
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<EndlessSource>();
-        auto&     stuck  = flow.emplaceBlock<NeverProgresses>();
-        auto&     sink   = flow.emplaceBlock<DiscardingSink>();
-        expect(flow.connect<"out", "in">(source, stuck).has_value());
-        expect(flow.connect<"out", "in">(stuck, sink).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<EndlessSource>();
+        auto&                 stuck  = test.emplace<NeverProgresses>();
+        auto&                 sink   = test.emplace<DiscardingSink>();
+        expect(test.connect(source, "out", stuck, "in").has_value());
+        expect(test.connect(stuck, "out", sink, "in").has_value());
 
-        gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::singleThreaded> scheduler{};
-        expect(scheduler.exchange(std::move(flow)).has_value());
-
-        std::jthread runner([&scheduler] { std::ignore = scheduler.runAndWait(); });
+        expect(test.start().has_value());
 
         const auto  deadline = std::chrono::steady_clock::now() + kReportDeadline;
         std::string reported;
@@ -179,10 +177,9 @@ const boost::ut::suite<"block diagnostics"> _blockDiagnostics = [] {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             reported = capture.text();
         }
-        const bool keptSpinning = gr::lifecycle::isActive(scheduler.state());
+        const bool keptSpinning = test.state() == gr::Runtime::State::Running;
 
-        scheduler.requestStop();
-        runner.join();
+        test.stop();
 
         expect(!reported.empty()) << "a graph stuck for a second must be reported";
         expect(reported.contains(std::string_view(stuck.unique_name))) << std::format("the report must name the stuck block, got: {}", reported);
@@ -198,15 +195,12 @@ const boost::ut::suite<"block diagnostics"> _blockDiagnostics = [] {
     "a block whose only input is Async is reported when it returns OK requesting nothing"_test = [] {
         StderrCapture capture;
 
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<EndlessSource>();
-        auto&     stuck  = flow.emplaceBlock<AsyncStuckSink>();
-        expect(flow.connect<"out", "in">(source, stuck).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<EndlessSource>();
+        auto&                 stuck  = test.emplace<AsyncStuckSink>();
+        expect(test.connect(source, "out", stuck, "in").has_value());
 
-        gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::singleThreaded> scheduler{};
-        expect(scheduler.exchange(std::move(flow)).has_value());
-
-        std::jthread runner([&scheduler] { std::ignore = scheduler.runAndWait(); });
+        expect(test.start().has_value());
 
         const auto  deadline = std::chrono::steady_clock::now() + kReportDeadline;
         std::string reported;
@@ -214,10 +208,9 @@ const boost::ut::suite<"block diagnostics"> _blockDiagnostics = [] {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             reported = capture.text();
         }
-        const bool keptSpinning = gr::lifecycle::isActive(scheduler.state());
+        const bool keptSpinning = test.state() == gr::Runtime::State::Running;
 
-        scheduler.requestStop();
-        runner.join();
+        test.stop();
 
         expect(!reported.empty()) << "an Async port constrains nothing, so its zero-request OK must still be seen as zero progress";
         expect(reported.contains(std::string_view(stuck.unique_name))) << std::format("the report must name the stuck Async sink, got: {}", reported);
@@ -228,20 +221,15 @@ const boost::ut::suite<"block diagnostics"> _blockDiagnostics = [] {
     "an Async sink that consumes what it is offered is doing work and is never reported"_test = [] {
         StderrCapture capture;
 
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<EndlessSource>();
-        auto&     sink   = flow.emplaceBlock<AsyncDiscardingSink>();
-        expect(flow.connect<"out", "in">(source, sink).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<EndlessSource>();
+        auto&                 sink   = test.emplace<AsyncDiscardingSink>();
+        expect(test.connect(source, "out", sink, "in").has_value());
 
-        gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::singleThreaded> scheduler{};
-        expect(scheduler.exchange(std::move(flow)).has_value());
-
-        std::jthread runner([&scheduler] { std::ignore = scheduler.runAndWait(); });
+        expect(test.start().has_value());
         std::this_thread::sleep_for(std::chrono::milliseconds(1600)); // past the one-second reporting threshold
         const std::string reported = capture.text();
-
-        scheduler.requestStop();
-        runner.join();
+        test.stop();
 
         expect(reported.empty()) << std::format("explicit Async consumption is performed work, not a stuck block, got: {}", reported);
         expect(gt(sink.nConsumed, 0UZ)) << "the sink must actually have consumed samples for this scenario to prove anything";
