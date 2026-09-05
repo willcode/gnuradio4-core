@@ -8,10 +8,10 @@
 #include <vector>
 
 #include <gnuradio-4.0/Block.hpp>
-#include <gnuradio-4.0/Graph.hpp>
-#include <gnuradio-4.0/Scheduler.hpp>
 #include <gnuradio-4.0/Sequence.hpp>
 #include <gnuradio-4.0/Settings.hpp>
+
+#include "RuntimeTest.hpp"
 
 /**
  * @brief Where a resampling block's sample_rate lives.
@@ -255,18 +255,16 @@ struct RateStreamResult {
 [[nodiscard]] RateStreamResult runRateStream(std::size_t nSamples, float finalRate) {
     using namespace boost::ut;
 
-    gr::Graph flow;
-    auto&     source = flow.emplaceBlock<RepeatingRateSource>();
-    source.nSamples  = nSamples;
-    source.finalRate = finalRate;
-    auto& middle     = flow.emplaceBlock<RateCountingBlock>();
-    auto& sink       = flow.emplaceBlock<RateTagSink>();
-    expect(flow.connect<"out", "in">(source, middle).has_value());
-    expect(flow.connect<"out", "in">(middle, sink).has_value());
+    gr::test::RuntimeTest test;
+    auto&                 source = test.emplace<RepeatingRateSource>();
+    source.nSamples              = nSamples;
+    source.finalRate             = finalRate;
+    auto& middle                 = test.emplace<RateCountingBlock>();
+    auto& sink                   = test.emplace<RateTagSink>();
+    expect(test.connect(source, "out", middle, "in").has_value());
+    expect(test.connect(middle, "out", sink, "in").has_value());
 
-    gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::singleThreaded> scheduler{};
-    expect(scheduler.exchange(std::move(flow)).has_value());
-    expect(scheduler.runAndWait().has_value());
+    expect(test.run().has_value());
 
     return {middle.nSettingsChanged, middle.sample_rate.value};
 }
@@ -333,16 +331,14 @@ const boost::ut::suite<"settings"> _settings = [] {
     };
 
     "a rate tag through a decimator arrives scaled"_test = [] {
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<RateTagSource>(property_map{{"name", std::string("src")}});
-        auto&     middle = flow.emplaceBlock<Decimator>(property_map{{"name", std::string("mid")}, {"input_chunk_size", kDecimation}, {"output_chunk_size", gr::Size_t(1)}});
-        auto&     sink   = flow.emplaceBlock<RateTagSink>(property_map{{"name", std::string("snk")}});
-        expect(flow.connect<"out", "in">(source, middle).has_value());
-        expect(flow.connect<"out", "in">(middle, sink).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<RateTagSource>(property_map{{"name", std::string("src")}});
+        auto&                 middle = test.emplace<Decimator>(property_map{{"name", std::string("mid")}, {"input_chunk_size", kDecimation}, {"output_chunk_size", gr::Size_t(1)}});
+        auto&                 sink   = test.emplace<RateTagSink>(property_map{{"name", std::string("snk")}});
+        expect(test.connect(source, "out", middle, "in").has_value());
+        expect(test.connect(middle, "out", sink, "in").has_value());
 
-        gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::singleThreaded> scheduler{};
-        expect(scheduler.exchange(std::move(flow)).has_value());
-        expect(scheduler.runAndWait().has_value());
+        expect(test.run().has_value());
 
         expect(ge(sink.rates.size(), 1UZ)) << "the sink must see the rate the decimator publishes at";
         expect(std::ranges::all_of(sink.rates, [](float rate) { return rate == kOutputRate; })) << "every forwarded rate must be the output rate";
@@ -350,32 +346,28 @@ const boost::ut::suite<"settings"> _settings = [] {
     };
 
     "a rate tag through a decimator that declares no sample_rate arrives scaled"_test = [] {
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<RateTagSource>(property_map{{"name", std::string("src")}});
-        auto&     middle = flow.emplaceBlock<RatelessDecimator>(property_map{{"name", std::string("mid")}, {"input_chunk_size", kDecimation}, {"output_chunk_size", gr::Size_t(1)}});
-        auto&     sink   = flow.emplaceBlock<RateTagSink>(property_map{{"name", std::string("snk")}});
-        expect(flow.connect<"out", "in">(source, middle).has_value());
-        expect(flow.connect<"out", "in">(middle, sink).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<RateTagSource>(property_map{{"name", std::string("src")}});
+        auto&                 middle = test.emplace<RatelessDecimator>(property_map{{"name", std::string("mid")}, {"input_chunk_size", kDecimation}, {"output_chunk_size", gr::Size_t(1)}});
+        auto&                 sink   = test.emplace<RateTagSink>(property_map{{"name", std::string("snk")}});
+        expect(test.connect(source, "out", middle, "in").has_value());
+        expect(test.connect(middle, "out", sink, "in").has_value());
 
-        gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::singleThreaded> scheduler{};
-        expect(scheduler.exchange(std::move(flow)).has_value());
-        expect(scheduler.runAndWait().has_value());
+        expect(test.run().has_value());
 
         expect(ge(sink.rates.size(), 1UZ)) << "the sink must see the rate the decimator publishes at";
         expect(std::ranges::all_of(sink.rates, [](float rate) { return rate == kOutputRate; })) << "the chunk ratio must scale the forwarded rate whether or not the block owns one";
     };
 
     "a decimator starved by its source keeps the rate it is fed at"_test = [] {
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<LateSource>(property_map{{"name", std::string("src")}});
-        auto&     middle = flow.emplaceBlock<WatchingDecimator>(property_map{{"name", std::string("mid")}, {"sample_rate", kInputRate}, {"input_chunk_size", kDecimation}, {"output_chunk_size", gr::Size_t(1)}});
-        auto&     sink   = flow.emplaceBlock<RateTagSink>(property_map{{"name", std::string("snk")}});
-        expect(flow.connect<"out", "in">(source, middle).has_value());
-        expect(flow.connect<"out", "in">(middle, sink).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<LateSource>(property_map{{"name", std::string("src")}});
+        auto&                 middle = test.emplace<WatchingDecimator>(property_map{{"name", std::string("mid")}, {"sample_rate", kInputRate}, {"input_chunk_size", kDecimation}, {"output_chunk_size", gr::Size_t(1)}});
+        auto&                 sink   = test.emplace<RateTagSink>(property_map{{"name", std::string("snk")}});
+        expect(test.connect(source, "out", middle, "in").has_value());
+        expect(test.connect(middle, "out", sink, "in").has_value());
 
-        gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::singleThreaded> scheduler{};
-        expect(scheduler.exchange(std::move(flow)).has_value());
-        expect(scheduler.runAndWait().has_value());
+        expect(test.run().has_value());
 
         expect(eq(source.idleCalls, kStarvedCalls)) << "the source must have driven the chain while it could publish nothing";
         expect(eq(middle.sample_rate.value, kInputRate)) << "a call that moves nothing must leave the block's own rate alone";
