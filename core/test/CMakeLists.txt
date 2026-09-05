@@ -30,6 +30,7 @@ set(_CORE_TESTS
     qa_DataSet
     qa_DestructionSafety
     qa_DynamicPort
+    qa_ErasedRuntime
     qa_Fusion
     qa_GraphEdit
     qa_grc
@@ -82,7 +83,7 @@ message(
 )
 
 if(NOT GR_ENABLE_BLOCK_REGISTRY)
-  list(REMOVE_ITEM _CORE_TESTS qa_BlockRegistration qa_SchedulerRegistration)
+  list(REMOVE_ITEM _CORE_TESTS qa_BlockRegistration qa_ErasedRuntime qa_SchedulerRegistration)
 endif()
 
 foreach(TEST_NAME IN LISTS _CORE_TESTS)
