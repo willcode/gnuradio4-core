@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nested graph fixture</title>
+<style>
+:root { color-scheme: light dark; --fg: #1a1a1a; --bg: #ffffff; --muted: #5a6270; --rule: #d5d9e0; --panel: #f5f6f8; --accent: #1f5fa9; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6e6e6; --bg: #14171c; --muted: #9aa4b2; --rule: #2c313a; --panel: #1c2027; --accent: #7fb2f0; }
+}
+* { box-sizing: border-box; }
+body { margin: 0 auto; padding: 2rem 1.25rem 4rem; max-width: 60rem; background: var(--bg); color: var(--fg);
+       font: 15px/1.6 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 2rem 0 0.75rem; }
+h1 { font-size: 1.9rem; margin-top: 0; padding-bottom: 0.4rem; border-bottom: 2px solid var(--rule); }
+h2 { font-size: 1.4rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--rule); }
+h3 { font-size: 1.15rem; }
+h4, h5, h6 { font-size: 1rem; color: var(--muted); }
+p, ul { margin: 0.6rem 0; }
+ul { padding-left: 1.4rem; }
+a { color: var(--accent); }
+code, pre { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; font-size: 0.87em; }
+code { background: var(--panel); padding: 0.1em 0.35em; border-radius: 3px; }
+pre { background: var(--panel); border: 1px solid var(--rule); border-radius: 5px; padding: 0.9rem 1rem; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+div.table { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; }
+th, td { border: 1px solid var(--rule); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: var(--panel); font-weight: 600; }
+tbody tr:nth-child(even) { background: color-mix(in srgb, var(--panel) 45%, transparent); }
+</style>
+</head>
+<body>
+<h1>Nested graph fixture</h1>
+<h2>Summary</h2>
+<ul>
+<li><strong>Blocks at the top level</strong>: 3</li>
+<li><strong>Connections at the top level</strong>: 2</li>
+<li><strong>Subgraphs, all depths</strong>: 2</li>
+<li><strong>Schedulers</strong>: gr::scheduler::Simple</li>
+</ul>
+<h2>Definition metadata</h2>
+<div class="table">
+<table>
+<thead>
+<tr><th>Key</th><th>Value</th></tr>
+</thead>
+<tbody>
+<tr><td>block_type</td><td>&quot;qa::doc_fixture&quot;</td></tr>
+<tr><td>plugin_author</td><td>&quot;GNU Radio&quot;</td></tr>
+<tr><td>plugin_license</td><td>&quot;MIT&quot;</td></tr>
+<tr><td>plugin_name</td><td>&quot;Doc Tools Fixture&quot;</td></tr>
+<tr><td>plugin_version</td><td>&quot;1&quot;</td></tr>
+</tbody>
+</table>
+</div>
+<h2>Blocks</h2>
+<div class="table">
+<table>
+<thead>
+<tr><th>Name</th><th>Type</th><th>Kind</th><th>Unique name</th><th>Parameters</th><th>Meta information</th></tr>
+</thead>
+<tbody>
+<tr><td>source</td><td>qa::RampSource</td><td>block</td><td>source_1</td><td>n_samples: 4096<br>name: &quot;source&quot;</td><td></td></tr>
+<tr><td>front_end</td><td>SUBGRAPH</td><td>subgraph</td><td></td><td></td><td></td></tr>
+<tr><td>sink</td><td>qa::RecordingSink</td><td>block</td><td></td><td>name: &quot;sink&quot;<br>[context fast @ 0] buffer_size: 512</td><td>role: &quot;terminal&quot;</td></tr>
+</tbody>
+</table>
+</div>
+<h2>Connections</h2>
+<div class="table">
+<table>
+<thead>
+<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Minimum buffer</th></tr>
+</thead>
+<tbody>
+<tr><td>source_1</td><td>0</td><td>front_end</td><td>0</td><td></td></tr>
+<tr><td>front_end</td><td>0</td><td>sink</td><td>0</td><td>4096</td></tr>
+</tbody>
+</table>
+</div>
+<h2>Diagram</h2>
+<pre class="mermaid">
+flowchart LR
+    gb0["source&lt;br/&gt;qa::RampSource"]
+    gb1[["front_end&lt;br/&gt;SUBGRAPH"]]
+    gb2["sink&lt;br/&gt;qa::RecordingSink"]
+    gb0 -- "0 to 0" --&gt; gb1
+    gb1 -- "0 to 0" --&gt; gb2
+</pre>
+<h2>Other keys</h2>
+<div class="table">
+<table>
+<thead>
+<tr><th>Key</th><th>Value</th></tr>
+</thead>
+<tbody>
+<tr><td>graph_version</td><td>1</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="subgraph-front-end">Subgraph: front_end</h2>
+<ul>
+<li><strong>Type</strong>: SUBGRAPH</li>
+<li><strong>Scheduler</strong>: none, the parent schedules its blocks</li>
+<li><strong>Blocks</strong>: 2</li>
+<li><strong>Connections</strong>: 1</li>
+</ul>
+<h3>Exported ports</h3>
+<div class="table">
+<table>
+<thead>
+<tr><th>Exported as</th><th>Direction</th><th>Inner block</th><th>Inner port</th></tr>
+</thead>
+<tbody>
+<tr><td>in</td><td>INPUT</td><td>pre_gain</td><td>in</td></tr>
+<tr><td>out</td><td>OUTPUT</td><td>inner_chain</td><td>out</td></tr>
+</tbody>
+</table>
+</div>
+<h3>Blocks</h3>
+<div class="table">
+<table>
+<thead>
+<tr><th>Name</th><th>Type</th><th>Kind</th><th>Unique name</th><th>Parameters</th><th>Meta information</th></tr>
+</thead>
+<tbody>
+<tr><td>pre_gain</td><td>qa::Scale</td><td>block</td><td></td><td>enabled: true<br>gain: 2.000000<br>label: &quot;front&quot;<br>name: &quot;pre_gain&quot;</td><td></td></tr>
+<tr><td>inner_chain</td><td>SUBGRAPH</td><td>subgraph, scheduler gr::scheduler::Simple</td><td></td><td>name: &quot;inner_chain&quot;</td><td></td></tr>
+</tbody>
+</table>
+</div>
+<h3>Connections</h3>
+<div class="table">
+<table>
+<thead>
+<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Minimum buffer</th></tr>
+</thead>
+<tbody>
+<tr><td>pre_gain</td><td>out</td><td>inner_chain</td><td>in</td><td></td></tr>
+</tbody>
+</table>
+</div>
+<h3>Diagram</h3>
+<pre class="mermaid">
+flowchart LR
+    gs1b0["pre_gain&lt;br/&gt;qa::Scale"]
+    gs1b1[["inner_chain&lt;br/&gt;SUBGRAPH"]]
+    gs1b0 -- "out to in" --&gt; gs1b1
+</pre>
+<h3 id="subgraph-front-end-inner-chain">Subgraph: front_end / inner_chain</h3>
+<ul>
+<li><strong>Type</strong>: SUBGRAPH</li>
+<li><strong>Scheduler</strong>: gr::scheduler::Simple</li>
+<li><strong>Blocks</strong>: 2</li>
+<li><strong>Connections</strong>: 1</li>
+</ul>
+<h4>Exported ports</h4>
+<div class="table">
+<table>
+<thead>
+<tr><th>Exported as</th><th>Direction</th><th>Inner block</th><th>Inner port</th></tr>
+</thead>
+<tbody>
+<tr><td>in</td><td>INPUT</td><td>fine_gain</td><td>in</td></tr>
+<tr><td>out</td><td>OUTPUT</td><td>combiner</td><td>out</td></tr>
+</tbody>
+</table>
+</div>
+<h4>Blocks</h4>
+<div class="table">
+<table>
+<thead>
+<tr><th>Name</th><th>Type</th><th>Kind</th><th>Unique name</th><th>Parameters</th><th>Meta information</th></tr>
+</thead>
+<tbody>
+<tr><td>fine_gain</td><td>qa::Scale</td><td>block</td><td></td><td>gain: 0.500000<br>name: &quot;fine_gain&quot;</td><td></td></tr>
+<tr><td>combiner</td><td>qa::SumInputs</td><td>block</td><td></td><td>n_inputs: 2<br>name: &quot;combiner&quot;</td><td></td></tr>
+</tbody>
+</table>
+</div>
+<h4>Connections</h4>
+<div class="table">
+<table>
+<thead>
+<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Minimum buffer</th></tr>
+</thead>
+<tbody>
+<tr><td>fine_gain</td><td>out</td><td>combiner</td><td>0.0</td><td></td></tr>
+</tbody>
+</table>
+</div>
+<h4>Diagram</h4>
+<pre class="mermaid">
+flowchart LR
+    gs1s1b0["fine_gain&lt;br/&gt;qa::Scale"]
+    gs1s1b1["combiner&lt;br/&gt;qa::SumInputs"]
+    gs1s1b0 -- "out to 0.0" --&gt; gs1s1b1
+</pre>
+</body>
+</html>
