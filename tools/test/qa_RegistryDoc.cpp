@@ -101,6 +101,42 @@ struct Fixture {
     return instance;
 }
 
+#ifdef GR_TOOLS_TEST_BLOCK_LIBRARY
+constexpr std::string_view kLibraryKey = "test::library_doubler";
+
+/**
+ * @brief The block-library case, over the registries a block library actually registers into.
+ *
+ * A shared object that is not a plugin reaches `gr::globalBlockRegistry()` from its static
+ * initializers, not whichever registry a loader was handed, so this fixture is built over the
+ * process-wide pair -- which is also how the command-line tool is built.
+ */
+struct GlobalFixture {
+    std::vector<std::string> directories;
+    PluginLoader             loader;
+
+    GlobalFixture()
+        : directories{
+#ifdef GR_TOOLS_CORE_TEST_PLUGINS
+              std::string(GR_TOOLS_CORE_TEST_PLUGINS),
+#endif
+              std::string(GR_TOOLS_TEST_BLOCK_LIBRARY)},
+          loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), directories) {
+    }
+
+    [[nodiscard]] std::string document(gr::tools::Format format) {
+        const gr::tools::registrydoc::Inputs inputs{.loader = loader, .pluginDirectories = directories, .coreVersion = GR_TOOLS_CORE_VERSION};
+        return gr::tools::registrydoc::render(inputs, format, "Block library fixture");
+    }
+};
+
+/// exactly one loader opens the block-library directory, so the library is opened once
+[[nodiscard]] GlobalFixture& blockLibraryFixture() {
+    static GlobalFixture instance;
+    return instance;
+}
+#endif
+
 } // namespace qa_registrydoc
 
 const boost::ut::suite<"RegistryDoc"> registryDocTests = [] {
@@ -169,6 +205,37 @@ const boost::ut::suite<"RegistryDoc"> registryDocTests = [] {
         expect(html.find("<a href=\"#block-doc-scale\">") != std::string::npos) << "the HTML contents entry does not link its section";
         expect(html.find("id=\"block-doc-scale\"") != std::string::npos) << "the HTML section carries no anchor";
     };
+
+#ifdef GR_TOOLS_TEST_BLOCK_LIBRARY
+    "a shared object that registered blocks is kept mapped and its blocks stay usable"_test = [] {
+        GlobalFixture& withLibrary = blockLibraryFixture();
+
+        const auto& libraries = withLibrary.loader.blockLibraries();
+        expect(fatal(eq(libraries.size(), 2UZ))) << "core's two block-library fixtures were not recognized as such";
+        for (const gr::PluginLoader::BlockLibrary& library : libraries) {
+            expect(library.file.contains("block_library"));
+            expect(ge(library.nBlockRegistrations, 1UZ)) << "each library registered at least its own block";
+        }
+
+        expect(fatal(gr::globalBlockRegistry().contains(kLibraryKey))) << "the library's block is not in the registry";
+        // calling the factory is the point: a library that was unloaded leaves the entry behind with
+        // a pointer into code that is no longer mapped, and this is where that jump would happen
+        std::unique_ptr<BlockModel> block = gr::globalBlockRegistry().create(kLibraryKey, {});
+        expect(fatal(block != nullptr)) << "the library's factory produced nothing";
+        block->settings().init();
+        expect(eq(block->dynamicInputPorts().size(), 1UZ));
+        expect(that % block->settings().defaultParameters().contains("extra_gain"));
+    };
+
+    "the document names the block library and documents its blocks"_test = [] {
+        const std::string document = blockLibraryFixture().document(Format::Markdown);
+        expect(document.find("Block libraries") != std::string::npos) << "the block-library section is missing";
+        expect(document.find("block_library") != std::string::npos) << "the library file is not named";
+        expect(document.find(kLibraryKey) != std::string::npos) << "the library's block has no section";
+        expect(document.find("applied on top of the doubling") != std::string::npos) << "the library block's settings are not described";
+        expect(document.find("bad_plugin") != std::string::npos) << "a library that registered nothing is still a failure";
+    };
+#endif
 
     "the HTML page carries no external reference"_test = [] {
         const std::string html = fixture().document(Format::Html);

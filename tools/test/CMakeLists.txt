@@ -48,5 +48,10 @@ if(GR_ENABLE_BLOCK_REGISTRY)
       good_math_plugin
       good_conversion_plugin
       bad_plugin)
+
+    # core's own block-library fixture: a shared object that registers blocks without being a plugin
+    target_compile_definitions(qa_RegistryDoc
+                               PRIVATE GR_TOOLS_TEST_BLOCK_LIBRARY="${CMAKE_BINARY_DIR}/core/test/block_library")
+    add_dependencies(qa_RegistryDoc block_library)
   endif()
 endif()

@@ -26,6 +26,15 @@ With no --plugin-dir, the directories come from GNURADIO4_PLUGIN_DIRECTORIES, th
 colon-separated list the framework's own plugin loader reads. A directory that does not
 exist is named in the document and is not an error.
 
+A directory is scanned for names whose final extension is the platform's shared-object
+extension and that resolve to a regular file; a symlink is followed and loads like the
+file it points at. A soname-style name such as libfoo.so.1, and a symlink that does not
+resolve, are not opened, and the document lists them so the omission is visible.
+
+A shared object with no plugin interface that registers its blocks as it loads is
+documented as a block library and is kept mapped for the run: its registry entries hold
+factory pointers into its own code.
+
 Everything documented is read from the running program: the block registry linked into
 it, the plugins loaded from those directories, and a default-constructed instance of each
 registered key. No source file is read and no block list is built in.
