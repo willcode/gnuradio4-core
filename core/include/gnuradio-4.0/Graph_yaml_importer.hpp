@@ -467,14 +467,15 @@ inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> readR
         recipe::ParameterDeclaration declaration;
         for (const auto& [key, value] : *entry) {
             const std::string_view keyView(key);
-            if (keyView == "name") {
-                declaration.name = std::string(value.value_or(std::string_view{}));
-            } else if (keyView == "type") {
-                declaration.type = std::string(value.value_or(std::string_view{}));
+            const std::string_view valueView = value.value_or(std::string_view{});
+            if (keyView == "name" && !valueView.empty()) {
+                declaration.name.assign(valueView);
+            } else if (keyView == "type" && !valueView.empty()) {
+                declaration.type.assign(valueView);
             } else if (keyView == "default") {
                 declaration.defaultValue = value;
-            } else if (keyView == "doc") {
-                declaration.doc = std::string(value.value_or(std::string_view{}));
+            } else if (keyView == "doc" && !valueView.empty()) {
+                declaration.doc.assign(valueView);
             }
         }
         if (declaration.name.empty() || declaration.type.empty()) {
@@ -487,15 +488,28 @@ inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> readR
 
 /// walks block entries at any nesting depth: a parameters value spelled "=expr" is evaluated
 /// against the recipe's declarations and replaced with the result; "\=text" unescapes to the
-/// literal "=text"
-inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Value>& blocks, std::span<const recipe::ParameterDeclaration> declarations, std::span<const pmt::Value> values) {
+/// literal "=text". Below the composite's own level each evaluated expression is also
+/// collected as a live binding, addressed by the block-name path from the interior downward,
+/// so a later parameter change can re-evaluate and re-stage it.
+// GCC's -Wnull-dereference mis-traces the inlined std::string copies through push_back here
+// (the sources are guarded non-null); same known false positive qa_MemoryAllocators suppresses
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnull-dereference"
+inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Value>& blocks, std::span<const recipe::ParameterDeclaration> declarations, std::span<const pmt::Value> values, //
+    std::vector<recipe::Binding>& outBindings, std::vector<std::string>& namePath, bool insideComposite) {
     for (std::size_t index = 0; index < blocks.size(); ++index) {
         auto* blockEntry = blocks[index].get_if<property_map>();
         if (blockEntry == nullptr) {
             continue;
         }
+        std::string blockName;
         if (const auto parametersIt = blockEntry->find("parameters"); parametersIt != blockEntry->end()) {
             if (auto* parameters = parametersIt->second.get_if<property_map>(); parameters != nullptr) {
+                if (const auto nameIt = parameters->find("name"); nameIt != parameters->end()) {
+                    if (const std::string_view nameView = nameIt->second.value_or(std::string_view{}); !nameView.empty()) {
+                        blockName.assign(nameView);
+                    }
+                }
                 for (auto& [key, value] : *parameters) {
                     const auto* text = value.get_if<std::pmr::string>();
                     if (text == nullptr) {
@@ -524,17 +538,33 @@ inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Valu
                         }
                     }
                     if (substituted.has_value()) {
+                        if (insideComposite) {
+                            if (blockName.empty()) {
+                                return std::unexpected(gr::Error(std::format("recipe_expression_parse: the block holding '={}' needs a name so the parameter can re-substitute live", recipe::detail::printableEcho(reference))));
+                            }
+                            std::vector<std::string> path = namePath;
+                            path.push_back(blockName);
+                            outBindings.push_back({.namePath = std::move(path), .settingKey = std::string(key), .expression = {}, .substituted = substituted});
+                        }
                         value = values[*substituted];
                         continue;
                     }
 
-                    const auto expression = recipe::parseExpression(reference, declarations);
+                    auto expression = recipe::parseExpression(reference, declarations);
                     if (!expression.has_value()) {
                         return std::unexpected(expression.error());
                     }
                     auto result = recipe::evaluate(*expression, values);
                     if (!result.has_value()) {
                         return std::unexpected(result.error());
+                    }
+                    if (insideComposite) {
+                        if (blockName.empty()) {
+                            return std::unexpected(gr::Error(std::format("recipe_expression_parse: the block holding '={}' needs a name so the expression can re-evaluate live", recipe::detail::printableEcho(expression->source))));
+                        }
+                        std::vector<std::string> path = namePath;
+                        path.push_back(blockName);
+                        outBindings.push_back({.namePath = std::move(path), .settingKey = std::string(key), .expression = *expression, .substituted = std::nullopt});
                     }
                     value = std::move(*result);
                 }
@@ -544,7 +574,16 @@ inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Valu
             if (auto* graphMap = graphIt->second.get_if<property_map>(); graphMap != nullptr) {
                 if (const auto interiorIt = graphMap->find("blocks"); interiorIt != graphMap->end()) {
                     if (auto* interior = interiorIt->second.get_if<Tensor<pmt::Value>>(); interior != nullptr) {
-                        if (auto walked = evaluateRecipeExpressions(*interior, declarations, values); !walked.has_value()) {
+                        // descending into the composite's interior starts the bindable region;
+                        // one level further down the interior block's name joins the path
+                        if (insideComposite) {
+                            namePath.push_back(blockName);
+                        }
+                        auto walked = evaluateRecipeExpressions(*interior, declarations, values, outBindings, namePath, true);
+                        if (insideComposite) {
+                            namePath.pop_back();
+                        }
+                        if (!walked.has_value()) {
                             return walked;
                         }
                     }
@@ -554,6 +593,7 @@ inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Valu
     }
     return {};
 }
+#pragma GCC diagnostic pop
 
 } // namespace detail
 
@@ -590,8 +630,10 @@ inline std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> detail::instant
         if (!values.has_value()) {
             return std::unexpected(values.error());
         }
+        std::vector<recipe::Binding> bindings;
         if (blocksList != nullptr) {
-            if (auto evaluatedAll = evaluateRecipeExpressions(*blocksList, declarations, *values); !evaluatedAll.has_value()) {
+            std::vector<std::string> namePath;
+            if (auto evaluatedAll = evaluateRecipeExpressions(*blocksList, declarations, *values, bindings, namePath, false); !evaluatedAll.has_value()) {
                 return std::unexpected(evaluatedAll.error());
             }
         }
@@ -601,6 +643,16 @@ inline std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> detail::instant
         auto blocks = tempGraph.blocks();
         if (blocks.empty()) {
             return std::unexpected(gr::Error{"YAML definition produced no blocks"});
+        }
+        if (!declarations.empty()) {
+            // the live half of the ruled contract: parameter changes on the composite
+            // re-evaluate and re-stage. A scheduler-managed composite has no GraphWrapper to
+            // carry the bindings; its parameters are instantiation-time only.
+            if (auto* wrapper = dynamic_cast<GraphWrapper<gr::Graph>*>(blocks.front().get()); wrapper != nullptr) {
+                if (auto attached = wrapper->attachRecipeBindings({.declarations = std::move(declarations), .bindings = std::move(bindings), .values = std::move(*values)}); !attached.has_value()) {
+                    return std::unexpected(attached.error());
+                }
+            }
         }
         return blocks.front();
     } catch (const gr::exception& e) {
