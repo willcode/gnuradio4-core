@@ -10,6 +10,11 @@ add_library(
   src/PluginLoader.cpp
   src/PmtTypeHelpers.cpp)
 
+# creating a scheduler by name needs a registry to look it up in
+if(GR_ENABLE_BLOCK_REGISTRY)
+  target_sources(gnuradio-core PRIVATE src/SchedulerRegistration.cpp)
+endif()
+
 add_library(gnuradio4::gnuradio-core ALIAS gnuradio-core)
 target_include_directories(
   gnuradio-core
@@ -56,7 +61,14 @@ install(
 
 # the whole include directory is the public surface, and it is installed as it is laid out: a PUBLIC_HEADER list would
 # flatten the subdirectories into a second copy beside the first
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+if(GR_ENABLE_BLOCK_REGISTRY)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+else()
+  install(
+    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "SchedulerRegistration.hpp" EXCLUDE)
+endif()
 
 add_subdirectory(src)
 
