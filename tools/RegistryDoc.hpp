@@ -287,6 +287,18 @@ inline void writePlugins(DocWriter& writer, gr::PluginLoader& loader) {
         writer.table(headers, rows);
     }
 
+    std::vector<std::vector<std::string>> libraries;
+    for (const gr::PluginLoader::BlockLibrary& library : loader.blockLibraries()) {
+        libraries.push_back({std::filesystem::path(library.file).filename().string(), std::to_string(library.nBlockRegistrations), std::to_string(library.nSchedulerRegistrations)});
+    }
+    std::ranges::sort(libraries, [](const std::vector<std::string>& a, const std::vector<std::string>& b) { return a[0] < b[0]; });
+    if (!libraries.empty()) {
+        writer.heading(3UZ, "Block libraries");
+        writer.paragraph("Shared objects that carry no plugin interface. They registered their blocks as they loaded, and are kept mapped for the lifetime of the process.");
+        const std::array<std::string_view, 3> headers{"File", "Block registrations", "Scheduler registrations"};
+        writer.table(headers, libraries);
+    }
+
     std::vector<std::vector<std::string>> failures;
     for (const auto& [file, reason] : loader.failedPlugins()) {
         failures.push_back({std::filesystem::path(file).filename().string(), reason});
@@ -301,6 +313,19 @@ inline void writePlugins(DocWriter& writer, gr::PluginLoader& loader) {
     static_cast<void>(loader);
     writer.paragraph("This build has no plugin system, so no plugin library can be loaded.");
 #endif
+
+    if (!loader.skippedFiles().empty()) {
+        std::vector<std::vector<std::string>> skipped;
+        skipped.reserve(loader.skippedFiles().size());
+        for (const std::string& file : loader.skippedFiles()) {
+            skipped.push_back({file});
+        }
+        std::ranges::sort(skipped, [](const std::vector<std::string>& a, const std::vector<std::string>& b) { return a[0] < b[0]; });
+        writer.heading(3UZ, "Files that were not opened");
+        writer.paragraph("A plugin directory is scanned for names ending in the platform's shared-object extension that resolve to a regular file. These read as shared objects but do not meet that test: a symlink that does not resolve, or a soname-style name such as libfoo.so.1.");
+        const std::array<std::string_view, 1> headers{"File"};
+        writer.table(headers, skipped);
+    }
 
     std::vector<std::vector<std::string>> definitions;
     for (const auto& [blockType, definition] : loader.definitionForBlockName()) {
@@ -371,7 +396,7 @@ inline void writeSchedulers(DocWriter& writer, gr::PluginLoader& loader) {
     writer.rawBullets(contents);
 
     for (std::size_t i = 0UZ; i < keys.size(); ++i) {
-        const std::string_view origin = inputs.loader.registry().contains(keys[i]) ? "the linked-in block registry" : "a plugin or a block definition";
+        const std::string_view origin = inputs.loader.registry().contains(keys[i]) ? "the block registry" : "a plugin or a block definition";
         writeBlock(writer, keys[i], origin, inputs.loader, anchors[i]);
     }
 
