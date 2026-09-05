@@ -232,7 +232,7 @@ struct YamlDefinitionsLoader {
     }
 };
 
-std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateBlockFromYamlDefinition(gr::PluginLoader& loader, const YamlDefinitionsLoader::Definition& def) noexcept;
+std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateBlockFromYamlDefinition(gr::PluginLoader& loader, const YamlDefinitionsLoader::Definition& def, const property_map& parameters = {}) noexcept;
 
 /**
  * @brief Instantiates the one version a caller named, or says why it could not.
@@ -525,7 +525,7 @@ public:
         }
 
         if (const auto def = _yamlRegistry.definitionForBlockName(name)) {
-            auto result = detail::instantiateBlockFromYamlDefinition(*this, *def);
+            auto result = detail::instantiateBlockFromYamlDefinition(*this, *def, params);
             if (!result) {
                 std::print("Error: YAML block instantiation failed for '{}': {} ({})\n", name, result.error().message, result.error().srcLoc());
                 return {};
@@ -630,7 +630,7 @@ public:
         }
 
         if (const auto def = _yamlRegistry.definitionForBlockName(name)) {
-            auto result = detail::instantiateBlockFromYamlDefinition(*this, *def);
+            auto result = detail::instantiateBlockFromYamlDefinition(*this, *def, params);
             if (!result) {
                 std::print("Error: YAML block instantiation failed for '{}': {} ({})\n", name, result.error().message, result.error().srcLoc());
                 return nullptr;
