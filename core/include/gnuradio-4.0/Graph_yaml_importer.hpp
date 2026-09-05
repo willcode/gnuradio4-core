@@ -13,6 +13,7 @@
 
 #include <gnuradio-4.0/meta/indirect.hpp>
 
+#include <gnuradio-4.0/RecipeInstantiation.hpp>
 #include <gnuradio-4.0/RecipeParameters.hpp>
 #include <gnuradio-4.0/YamlPmt.hpp>
 
@@ -342,10 +343,6 @@ inline void loadEntrySettings(BlockModel& block, const property_map& grcBlock, c
     }
 }
 
-/// Defined below with the rest of the recipe reader: the graph reader needs it to tell a block's
-/// exported recipe parameters, which the composite consumes when it is built, from its settings.
-inline std::set<std::string> recipeParameterNames(PluginLoader& loader, std::string_view blockType);
-
 inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGraph, gr::property_map yaml, const BlockSettings& overrides = {}, std::source_location location = std::source_location::current()) {
     LoadedBlocks createdBlocks;
 
@@ -453,29 +450,20 @@ inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGrap
             schedulerParams.erase("name");
             fromFile = mergedParameters(&fromFile, &schedulerParams);
         }
-        const property_map* given      = settingsByPosition[position];
-        property_map        parameters = mergedParameters(&fromFile, given);
+        const property_map* given = settingsByPosition[position];
 
-        // a recipe consumes its exported parameters when the composite is built -- the interior
-        // settings are derived from them, so they have to be known before the interior exists --
-        // and the composite has no setting of that name afterwards. They therefore travel with
-        // the instantiation and leave the settings map; every other key is an ordinary setting
-        // and takes the path it always took. A block that is not a recipe declares none, so
-        // nothing is held back from it.
-        property_map recipeParameters;
-        for (const std::string& declared : recipeParameterNames(loader, blockType)) {
-            if (const auto it = parameters.find(convert_string_domain(declared)); it != parameters.end()) {
-                recipeParameters.emplace(it->first, it->second);
-                parameters.erase(it);
-            }
-        }
-        const bool fromDefinition = !isSubgraph && loader.definitionForBlockName().contains(std::string(blockType));
+        // a recipe consumes its exported parameters when the composite is built and has no
+        // setting of their names afterwards, so they travel with the instantiation and leave
+        // the settings map; every other key takes the settings path it always took. A block
+        // that is not a definition declares none, so nothing is held back from it.
+        const auto          split      = splitRecipeParameters(loader, blockType, mergedParameters(&fromFile, given));
+        const property_map& parameters = split.remaining;
 
         std::shared_ptr<BlockModel> currentBlock;
         if (!isSubgraph) {
             // A registered block is constructed with its whole map, so that its constructor sees the values it runs
             // with. A definition takes only its exported parameters.
-            const property_map& constructedWith = fromDefinition ? recipeParameters : parameters;
+            const property_map& constructedWith = split.fromDefinition ? split.exported : parameters;
             // no `version` key means the newest registered version
             const std::optional<block::Version> pinnedVersion = pinnedVersionOf(grcBlock, blockType);
             const auto                          instantiated  = pinnedVersion.has_value() ? loader.instantiatePinnedOrError(blockType, *pinnedVersion, constructedWith) : loader.instantiateOrError(blockType, constructedWith);
@@ -495,7 +483,7 @@ inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGrap
             currentBlock = std::make_shared<GraphWrapper<gr::Graph>>(gr::Graph(loader, parameters));
         }
 
-        if (!fromDefinition) {
+        if (!split.fromDefinition) {
             // the settings take the map once, below, and Settings::init() does not apply the constructor's copy again
             currentBlock->settings().setInitBlockParameters({});
         }
@@ -692,82 +680,6 @@ inline constexpr std::array<std::string_view, 13> grcYamlKeyOrder{"id", "version
 inline std::string saveGrc(PluginLoader& loader, const gr::Graph& rootGraph) { return pmt::yaml::serialize(detail::saveGraphToMap(loader, rootGraph), grcYamlKeyOrder); }
 
 namespace detail {
-
-/// the exported_parameters list of a definition's SUBGRAPH entry, as declarations
-inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> readRecipeDeclarations(const property_map& blockEntry) {
-    std::vector<recipe::ParameterDeclaration> declarations;
-    const auto                                listIt = blockEntry.find("exported_parameters");
-    if (listIt == blockEntry.end()) {
-        return declarations;
-    }
-    const auto* list = listIt->second.get_if<Tensor<pmt::Value>>();
-    if (list == nullptr) {
-        return std::unexpected(gr::Error("recipe_expression_parse: exported_parameters is not a list"));
-    }
-    for (const auto& entryValue : *list) {
-        const auto* entry = entryValue.get_if<property_map>();
-        if (entry == nullptr) {
-            return std::unexpected(gr::Error("recipe_expression_parse: an exported_parameters entry is not a map"));
-        }
-        recipe::ParameterDeclaration declaration;
-        for (const auto& [key, value] : *entry) {
-            const std::string_view keyView(key);
-            const std::string_view valueView = value.value_or(std::string_view{});
-            if (keyView == "name" && !valueView.empty()) {
-                declaration.name.assign(valueView);
-            } else if (keyView == "type" && !valueView.empty()) {
-                declaration.type.assign(valueView);
-            } else if (keyView == "default") {
-                declaration.defaultValue = value;
-            } else if (keyView == "doc" && !valueView.empty()) {
-                declaration.doc.assign(valueView);
-            }
-        }
-        if (declaration.name.empty() || declaration.type.empty()) {
-            return std::unexpected(gr::Error("recipe_expression_parse: an exported parameter needs a name and a type"));
-        }
-        declarations.push_back(std::move(declaration));
-    }
-    return declarations;
-}
-
-/// the parameters a definition exports: the declarations on the composite entry it is built
-/// around, and none for a definition that carries no composite or declares nothing
-inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> recipeDeclarationsOf(const property_map& definition) {
-    const auto blocksIt = definition.find("blocks");
-    if (blocksIt == definition.end()) {
-        return std::vector<recipe::ParameterDeclaration>{};
-    }
-    const auto* blocksList = blocksIt->second.get_if<Tensor<pmt::Value>>();
-    if (blocksList == nullptr) {
-        return std::vector<recipe::ParameterDeclaration>{};
-    }
-    for (const auto& entry : *blocksList) {
-        if (const auto* blockEntry = entry.get_if<property_map>(); blockEntry != nullptr && blockEntry->contains("graph")) {
-            return readRecipeDeclarations(*blockEntry);
-        }
-    }
-    return std::vector<recipe::ParameterDeclaration>{};
-}
-
-inline std::set<std::string> recipeParameterNames(PluginLoader& loader, std::string_view blockType) {
-    const auto& definitions = loader.definitionForBlockName();
-    const auto  definition  = definitions.find(std::string(blockType));
-    if (definition == definitions.end()) {
-        return {};
-    }
-    // a definition the reader cannot make declarations of is left to the instantiation to refuse,
-    // which is where the reason is reported
-    const auto declarations = recipeDeclarationsOf(definition->second.definition);
-    if (!declarations.has_value()) {
-        return {};
-    }
-    std::set<std::string> names;
-    for (const auto& declaration : *declarations) {
-        names.emplace(declaration.name);
-    }
-    return names;
-}
 
 /// walks block entries at any nesting depth: a parameters value spelled "=expr" is evaluated
 /// against the recipe's declarations and replaced with the result; "\=text" unescapes to the
