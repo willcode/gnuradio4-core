@@ -584,6 +584,16 @@ struct Binding {
     return evaluate(binding.expression, values);
 }
 
+/// What a live composite carries: its declarations, its bindings, and the current parameter
+/// values. A staged change to an exported parameter re-evaluates against a TRIAL copy of the
+/// values and commits only when every binding evaluated — a refusal rejects the change whole
+/// and the running values stand.
+struct AttachedBindings {
+    std::vector<ParameterDeclaration> declarations;
+    std::vector<Binding>              bindings;
+    std::vector<pmt::Value>           values;
+};
+
 } // namespace gr::recipe
 
 #endif // GNURADIO_RECIPEPARAMETERS_HPP
