@@ -397,6 +397,59 @@ const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
         expect(refusal.error().message.contains("recipe_unknown_parameter")) << refusal.error().message;
     };
 
+    "a live parameter change re-evaluates and stages; a refusal leaves the values standing"_test = [] {
+        registerRecipeTestBlock();
+        auto             loader = recipeTestLoader();
+        const auto       def    = definitionFrom(kParameterizedRecipe);
+        gr::property_map parameters;
+        parameters["sample_rate"] = 48000.0f;
+        parameters["deviation"]   = 2500.0f;
+        const auto composite      = gr::detail::instantiateBlockFromYamlDefinition(loader, def, parameters);
+        expect(composite.has_value()) << (composite.has_value() ? "" : composite.error().message);
+        if (!composite.has_value()) {
+            return;
+        }
+        auto* wrapper = dynamic_cast<gr::GraphWrapper<gr::Graph>*>(composite->get());
+        expect(wrapper != nullptr) << "a parameterized composite carries the binding machinery";
+        const auto inner = interiorBlock(*composite);
+        if (wrapper == nullptr || inner == nullptr) {
+            return;
+        }
+
+        gr::property_map change;
+        change["deviation"] = 5000.0f;
+        const auto applied  = wrapper->applyRecipeParameters(change);
+        expect(applied.has_value()) << (applied.has_value() ? "" : applied.error().message);
+        const auto staged = inner->settings().stagedParameters();
+        const auto gainIt = staged.find("gain");
+        expect(gainIt != staged.end()) << "the derived setting is staged on the interior block";
+        if (gainIt != staged.end()) {
+            // setStaged converts to the member's own float; read whichever numeric arrived
+            const double stagedGain = gr::recipe::detail::doubleOf(gainIt->second).value_or(0.0);
+            expect(eq(static_cast<float>(stagedGain), static_cast<float>(48000.0 / (2.0 * std::numbers::pi * 5000.0)))) << "re-evaluated with the changed parameter";
+        }
+
+        gr::property_map unknown;
+        unknown["bandwidth"] = 1.0f;
+        expect(!wrapper->applyRecipeParameters(unknown).has_value()) << "an undeclared parameter refuses";
+
+        gr::property_map zero;
+        zero["deviation"] = 0.0f;
+        expect(!wrapper->applyRecipeParameters(zero).has_value()) << "a non-finite derivation refuses the change whole";
+
+        gr::property_map next;
+        next["sample_rate"]    = 96000.0f;
+        const auto nextApplied = wrapper->applyRecipeParameters(next);
+        expect(nextApplied.has_value()) << (nextApplied.has_value() ? "" : nextApplied.error().message);
+        const auto stagedAfter = inner->settings().stagedParameters();
+        const auto gainAfter   = stagedAfter.find("gain");
+        expect(gainAfter != stagedAfter.end());
+        if (gainAfter != stagedAfter.end()) {
+            const double stagedGain = gr::recipe::detail::doubleOf(gainAfter->second).value_or(0.0);
+            expect(eq(static_cast<float>(stagedGain), static_cast<float>(96000.0 / (2.0 * std::numbers::pi * 5000.0)))) << "deviation stood at its last committed value through the refusal";
+        }
+    };
+
     "a literal definition is untouched, and parameters against it are refused"_test = [] {
         registerRecipeTestBlock();
         auto       loader    = recipeTestLoader();
