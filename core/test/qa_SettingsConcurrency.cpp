@@ -8,10 +8,10 @@
 #include <vector>
 
 #include <gnuradio-4.0/Block.hpp>
-#include <gnuradio-4.0/Graph.hpp>
-#include <gnuradio-4.0/Scheduler.hpp>
 #include <gnuradio-4.0/Sequence.hpp>
 #include <gnuradio-4.0/Settings.hpp>
+
+#include "RuntimeTest.hpp"
 
 namespace qa_settings {
 
@@ -316,37 +316,26 @@ const boost::ut::suite<"settings concurrency"> settingsConcurrencyTests = [] {
     };
 
     "a float32 rate tag crosses a double-typed block and reaches a float sink"_test = [] {
-        gr::scheduler::Simple        scheduler;
-        qa_settings::WideRateBlock*  wideBlock = nullptr;
-        qa_settings::NarrowRateSink* sink      = nullptr;
-        {
-            gr::Graph flow;
-            auto&     source = flow.emplaceBlock<qa_settings::RateSource>({{"sample_rate", 2.4e6f}});
-            wideBlock        = &flow.emplaceBlock<qa_settings::WideRateBlock>();
-            sink             = &flow.emplaceBlock<qa_settings::NarrowRateSink>();
-            expect(flow.connect<"out", "in">(source, *wideBlock).has_value());
-            expect(flow.connect<"out", "in">(*wideBlock, *sink).has_value());
-            expect(scheduler.exchange(std::move(flow)).has_value());
-        }
+        gr::test::RuntimeTest        test;
+        auto&                        source    = test.emplace<qa_settings::RateSource>({{"sample_rate", 2.4e6f}});
+        qa_settings::WideRateBlock*  wideBlock = &test.emplace<qa_settings::WideRateBlock>();
+        qa_settings::NarrowRateSink* sink      = &test.emplace<qa_settings::NarrowRateSink>();
+        expect(test.connect(source, "out", *wideBlock, "in").has_value());
+        expect(test.connect(*wideBlock, "out", *sink, "in").has_value());
 
-        expect(scheduler.runAndWait().has_value()) << "the graph did not run to completion";
+        expect(test.run().has_value()) << "the graph did not run to completion";
         expect(gt(sink->_nReceived, 0UZ)) << "the sink received nothing";
         expect(eq(wideBlock->sample_rate.value, 2.4e6)) << "the forwarded float32 rate did not reach the double member";
         expect(eq(sink->sample_rate.value, 2.4e6f)) << "the re-forwarded float64 rate did not reach the float member";
     };
 
     "a default-tag value the graph cannot convert does not stop the graph"_test = [] {
-        gr::scheduler::Simple        scheduler;
-        qa_settings::NarrowRateSink* sink = nullptr;
-        {
-            gr::Graph flow;
-            auto&     source = flow.emplaceBlock<qa_settings::BadTagSource>();
-            sink             = &flow.emplaceBlock<qa_settings::NarrowRateSink>();
-            expect(flow.connect<"out", "in">(source, *sink).has_value());
-            expect(scheduler.exchange(std::move(flow)).has_value());
-        }
+        gr::test::RuntimeTest        test;
+        auto&                        source = test.emplace<qa_settings::BadTagSource>();
+        qa_settings::NarrowRateSink* sink   = &test.emplace<qa_settings::NarrowRateSink>();
+        expect(test.connect(source, "out", *sink, "in").has_value());
 
-        expect(scheduler.runAndWait().has_value()) << "a rejected tag value took the graph down";
+        expect(test.run().has_value()) << "a rejected tag value took the graph down";
         expect(gt(sink->_nReceived, 0UZ)) << "the sink received nothing";
         expect(eq(sink->sample_rate.value, 1.0f)) << "an unconvertible value reached the member";
     };

@@ -14,6 +14,8 @@
 #include <gnuradio-4.0/Graph.hpp>
 #include <gnuradio-4.0/Scheduler.hpp>
 
+#include "RuntimeTest.hpp"
+
 namespace qa_drain {
 
 constexpr std::size_t kBurst = 8UZ;
@@ -519,16 +521,14 @@ const boost::ut::suite<"end-of-stream drain"> drainTests = [] {
     using enum gr::lifecycle::State;
 
     "a block emitting one item per call is given every item it holds"_test = [] {
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<qa_drain::BurstSource>();
-        auto&     relay  = flow.emplaceBlock<qa_drain::OneAtATime>();
-        auto&     sink   = flow.emplaceBlock<qa_drain::CountingSink>();
-        expect(flow.connect<"out", "in">(source, relay).has_value());
-        expect(flow.connect<"out", "in">(relay, sink).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<qa_drain::BurstSource>();
+        auto&                 relay  = test.emplace<qa_drain::OneAtATime>();
+        auto&                 sink   = test.emplace<qa_drain::CountingSink>();
+        expect(test.connect(source, "out", relay, "in").has_value());
+        expect(test.connect(relay, "out", sink, "in").has_value());
 
-        qa_drain::SerialScheduler scheduler;
-        expect(scheduler.exchange(std::move(flow)).has_value());
-        expect(qa_drain::runWithin(scheduler, std::chrono::duration_cast<std::chrono::milliseconds>(qa_drain::kRunBound))) << "the graph did not end";
+        expect(test.runWithin(qa_drain::kRunBound)) << "the graph did not end";
 
         expect(eq(relay._nForwarded, qa_drain::kBurst)) << "the end of the stream cut the block short of the items already in its queue";
         expect(eq(sink._nReceived, qa_drain::kBurst)) << "items accepted upstream never reached the sink";
@@ -579,16 +579,14 @@ const boost::ut::suite<"end-of-stream drain"> drainTests = [] {
     };
 
     "an input minimum published from processBulk governs the next call and ends the stream"_test = [] {
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<qa_drain::BurstSource>();
-        auto&     relay  = flow.emplaceBlock<qa_drain::WindowedRelay>();
-        auto&     sink   = flow.emplaceBlock<qa_drain::CountingSink>();
-        expect(flow.connect<"out", "in">(source, relay).has_value());
-        expect(flow.connect<"out", "in">(relay, sink).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<qa_drain::BurstSource>();
+        auto&                 relay  = test.emplace<qa_drain::WindowedRelay>();
+        auto&                 sink   = test.emplace<qa_drain::CountingSink>();
+        expect(test.connect(source, "out", relay, "in").has_value());
+        expect(test.connect(relay, "out", sink, "in").has_value());
 
-        qa_drain::SerialScheduler scheduler;
-        expect(scheduler.exchange(std::move(flow)).has_value());
-        expect(qa_drain::runWithin(scheduler, std::chrono::duration_cast<std::chrono::milliseconds>(qa_drain::kRunBound))) << "the block was offered a span it cannot use and the graph never ended";
+        expect(test.runWithin(qa_drain::kRunBound)) << "the block was offered a span it cannot use and the graph never ended";
 
         expect(eq(relay._nShortCalls, 0UZ)) << "the scheduler kept offering less than the published minimum";
         expect(eq(sink._nReceived, qa_drain::kBurst - qa_drain::kWindow + 1UZ)) << "one item per sample the window could be filled from";
@@ -797,18 +795,16 @@ const boost::ut::suite<"end-of-stream drain"> drainTests = [] {
     };
 
     "a graph ending on an error does not drain"_test = [] {
-        gr::Graph flow;
-        auto&     source = flow.emplaceBlock<qa_drain::BurstSource>();
-        auto&     relay  = flow.emplaceBlock<qa_drain::FailingRelay>();
-        auto&     sink   = flow.emplaceBlock<qa_drain::CountingSink>();
-        expect(flow.connect<"out", "in">(source, relay).has_value());
-        expect(flow.connect<"out", "in">(relay, sink).has_value());
+        gr::test::RuntimeTest test;
+        auto&                 source = test.emplace<qa_drain::BurstSource>();
+        auto&                 relay  = test.emplace<qa_drain::FailingRelay>();
+        auto&                 sink   = test.emplace<qa_drain::CountingSink>();
+        expect(test.connect(source, "out", relay, "in").has_value());
+        expect(test.connect(relay, "out", sink, "in").has_value());
 
-        qa_drain::SerialScheduler scheduler;
-        expect(scheduler.exchange(std::move(flow)).has_value());
-        expect(qa_drain::runWithin(scheduler, std::chrono::duration_cast<std::chrono::milliseconds>(qa_drain::kRunBound))) << "the failing graph did not end";
+        expect(test.runWithin(qa_drain::kRunBound)) << "the failing graph did not end";
 
-        expect(scheduler.state() == ERROR) << "a failing block drives the scheduler to ERROR";
+        expect(test.state() == gr::Runtime::State::Error) << "a failing block drives the scheduler to ERROR";
         expect(eq(relay._nForwarded, qa_drain::kItemsBeforeFailure)) << "the failed block was kept running to empty its queue";
         expect(le(sink._nReceived, qa_drain::kItemsBeforeFailure));
     };
