@@ -31,3 +31,22 @@ function(add_option_handling_tests TOOL_TARGET)
 endfunction()
 
 add_option_handling_tests(gnuradio_4_0_graph_doc)
+
+if(GR_ENABLE_BLOCK_REGISTRY)
+  add_ut_test(qa_RegistryDoc)
+  target_link_libraries(qa_RegistryDoc PRIVATE gnuradio-doctools)
+  add_option_handling_tests(gnuradio_4_0_registry_doc)
+  if(INTERNAL_ENABLE_BLOCK_PLUGINS)
+    # the registry document is built over core's own test plugins, which are built beside them
+    target_link_libraries(qa_RegistryDoc PRIVATE gnuradio-plugin)
+    target_compile_definitions(qa_RegistryDoc
+                               PRIVATE GR_TOOLS_CORE_TEST_PLUGINS="${CMAKE_BINARY_DIR}/core/test/plugins")
+    add_dependencies(
+      qa_RegistryDoc
+      GoodBasePlugin
+      GoodRegistryPlugin
+      good_math_plugin
+      good_conversion_plugin
+      bad_plugin)
+  endif()
+endif()
