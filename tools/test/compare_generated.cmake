@@ -1,0 +1,19 @@
+# Runs a document generator over a fixture and compares the result with the pinned expectation. Two steps in one script
+# so that a single ctest entry covers both, and so that a generator that fails is reported as such rather than as an
+# empty difference.
+execute_process(COMMAND "${TOOL}" --format "${FORMAT}" --title "${TITLE}" --output "${ACTUAL}" "${INPUT}"
+                RESULT_VARIABLE _generateStatus)
+if(NOT
+   _generateStatus
+   EQUAL
+   0)
+  message(FATAL_ERROR "${TOOL} exited ${_generateStatus} for ${INPUT}")
+endif()
+
+execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files "${ACTUAL}" "${EXPECTED}" RESULT_VARIABLE _compareStatus)
+if(NOT
+   _compareStatus
+   EQUAL
+   0)
+  message(FATAL_ERROR "${ACTUAL} differs from ${EXPECTED}")
+endif()
