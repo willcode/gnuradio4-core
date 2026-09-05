@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <string>
@@ -249,6 +251,58 @@ inline std::string describeDifference(const gr::property_map& lhs, const gr::pro
         }
     }
     return {};
+}
+
+/**
+ * A definitions root carrying one recipe, written to a temporary directory.
+ *
+ * A recipe reaches a graph file only through a PluginLoader's definition roots, and its interior
+ * gain is derived from `gain_factor`, which is declared without a default and is therefore
+ * required: the composite cannot be built until the value is known.
+ */
+struct RecipeAssetRoot {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / "gr4_qa_grc_recipe";
+
+    RecipeAssetRoot() {
+        std::filesystem::remove_all(path);
+        std::filesystem::create_directories(path);
+        std::ofstream index(path / "index.yaml");
+        index << "assets:\n  - file: gain_recipe.yaml\n    created: \"2024-01-01-00:00:00\"\n    modified: \"2024-01-15-10:00:00\"\n    block_type: qa::GainRecipe\n";
+        std::ofstream asset(path / "gain_recipe.yaml");
+        asset << R"yaml(definition_metadata:
+  block_type: qa::GainRecipe
+blocks:
+  - id: SUBGRAPH
+    parameters:
+      name: gain_recipe
+    exported_parameters:
+      - name: gain_factor
+        type: float32
+    graph:
+      blocks:
+        - id: "qa::Scale"
+          parameters:
+            name: inner
+            gain: "=gain_factor"
+      exported_ports:
+        - [inner, INPUT, in, in]
+        - [inner, OUTPUT, out, out]
+)yaml";
+    }
+
+    RecipeAssetRoot(const RecipeAssetRoot&)            = delete;
+    RecipeAssetRoot& operator=(const RecipeAssetRoot&) = delete;
+
+    ~RecipeAssetRoot() { std::filesystem::remove_all(path); }
+};
+
+/// a loader over its own registry, so the recipe's interior id resolves without the global one
+inline gr::PluginLoader recipeLoader(const std::vector<std::string>& roots) {
+    static BlockRegistry     registry;
+    static SchedulerRegistry schedulers;
+    static const bool        registered = registry.insert<Scale>("=qa::Scale");
+    boost::ut::expect(registered) << "the interior block must reach the recipe loader's registry";
+    return PluginLoader(registry, schedulers, roots);
 }
 
 inline std::size_t countCategory(const gr::Graph& graph, block::Category category) {
@@ -631,6 +685,58 @@ connections:
         if (!read.has_value()) {
             expect(read.error().message.contains("count")) << read.error().message;
         }
+    };
+
+    // the reader instantiated a block and only then handed it its parameters, so a recipe -- whose
+    // exported parameters are what its interior is derived from -- could not be named in a file
+    "a graph file names a recipe and supplies its required parameter"_test = [] {
+        const RecipeAssetRoot assets;
+        auto                  loader = recipeLoader({assets.path.string()});
+
+        const std::string document = R"yaml(blocks:
+  - id: qa::GainRecipe
+    parameters:
+      name: demod
+      gain_factor: !!float32 3.5
+)yaml";
+
+        auto loaded = gr::loadGrc(loader, document);
+        expect(eq(loaded->blocks().size(), 1UZ));
+        const std::shared_ptr<BlockModel>& composite = loaded->blocks().front();
+        expect(composite->graph() != nullptr) << "the recipe must come back as a composite";
+        if (composite->graph() == nullptr || composite->graph()->blocks().empty()) {
+            expect(false) << "the composite carries no interior block";
+            return;
+        }
+
+        expect(eq(std::string(composite->name()), std::string("demod"))) << "the file's own name did not reach the block";
+        expect(!composite->metaInformation().contains("gain_factor")) << "a recipe parameter must not be left behind as meta_information";
+
+        const auto gain = composite->graph()->blocks().front()->settings().get("gain");
+        expect(gain.has_value());
+        expect(eq(gain->value_or(float{}), 3.5f)) << "the supplied parameter did not reach the interior setting";
+    };
+
+    "a graph file that omits a recipe's required parameter names the block and the parameter"_test = [] {
+        const RecipeAssetRoot assets;
+        auto                  loader = recipeLoader({assets.path.string()});
+
+        const std::string document = R"yaml(blocks:
+  - id: qa::GainRecipe
+    parameters:
+      name: demod
+)yaml";
+
+        std::string reported;
+        try {
+            const auto loaded = gr::loadGrc(loader, document);
+            expect(loaded->blocks().empty()) << "a recipe without its required parameter must not load";
+        } catch (const gr::exception& e) {
+            reported = e.message;
+        }
+        expect(reported.contains("demod")) << reported;
+        expect(reported.contains("qa::GainRecipe")) << reported;
+        expect(reported.contains("gain_factor")) << reported;
     };
 };
 
