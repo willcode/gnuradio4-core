@@ -74,6 +74,18 @@ inline constexpr std::array<std::string_view, 6> kSettingMetaSuffixes{"::descrip
 
 [[nodiscard]] inline std::string yesNo(bool value) { return value ? "yes" : "no"; }
 
+/// the qualities a block declares, named; a block that declares none reads as plain, which is the common case
+[[nodiscard]] inline std::string statusText(block::Status status) {
+    std::vector<std::string> set;
+    if (status.deprecated) {
+        set.emplace_back("deprecated");
+    }
+    if (status.experimental) {
+        set.emplace_back("experimental");
+    }
+    return set.empty() ? "none declared" : joined(set, ", ");
+}
+
 /// the sample-count bound a port declares; the largest representable count means "no bound"
 [[nodiscard]] inline std::string sampleBound(std::size_t count) { //
     return count == std::numeric_limits<std::size_t>::max() ? "unbounded" : std::to_string(count);
@@ -169,10 +181,32 @@ inline void writeBlock(DocWriter& writer, std::string_view key, std::string_view
     facts.push_back(writer.labeled("Type name", std::string(instance->typeName())));
     facts.push_back(writer.labeled("Block category", std::format("{}", instance->blockCategory())));
     facts.push_back(writer.labeled("UI category", std::format("{}", instance->uiCategory())));
+
+    // Facts, not advice: a version and a status are printed where the block has something to say and are
+    // left out where it has not, and nothing here refuses, warns about or reorders anything on either.
+    const std::vector<block::Version> registeredVersions = loader.registry().versions(key);
+    const block::Status               declaredStatus     = instance->status();
+    if (instance->version() != block::kDefaultVersion || registeredVersions.size() > 1UZ) {
+        facts.push_back(writer.labeled("Version", std::to_string(instance->version())));
+    }
+    if (declaredStatus.any()) {
+        facts.push_back(writer.labeled("Status", statusText(declaredStatus)));
+    }
     if (!settingsFailure.empty()) {
         facts.push_back(writer.labeled("Settings error", settingsFailure));
     }
     writer.rawBullets(facts);
+
+    if (registeredVersions.size() > 1UZ) {
+        writer.paragraph("More than one version of this key is registered. A caller that names no version gets the newest.");
+        std::vector<std::vector<std::string>> versionRows;
+        versionRows.reserve(registeredVersions.size());
+        for (const block::Version version : registeredVersions) {
+            versionRows.push_back({std::to_string(version), statusText(loader.registry().status(key, version).value_or(block::Status{})), version == registeredVersions.back() ? "newest" : ""});
+        }
+        const std::array<std::string_view, 3> versionHeaders{"Version", "Status", "Taken by default"};
+        writer.table(versionHeaders, versionRows);
+    }
 
     const property_map& meta        = instance->metaInformation();
     const std::string   description = metaString(meta, "description");
