@@ -94,6 +94,42 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         expect(eq(occurrences(document, "```mermaid"), 3UZ)) << "one diagram per graph level";
     };
 
+    "a composite's exported parameters are read and documented"_test = [] {
+        const graphdoc::Level level = readFixture();
+        expect(eq(level.blocks[1].exportedParameters.size(), 2UZ)) << "the outer subgraph declares two exported parameters";
+        expect(eq(level.blocks[1].uninterpretedKeys.size(), 0UZ)) << "exported_parameters is interpreted on a composite entry";
+        expect(!level.blocks[1].exportedParameters[0].required) << "a declaration with a default is not required";
+        expect(level.blocks[1].exportedParameters[1].required) << "a declaration without a default is required at instantiation";
+
+        for (const Format format : {Format::Markdown, Format::Html}) {
+            const std::string document = graphdoc::render(level, format, "Nested graph fixture");
+            expect(document.find("Exported parameters") != std::string::npos) << "the declarations have no table";
+            for (const std::string_view fragment : {"front_gain", "float32", "channel_rate", "float64", "required", "the scale the front end applies"}) {
+                expect(document.find(fragment) != std::string::npos) << std::format("'{}' is missing from the document", fragment);
+            }
+        }
+    };
+
+    "a block's uninterpreted keys are documented with the block"_test = [] {
+        const graphdoc::Level level = readFixture();
+        expect(eq(level.blocks[2].uninterpretedKeys.size(), 1UZ)) << "layout_hint is not a key the reader interprets";
+
+        for (const Format format : {Format::Markdown, Format::Html}) {
+            const std::string document = graphdoc::render(level, format, "Nested graph fixture");
+            expect(document.find("Other block keys") != std::string::npos) << "a block's unknown keys have no table";
+            expect(document.find("layout_hint") != std::string::npos) << "the key itself is missing";
+            expect(document.find("bottom-right") != std::string::npos) << "the value of the key is missing";
+        }
+    };
+
+    "exported_parameters on a plain block stays uninterpreted"_test = [] {
+        const auto level = graphdoc::read("blocks:\n  - id: qa::Scale\n    exported_parameters:\n      - name: gain\n        type: float32\n");
+        expect(level.has_value());
+        expect(level->blocks[0].exportedParameters.empty()) << "only the entry carrying `graph` declares what a definition exports";
+        expect(eq(level->blocks[0].uninterpretedKeys.size(), 1UZ)) << "the key is reported rather than silently dropped";
+        expect(graphdoc::render(*level, Format::Markdown, "t").find("exported_parameters") != std::string::npos);
+    };
+
     "the diagram labels nodes and edges"_test = [] {
         const std::string diagram = graphdoc::diagramOf(readFixture(), "g");
         expect(diagram.starts_with("flowchart LR\n"));
