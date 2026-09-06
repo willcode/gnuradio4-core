@@ -162,12 +162,13 @@ struct Level {
 };
 
 struct Block {
-    std::string            type;        ///< the `id` field; "SUBGRAPH" for a nested graph
-    std::string            name;        //
-    std::string            uniqueName;  //
-    std::string            category;    ///< the `block_category` field, empty where the entry carries none
-    std::string            schedulerId; ///< empty unless the subgraph is scheduler-managed
-    std::string            parameters;  ///< sorted `key: value` lines
+    std::string            type;          ///< the `id` field; "SUBGRAPH" for a nested graph
+    std::string            pinnedVersion; ///< the `version` field as the file spells it; empty when the entry pins none
+    std::string            name;          //
+    std::string            uniqueName;    //
+    std::string            category;      ///< the `block_category` field, empty where the entry carries none
+    std::string            schedulerId;   ///< empty unless the subgraph is scheduler-managed
+    std::string            parameters;    ///< sorted `key: value` lines
     std::string            metaInformation;
     std::vector<NamedText> contexts;            ///< one entry per `ctx_parameters` context
     std::vector<NamedText> schedulerParameters; ///< the parameters of the scheduler managing a subgraph
@@ -360,6 +361,12 @@ enum class LevelKind { Root, Subgraph };
     block.type = *id;
     read.add("id");
     const bool subgraph = block.type == "SUBGRAPH";
+
+    // an entry without the key takes the newest registered version, so there is nothing to show for it
+    if (const pmt::Value* version = entryOf(entry, "version"); version != nullptr) {
+        block.pinnedVersion = stringOf(*version).value_or(valueText(*version));
+        read.add("version");
+    }
 
     if (const pmt::Value* uniqueName = entryOf(entry, "unique_name"); uniqueName != nullptr) {
         if (const std::optional<std::string> text = stringOf(*uniqueName); text.has_value()) {
@@ -1020,6 +1027,9 @@ inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a n
     if (!block.schedulerId.empty()) {
         add(std::format("scheduler {}", block.schedulerId));
     }
+    if (!block.pinnedVersion.empty()) {
+        add(std::format("version {} pinned", block.pinnedVersion));
+    }
     return kind.empty() ? cell : std::format("{}\n({})", cell, kind);
 }
 
@@ -1117,6 +1127,9 @@ inline void writeSubgraphs(DocWriter& writer, const Level& level, std::size_t de
 
         std::vector<std::string> facts;
         facts.push_back(writer.labeled("Type", block.type));
+        if (!block.pinnedVersion.empty()) {
+            facts.push_back(writer.labeled("Pinned version", block.pinnedVersion));
+        }
         if (!block.uniqueName.empty()) {
             facts.push_back(writer.labeled("Unique name", block.uniqueName));
         }
