@@ -26,6 +26,17 @@ namespace gr::tools::graphdoc {
 /// uninterpreted key rather than dropped, so a document never hides part of its input.
 inline constexpr std::array<std::string_view, 9> kKnownBlockKeys{"id", "name", "unique_name", "block_category", "meta_information", "parameters", "ctx_parameters", "scheduler", "graph"};
 
+/// A composite entry -- the one carrying `graph` -- additionally declares what the definition
+/// exports, which `gr::detail::readRecipeDeclarations` reads from that entry and from no other.
+/// The key is therefore interpreted only there; on a plain block it stays uninterpreted, which is
+/// what it is to the loader as well.
+inline constexpr auto kKnownSubgraphKeys = [] {
+    std::array<std::string_view, kKnownBlockKeys.size() + 1UZ> keys{};
+    std::ranges::copy(kKnownBlockKeys, keys.begin());
+    keys.back() = "exported_parameters";
+    return keys;
+}();
+
 /// the same for a graph level
 inline constexpr std::array<std::string_view, 4> kKnownGraphKeys{"blocks", "connections", "exported_ports", "definition_metadata"};
 
@@ -131,6 +142,17 @@ struct ExportedPort {
     std::string exportedName;
 };
 
+/// One entry of a composite's `exported_parameters` list, spelled as `gr::recipe::ParameterDeclaration`
+/// carries it: a name, a dialect type word, an optional default and an optional `doc` line. A
+/// declaration that states no default is required at instantiation, which is what `required` says.
+struct ExportedParameter {
+    std::string name;
+    std::string type;
+    std::string defaultValue; ///< empty unless the declaration states one
+    std::string doc;
+    bool        required = true;
+};
+
 struct Block;
 
 /// one graph level: what a file's top level and a subgraph's `graph` map both look like
@@ -150,7 +172,9 @@ struct Block {
     std::string            parameters;  ///< sorted `key: value` lines
     std::string            metaInformation;
     std::vector<NamedText> contexts;          ///< one entry per `ctx_parameters` context
-    std::vector<NamedText> uninterpretedKeys; ///< keys outside kKnownBlockKeys
+    std::vector<NamedText> uninterpretedKeys; ///< keys outside kKnownBlockKeys, or kKnownSubgraphKeys for a composite
+
+    std::vector<ExportedParameter> exportedParameters; ///< the `exported_parameters` a composite entry declares
 
     std::shared_ptr<Level> interior; ///< the nested graph of a SUBGRAPH entry
 
@@ -177,6 +201,46 @@ struct Block {
     }
     std::ranges::sort(result, [](const NamedText& a, const NamedText& b) { return a.name < b.name; });
     return result;
+}
+
+/// The parameters a composite entry declares, in the order the file gives them. A declaration the
+/// loader would refuse -- no name, no type, or an entry that is not a map -- is reported as it
+/// stands rather than dropped or corrected: the document says what the file says, and the
+/// instantiation is where a malformed declaration is refused with a reason.
+[[nodiscard]] inline std::vector<ExportedParameter> exportedParametersOf(const property_map& entry) {
+    std::vector<ExportedParameter> parameters;
+
+    const pmt::Value* declarations = entryOf(entry, "exported_parameters");
+    if (declarations == nullptr) {
+        return parameters;
+    }
+    const Tensor<pmt::Value>* list = listOf(*declarations);
+    if (list == nullptr) {
+        return parameters;
+    }
+
+    for (const pmt::Value& declarationValue : *list) {
+        const property_map* declaration = mapOf(declarationValue);
+        if (declaration == nullptr) {
+            continue;
+        }
+        ExportedParameter parameter;
+        if (const pmt::Value* name = entryOf(*declaration, "name"); name != nullptr) {
+            parameter.name = stringOf(*name).value_or(valueText(*name));
+        }
+        if (const pmt::Value* type = entryOf(*declaration, "type"); type != nullptr) {
+            parameter.type = stringOf(*type).value_or(valueText(*type));
+        }
+        if (const pmt::Value* defaultValue = entryOf(*declaration, "default"); defaultValue != nullptr) {
+            parameter.defaultValue = valueText(*defaultValue);
+            parameter.required     = false;
+        }
+        if (const pmt::Value* doc = entryOf(*declaration, "doc"); doc != nullptr) {
+            parameter.doc = stringOf(*doc).value_or(valueText(*doc));
+        }
+        parameters.push_back(std::move(parameter));
+    }
+    return parameters;
 }
 
 [[nodiscard]] Level readLevel(const property_map& map);
@@ -252,7 +316,10 @@ struct Block {
         }
     }
 
-    block.uninterpretedKeys = uninterpretedKeysOf(entry, kKnownBlockKeys);
+    if (block.isSubgraph()) {
+        block.exportedParameters = exportedParametersOf(entry);
+    }
+    block.uninterpretedKeys = uninterpretedKeysOf(entry, block.isSubgraph() ? std::span<const std::string_view>(kKnownSubgraphKeys) : std::span<const std::string_view>(kKnownBlockKeys));
     return block;
 }
 
@@ -461,6 +528,23 @@ inline void writeLevelBody(DocWriter& writer, const Level& level, std::size_t de
         writer.heading(headingLevel, "Other keys");
         writeNamedTable(writer, "Key", "Value", level.uninterpretedKeys);
     }
+
+    // A block's uninterpreted keys belong to that block, so they are named with it. They travel in
+    // one table per level, beside the level's own, rather than in a further column of the block
+    // table that every graph without such a key would carry empty.
+    std::vector<std::vector<std::string>> blockKeys;
+    for (std::size_t i = 0UZ; i < level.blocks.size(); ++i) {
+        const Block&      block = level.blocks[i];
+        const std::string name  = block.name.empty() ? std::format("block {}", i) : block.name;
+        for (const NamedText& key : block.uninterpretedKeys) {
+            blockKeys.push_back({name, key.name, key.value});
+        }
+    }
+    if (!blockKeys.empty()) {
+        writer.heading(headingLevel, "Other block keys");
+        const std::array<std::string_view, 3> headers{"Block", "Key", "Value"};
+        writer.table(headers, blockKeys);
+    }
 }
 
 inline void writeSubgraphs(DocWriter& writer, const Level& level, std::size_t depth, std::string_view prefix, std::string_view path) {
@@ -483,6 +567,19 @@ inline void writeSubgraphs(DocWriter& writer, const Level& level, std::size_t de
         facts.push_back(writer.labeled("Blocks", std::to_string(block.interior->blocks.size())));
         facts.push_back(writer.labeled("Connections", std::to_string(block.interior->connections.size())));
         writer.rawBullets(facts);
+
+        // the declarations come before the ports because they are what an instantiation must supply:
+        // a composite's interior is derived from them before it exists
+        if (!block.exportedParameters.empty()) {
+            writer.heading(depth + 3UZ, "Exported parameters");
+            std::vector<std::vector<std::string>> rows;
+            rows.reserve(block.exportedParameters.size());
+            for (const ExportedParameter& parameter : block.exportedParameters) {
+                rows.push_back({parameter.name, parameter.type, parameter.required ? "required" : parameter.defaultValue, parameter.doc});
+            }
+            const std::array<std::string_view, 4> headers{"Name", "Type", "Default", "Description"};
+            writer.table(headers, rows);
+        }
 
         if (!block.interior->exportedPorts.empty()) {
             writer.heading(depth + 3UZ, "Exported ports");

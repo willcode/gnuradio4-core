@@ -13,6 +13,14 @@ blocks:
       n_samples: !!uint32 4096
   - id: SUBGRAPH
     name: front_end
+    exported_parameters:
+      - name: front_gain
+        type: float32
+        default: !!float32 2.0
+        doc: "the scale the front end applies before the inner chain"
+      - name: channel_rate
+        type: float64
+        doc: "input sample rate in hertz; required"
     graph:
       blocks:
         - id: qa::Scale
@@ -49,6 +57,7 @@ blocks:
         - [pre_gain, INPUT, in, in]
         - [inner_chain, OUTPUT, out, out]
   - id: qa::RecordingSink
+    layout_hint: bottom-right
     parameters:
       name: sink
     meta_information:
