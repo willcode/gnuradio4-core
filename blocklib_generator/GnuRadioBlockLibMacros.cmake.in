@@ -184,12 +184,75 @@ function(gr_generate_block_instantiations LIB_NAME)
     set(GEN_OPTIONS_SIG
         "${GR_BLOCKLIB_GENERATED_FORMAT}|${PARSER_SPLIT}|${EFFECTIVE_MAX_PER_TU}|${CBL_REGISTRY_HEADER}|${CBL_REGISTRY_INSTANCE}")
 
+    # every file the current HEADERS account for, and the merge inputs among them. The generator
+    # names its own outputs, so the lists below are exact rather than a picture of the directory
+    set(EXPECTED_FILES "")
+    set(DECLARATIONS_FILES "")
+    set(RAW_CALLS_FILES "")
+
     foreach(HDR IN LISTS CBL_HEADERS)
         # unconditional: the source list below and the reconfigure trigger are needed for every
         # header on every configure, not only for the ones that are regenerated this time round
         get_filename_component(ABS_HDR "${HDR}" ABSOLUTE)
         get_filename_component(BASENAME "${HDR}" NAME_WE)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${HDR})
+
+        # a listing run names the files this header accounts for; the generating run below writes
+        # them. The names depend on the grouping switches, so both runs carry the same options.
+        # The two generators take those options under their own spellings, and the CMake script
+        # takes -P last, so its script argument is kept apart from them.
+        set(LIST_FILE "${CMAKE_CURRENT_BINARY_DIR}/${MODULE_NAME_BASE}_${BASENAME}.outputs")
+        if(GR_BLOCKLIB_GENERATOR_USED STREQUAL "PYTHON")
+            set(PARSER_COMMAND
+                ${Python3_EXECUTABLE} "${GR_BLOCKLIB_PYTHON_GENERATOR}"
+                "--header" "${ABS_HDR}" "--out-dir" "${GEN_DIR}"
+                ${PARSER_SPLIT_PY_ARG}
+                ${PARSER_MAX_PER_TU_PY_ARG}
+                ${PARSER_REGISTRY_HEADER_PY_ARG}
+                ${PARSER_REGISTRY_INSTANCE_PY_ARG})
+            set(PARSER_COMMAND_TAIL "")
+            set(PARSER_LIST_ARGS "--list-outputs" "${LIST_FILE}")
+        else()
+            set(PARSER_COMMAND
+                ${CMAKE_COMMAND}
+                "-DHEADER=${ABS_HDR}" "-DOUT_DIR=${GEN_DIR}"
+                ${PARSER_SPLIT_ARG}
+                ${PARSER_MAX_PER_TU_ARG}
+                ${PARSER_REGISTRY_HEADER_ARG}
+                ${PARSER_REGISTRY_INSTANCE_ARG})
+            set(PARSER_COMMAND_TAIL -P "${GR_BLOCKLIB_CMAKE_GENERATOR}")
+            set(PARSER_LIST_ARGS "-DLIST_OUTPUTS=${LIST_FILE}")
+        endif()
+
+        execute_process(
+                COMMAND ${PARSER_COMMAND} ${PARSER_LIST_ARGS} ${PARSER_COMMAND_TAIL}
+                RESULT_VARIABLE list_res
+                ERROR_VARIABLE list_err
+                OUTPUT_QUIET
+                ERROR_STRIP_TRAILING_WHITESPACE
+        )
+        if(NOT list_res EQUAL 0)
+            message(FATAL_ERROR "Error listing the files generated from ${HDR}: ${list_err}")
+        endif()
+        file(STRINGS "${LIST_FILE}" HEADER_OUTPUTS)
+        file(REMOVE "${LIST_FILE}")
+
+        set(HEADER_SOURCES "")
+        foreach(GEN_NAME IN LISTS HEADER_OUTPUTS)
+            if(GEN_NAME STREQUAL "")
+                continue()
+            endif()
+            list(APPEND EXPECTED_FILES "${GEN_DIR}/${GEN_NAME}")
+            if(GEN_NAME STREQUAL "integrator.cpp")
+                continue() # module-wide, and already the first entry of the source list
+            elseif(GEN_NAME MATCHES "\\.cpp$")
+                list(APPEND HEADER_SOURCES "${GEN_DIR}/${GEN_NAME}")
+            elseif(GEN_NAME MATCHES "_declarations\\.hpp\\.in$")
+                list(APPEND DECLARATIONS_FILES "${GEN_DIR}/${GEN_NAME}")
+            elseif(GEN_NAME MATCHES "_raw_calls\\.hpp\\.in$")
+                list(APPEND RAW_CALLS_FILES "${GEN_DIR}/${GEN_NAME}")
+            endif()
+        endforeach()
 
         # Try to only run the generation when the header is newer than the last time
         set(modified 0)
@@ -214,30 +277,10 @@ function(gr_generate_block_instantiations LIB_NAME)
 
             message(STATUS "[BlockLibMacros] Generating code for header: ${ABS_HDR} -> ${GEN_DIR} with SPLIT=${PARSER_SPLIT}, other options [ ${PARSER_MAX_PER_TU_ARG} ${PARSER_REGISTRY_HEADER_ARG} ${PARSER_REGISTRY_INSTANCE_ARG} ]")
 
-            # the two generators take the same options under their own spellings
-            if(GR_BLOCKLIB_GENERATOR_USED STREQUAL "PYTHON")
-                set(PARSER_COMMAND
-                    ${Python3_EXECUTABLE} "${GR_BLOCKLIB_PYTHON_GENERATOR}"
-                    "--header" "${ABS_HDR}" "--out-dir" "${GEN_DIR}"
-                    ${PARSER_SPLIT_PY_ARG}
-                    ${PARSER_MAX_PER_TU_PY_ARG}
-                    ${PARSER_REGISTRY_HEADER_PY_ARG}
-                    ${PARSER_REGISTRY_INSTANCE_PY_ARG})
-            else()
-                set(PARSER_COMMAND
-                    ${CMAKE_COMMAND}
-                    "-DHEADER=${ABS_HDR}" "-DOUT_DIR=${GEN_DIR}"
-                    ${PARSER_SPLIT_ARG}
-                    ${PARSER_MAX_PER_TU_ARG}
-                    ${PARSER_REGISTRY_HEADER_ARG}
-                    ${PARSER_REGISTRY_INSTANCE_ARG}
-                    -P "${GR_BLOCKLIB_CMAKE_GENERATOR}")
-            endif()
-
             # run the generator immediately at configuration time.
-            message(STATUS "[BlockLibMacros] Running: ${PARSER_COMMAND}")
+            message(STATUS "[BlockLibMacros] Running: ${PARSER_COMMAND} ${PARSER_COMMAND_TAIL}")
             execute_process(
-                    COMMAND ${PARSER_COMMAND}
+                    COMMAND ${PARSER_COMMAND} ${PARSER_COMMAND_TAIL}
                     RESULT_VARIABLE gen_res
                     OUTPUT_VARIABLE gen_out
                     ERROR_VARIABLE gen_err
@@ -250,9 +293,7 @@ function(gr_generate_block_instantiations LIB_NAME)
             endif()
         endif()
 
-        # Glob for the generated .cpp files.
-        # anchored like the delete glob above, so 'Math' does not also collect 'MathExtra' outputs
-        file(GLOB GENERATED_FILES "${GEN_DIR}/${BASENAME}_*.cpp" "${GEN_DIR}/dummy_${BASENAME}.cpp")
+        set(GENERATED_FILES ${HEADER_SOURCES})
         if(NOT GENERATED_FILES)
             # If no .cpp files were generated, create a dummy file.
             set(DUMMY_CPP "${GEN_DIR}/dummy_${BASENAME}.cpp")
@@ -260,11 +301,13 @@ function(gr_generate_block_instantiations LIB_NAME)
             # do not prepend the precompiled header to this trivial TU
             set_source_files_properties("${DUMMY_CPP}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
             list(APPEND GENERATED_FILES "${DUMMY_CPP}")
+            list(APPEND EXPECTED_FILES "${DUMMY_CPP}")
         endif()
 
         # the registration TUs only declare the factories the definition TUs define; the precompiled
         # header carries the registry and block headers that split exists to keep out of them
-        file(GLOB DEFINITION_FILES "${GEN_DIR}/${BASENAME}_block_*.cpp")
+        set(DEFINITION_FILES ${GENERATED_FILES})
+        list(FILTER DEFINITION_FILES INCLUDE REGEX "/${BASENAME}_block_[0-9]+\\.cpp$")
         set(REGISTRATION_FILES ${GENERATED_FILES})
         if(DEFINITION_FILES)
             list(REMOVE_ITEM REGISTRATION_FILES ${DEFINITION_FILES})
@@ -277,16 +320,31 @@ function(gr_generate_block_instantiations LIB_NAME)
 
     endforeach()
 
+        # A header that leaves HEADERS leaves its generated units behind. Merging the directory
+        # would splice their init calls into the integrator, which then references units nothing
+        # compiles, and the library loads with an undefined symbol. Delete whatever the parser's
+        # own name patterns match outside the set the current headers account for.
+        file(GLOB STALE_FILES "${GEN_DIR}/*.cpp" "${GEN_DIR}/*_declarations.hpp.in" "${GEN_DIR}/*_raw_calls.hpp.in")
+        if(EXPECTED_FILES)
+            list(REMOVE_ITEM STALE_FILES ${EXPECTED_FILES})
+        endif()
+        if(STALE_FILES)
+            message(STATUS "[BlockLibMacros] deleting orphaned generated files ${STALE_FILES}")
+            file(REMOVE ${STALE_FILES})
+        endif()
+
         # Merge generated declarations.hpp.in into single declarations.hpp
-        # and raw_calls.hpp.in into a single raw_calls.hpp
-        message(STATUS "[BlockLibMacros] generating ${GEN_DIR}/declarations.hpp from ${GEN_DIR}/*_declarations.hpp.in")
-        file(GLOB DECLARATIONS_FILES "${GEN_DIR}/*_declarations.hpp.in")
+        # and raw_calls.hpp.in into a single raw_calls.hpp.
+        # Sorted so that the merged content depends on the header set alone, not on its order.
+        list(SORT DECLARATIONS_FILES)
+        list(SORT RAW_CALLS_FILES)
+
+        message(STATUS "[BlockLibMacros] generating ${GEN_DIR}/declarations.hpp from the declarations of ${MODULE_NAME_BASE}")
         if(DECLARATIONS_FILES)
             gr_detail_merge_files_into(${GEN_DIR}/declarations.hpp "${DECLARATIONS_FILES}")
         endif()
 
-        message(STATUS "[BlockLibMacros] generating ${GEN_DIR}/raw_calls.hpp from ${GEN_DIR}/*_raw_calls.hpp.in")
-        file(GLOB RAW_CALLS_FILES "${GEN_DIR}/*_raw_calls.hpp.in")
+        message(STATUS "[BlockLibMacros] generating ${GEN_DIR}/raw_calls.hpp from the raw calls of ${MODULE_NAME_BASE}")
         if(RAW_CALLS_FILES)
             gr_detail_merge_files_into(${GEN_DIR}/raw_calls.hpp "${RAW_CALLS_FILES}")
         endif()
