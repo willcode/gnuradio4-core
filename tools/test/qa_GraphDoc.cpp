@@ -122,6 +122,19 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         }
     };
 
+    "a pinned version is interpreted and shown; an entry that pins none says nothing"_test = [] {
+        const auto pinned = graphdoc::read("blocks:\n  - id: qa::Scale\n    name: front\n    version: 2\n");
+        expect(pinned.has_value());
+        expect(eq(pinned->blocks[0].pinnedVersion, std::string("2")));
+        expect(pinned->blocks[0].uninterpretedKeys.empty()) << "`version` is a key the reader interprets";
+        expect(graphdoc::render(*pinned, Format::Markdown, "t").find("version 2 pinned") != std::string::npos);
+
+        const auto unpinned = graphdoc::read("blocks:\n  - id: qa::Scale\n    name: front\n");
+        expect(unpinned.has_value());
+        expect(unpinned->blocks[0].pinnedVersion.empty());
+        expect(graphdoc::render(*unpinned, Format::Markdown, "t").find("pinned") == std::string::npos);
+    };
+
     "exported_parameters on a plain block stays uninterpreted"_test = [] {
         const auto level = graphdoc::read("blocks:\n  - id: qa::Scale\n    exported_parameters:\n      - name: gain\n        type: float32\n");
         expect(level.has_value());

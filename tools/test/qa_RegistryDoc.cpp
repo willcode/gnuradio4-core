@@ -64,11 +64,49 @@ struct DocCombiner : Block<DocCombiner> {
     }
 };
 
+/// two revisions of one key, the older one carrying both status flags
+struct DocFilterV1 : Block<DocFilterV1> {
+    using Description = Doc<"the first revision of the filter">;
+
+    static constexpr gr::block::Status  status{.deprecated = true, .experimental = true};
+    static constexpr gr::block::Version version = 1U;
+
+    PortIn<float>  in;
+    PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(DocFilterV1, in, out);
+
+    explicit DocFilterV1(property_map init = {}) : Block<DocFilterV1>(std::move(init)) {}
+
+    [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
+};
+
+struct DocFilterV2 : Block<DocFilterV2> {
+    using Description = Doc<"the second revision of the filter">;
+
+    static constexpr gr::block::Version version = 2U;
+
+    PortIn<float>  in;
+    PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(DocFilterV2, in, out);
+
+    explicit DocFilterV2(property_map init = {}) : Block<DocFilterV2>(std::move(init)) {}
+
+    [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
+};
+
+constexpr std::string_view kVersionedKey   = "doc::filter";
 constexpr std::string_view kRefusingKey    = "doc::refuses_to_construct";
 constexpr std::string_view kRefusalText    = "this factory refuses to construct anything";
 constexpr std::string_view kMissingPlugins = "/gnuradio4-doctools-directory-that-does-not-exist";
 
 std::unique_ptr<BlockModel> refusingFactory(property_map) { throw gr::exception(std::string(kRefusalText)); }
+
+template<typename TBlock>
+std::unique_ptr<BlockModel> makeDocBlock(property_map params) {
+    return std::make_unique<BlockWrapper<TBlock>>(std::move(params));
+}
 
 /// the loader keeps a pointer to the registry beside it, so the two live and die together here
 struct Fixture {
@@ -87,6 +125,8 @@ struct Fixture {
         std::ignore = registry.insert<DocScale>("=doc::scale");
         std::ignore = registry.insert<DocCombiner>("=doc::combiner");
         std::ignore = registry.insert(kRefusingKey, "", &refusingFactory);
+        std::ignore = registry.insert(kVersionedKey, "", &makeDocBlock<DocFilterV1>, block::versionOf<DocFilterV1>(), block::statusOf<DocFilterV1>());
+        std::ignore = registry.insert(kVersionedKey, "", &makeDocBlock<DocFilterV2>, block::versionOf<DocFilterV2>(), block::statusOf<DocFilterV2>());
     }
 
     [[nodiscard]] std::string document(gr::tools::Format format) {
@@ -170,6 +210,16 @@ const boost::ut::suite<"RegistryDoc"> registryDocTests = [] {
         expect(document.find("dB") != std::string::npos) << "a setting's unit is missing";
         expect(document.find("triangle") != std::string::npos) << "an enum setting's values are missing";
         expect(document.find("float32") != std::string::npos) << "a port data type is missing";
+    };
+
+    "every registered version of a key is reported, with the flags each declares"_test = [] {
+        const std::string document = fixture().document(Format::Markdown);
+        expect(document.find(kVersionedKey) != std::string::npos) << "the versioned key is not listed";
+        expect(document.find("More than one version of this key is registered") != std::string::npos) << "the version table is missing";
+        expect(document.find("deprecated, experimental") != std::string::npos) << "the older revision's flags are missing";
+        expect(document.find("the second revision of the filter") != std::string::npos) << "the newest version is what an unversioned caller gets";
+        expect(document.find("Taken by default") != std::string::npos);
+        expect(document.find("**Status**: deprecated, experimental") == std::string::npos) << "the newest is what the section documents, and it declares no flag";
     };
 
     "a block whose factory throws is listed with its error"_test = [] {
