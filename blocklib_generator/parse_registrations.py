@@ -6,6 +6,7 @@ Run once per header while a block library configures:
     parse_registrations.py --header <header.hpp> --out-dir <generation dir>
                            [--split] [--max-per-tu <n>]
                            [--registry-header <include>] [--registry-instance <expression>]
+                           [--list-outputs <file>]
 
 This is the same generator as GrParseRegistrations.cmake beside it, in Python, and it writes the
 same files with the same contents; the block-library macros run whichever of the two the configure
@@ -262,6 +263,7 @@ def main(argv=None):
     parser.add_argument("--max-per-tu", type=int, default=0)
     parser.add_argument("--registry-header", default=None)
     parser.add_argument("--registry-instance", default="gr::globalBlockRegistry")
+    parser.add_argument("--list-outputs", default=None)
     options = parser.parse_args(argv)
 
     header = options.header
@@ -278,6 +280,28 @@ def main(argv=None):
     generator = os.path.abspath(__file__)
     stem = os.path.basename(header).split(".", 1)[0]
     module = os.path.basename(os.path.normpath(out_dir))
+
+    pending, macro_count = registrations_of(header, read_lines(header))
+
+    if options.list_outputs:
+        # the two module-wide files are written by whichever header of the module is processed
+        # first, so every header of it accounts for them
+        names = ["integrator.cpp", module + ".hpp"]
+        names += [
+            "{}_block_{}.cpp".format(stem, index) for index in range(len(pending))
+        ]
+        for unit_name, _ in registration_units(
+            stem, pending, options.split, options.max_per_tu
+        ):
+            names += [
+                unit_name + ".cpp",
+                unit_name + "_declarations.hpp.in",
+                unit_name + "_raw_calls.hpp.in",
+            ]
+        with open(options.list_outputs, "w", encoding="utf-8", newline="") as listing:
+            listing.write("\n".join(names) + "\n")
+        return 0
+
     os.makedirs(out_dir, exist_ok=True)
 
     print(
@@ -297,7 +321,6 @@ def main(argv=None):
         INTEGRATOR_HEADER_TEMPLATE.replace("@MODULE@", module),
     )
 
-    pending, macro_count = registrations_of(header, read_lines(header))
     file_count = 0
 
     def factory_symbol(index):
