@@ -3,10 +3,12 @@
 
 #include <gnuradio-4.0/meta/simd.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 
@@ -67,12 +69,15 @@ using BlockFactory = std::unique_ptr<BlockModel> (*)(property_map);
  *
  * `name` and `alias` are the strings the typed `insert<TBlock>()` path would have derived for the
  * same block, so a declaration-only registration unit can hand them to `insertBlockFactory()`
- * without naming the type.
+ * without naming the type. `version` and `status` are read in `makeBlockRegistration<TBlock>()`,
+ * where the type is still named, so the unit that carries them names none either.
  */
 struct BlockRegistration {
-    std::string  name;
-    std::string  alias;
-    BlockFactory factory = nullptr;
+    std::string    name;
+    std::string    alias;
+    BlockFactory   factory = nullptr;
+    block::Version version = block::kDefaultVersion;
+    block::Status  status{};
 };
 
 /// The registry alias for a block registered as `alias` with template parameters `aliasParameters`.
@@ -99,9 +104,17 @@ class GeneralRegistry {
         return std::make_unique<TWrapper<TBlock>>(std::move(params));
     }
 
-    struct TTypeHandler {
-        std::string                     alias;
+    /// one registered revision of one key: its factory and what the type declares
+    struct TVersionHandler {
         decltype(this_t::factoryProto)* createFunction = nullptr;
+        block::Status                   status{};
+    };
+
+    /// A key holds every version registered under it, ordered, so the newest is the last entry. Two
+    /// registrations of one key and one version collide, the last winning.
+    struct TTypeHandler {
+        std::string                               alias;
+        std::map<block::Version, TVersionHandler> versions;
     };
 
     // a version belongs to the factory it was recorded with, so an entry a later insertion replaced without recording
@@ -118,6 +131,11 @@ class GeneralRegistry {
     std::map<std::string, TTypeHandler, std::less<>>       _blockTypeHandlers;
     std::size_t                                            _generation = 0UZ;
     std::map<std::string, RecordedAbiVersion, std::less<>> _abiVersions;
+
+    [[nodiscard]] const TTypeHandler* handlerFor(std::string_view blockName) const {
+        const auto it = _blockTypeHandlers.find(blockName);
+        return it == _blockTypeHandlers.cend() ? nullptr : std::addressof(it->second);
+    }
 
 public:
     /// every entry of a registry, as `takeEntries()` moves them out and `restoreEntries()` puts them back
@@ -143,32 +161,37 @@ public:
     /// Adds an entry a generated definition unit already produced: nothing here names the block type. The entry
     /// records `abiVersion`. Its default argument is evaluated at the call site. The entry therefore records the
     /// `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever copy of this function runs.
-    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
-        auto handler = TTypeHandler{.alias = std::string(alias), .createFunction = factory};
+    /// Reports whether it added anything: a key, or a version under an existing key.
+    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, block::Version version = block::kDefaultVersion, block::Status status = {}, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
+        const TVersionHandler entry{.createFunction = factory, .status = status};
 
-        auto resName = _blockTypeHandlers.insert_or_assign(std::string(name), handler);
+        auto addVersion = [&entry, version](TTypeHandler& handler) { return handler.versions.insert_or_assign(version, entry).second; };
+
+        auto [nameIt, nameInserted] = _blockTypeHandlers.try_emplace(std::string(name));
+        const bool nameAdded        = addVersion(nameIt->second) || nameInserted;
+        nameIt->second.alias        = std::string(alias); // the last registration of a key names its alias
         _abiVersions.insert_or_assign(std::string(name), RecordedAbiVersion{.createFunction = factory, .abiVersion = abiVersion});
         ++_generation;
 
-        bool aliasInserted = false;
+        bool aliasAdded = false;
         if (!alias.empty()) {
-            handler.alias.clear();
-            auto resAlias = _blockTypeHandlers.insert_or_assign(std::string(alias), handler);
+            // the alias entry carries no alias of its own: typeName() reads the alias off the key it was asked about
+            auto [aliasIt, aliasInserted] = _blockTypeHandlers.try_emplace(std::string(alias));
+            aliasAdded                    = addVersion(aliasIt->second) || aliasInserted;
             _abiVersions.insert_or_assign(std::string(alias), RecordedAbiVersion{.createFunction = factory, .abiVersion = abiVersion});
-            aliasInserted = resAlias.second;
             ++_generation;
         }
 
-        return resName.second || aliasInserted;
+        return nameAdded || aliasAdded;
     }
 
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
     bool insert(std::string_view alias = "", std::string_view aliasParameters = "", std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
-        return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, abiVersion);
+        return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, block::versionOf<TBlock>(), block::statusOf<TBlock>(), abiVersion);
     }
 #else
-    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) { return false; }
+    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] block::Version version = block::kDefaultVersion, [[maybe_unused]] block::Status status = {}, [[maybe_unused]] std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) { return false; }
 
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
@@ -179,12 +202,64 @@ public:
     }
 #endif
 
+    /// the newest version registered under `blockName`
     [[nodiscard]] std::unique_ptr<TModel> create(std::string_view blockName, property_map blockParams) const {
-        if (auto blockIt = _blockTypeHandlers.find(blockName); blockIt != _blockTypeHandlers.end()) {
-            return blockIt->second.createFunction(std::move(blockParams));
+        const TTypeHandler* handler = handlerFor(blockName);
+        if (handler == nullptr || handler->versions.empty()) {
+            return nullptr;
         }
+        return std::prev(handler->versions.cend())->second.createFunction(std::move(blockParams));
+    }
 
-        return nullptr;
+    /// the one version named, or nothing; the instance records that it was pinned
+    [[nodiscard]] std::unique_ptr<TModel> create(std::string_view blockName, block::Version version, property_map blockParams) const {
+        const TTypeHandler* handler = handlerFor(blockName);
+        if (handler == nullptr) {
+            return nullptr;
+        }
+        const auto versionIt = handler->versions.find(version);
+        if (versionIt == handler->versions.cend()) {
+            return nullptr;
+        }
+        auto created = versionIt->second.createFunction(std::move(blockParams));
+        // only a block model records the pin; a scheduler model has no such state
+        if constexpr (requires { created->setPinnedVersion(version); }) {
+            if (created) {
+                created->setPinnedVersion(version);
+            }
+        }
+        return created;
+    }
+
+    /// every version registered under `blockName`, oldest first; empty for a key that is not registered
+    [[nodiscard]] std::vector<block::Version> versions(std::string_view blockName) const {
+        const TTypeHandler* handler = handlerFor(blockName);
+        if (handler == nullptr) {
+            return {};
+        }
+        auto view = handler->versions | std::views::keys;
+        return {view.begin(), view.end()};
+    }
+
+    [[nodiscard]] std::optional<block::Version> newestVersion(std::string_view blockName) const {
+        const TTypeHandler* handler = handlerFor(blockName);
+        if (handler == nullptr || handler->versions.empty()) {
+            return std::nullopt;
+        }
+        return std::prev(handler->versions.cend())->first;
+    }
+
+    /// what that one registration declares, or nothing when the key or the version is not registered
+    [[nodiscard]] std::optional<block::Status> status(std::string_view blockName, block::Version version) const {
+        const TTypeHandler* handler = handlerFor(blockName);
+        if (handler == nullptr) {
+            return std::nullopt;
+        }
+        const auto versionIt = handler->versions.find(version);
+        if (versionIt == handler->versions.cend()) {
+            return std::nullopt;
+        }
+        return versionIt->second.status;
     }
 
     [[nodiscard]] std::vector<std::string> keys() const {
@@ -202,7 +277,10 @@ public:
     [[nodiscard]] std::optional<std::uint8_t> abiVersion(std::string_view key) const {
         const auto handler  = _blockTypeHandlers.find(key);
         const auto recorded = _abiVersions.find(key);
-        if (handler == _blockTypeHandlers.end() || recorded == _abiVersions.end() || recorded->second.createFunction != handler->second.createFunction) {
+        if (handler == _blockTypeHandlers.end() || recorded == _abiVersions.end()) {
+            return std::nullopt;
+        }
+        if (std::ranges::none_of(handler->second.versions | std::views::values, [&recorded](const TVersionHandler& entry) { return entry.createFunction == recorded->second.createFunction; })) {
             return std::nullopt;
         }
         return recorded->second.abiVersion;
@@ -265,15 +343,17 @@ class SchedulerRegistry : public GeneralRegistry<SchedulerModel, SchedulerWrappe
 template<typename TBlock, meta::fixed_string OverrideName = "">
 [[nodiscard]] BlockRegistration makeBlockRegistration(BlockFactory factory) {
     using namespace vir::literals;
-    constexpr auto name     = refl::class_name<TBlock>;
-    constexpr auto longname = refl::type_name<TBlock>;
+    constexpr auto           name     = refl::class_name<TBlock>;
+    constexpr auto           longname = refl::type_name<TBlock>;
+    constexpr block::Version version  = block::versionOf<TBlock>();
+    constexpr block::Status  status   = block::statusOf<TBlock>();
     if constexpr (OverrideName != "") {
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(OverrideName, {}), factory};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(OverrideName, {}), factory, version, status};
     } else if constexpr (name != longname) {
         constexpr auto tmpl = longname.substring(name.size + 1_cw, longname.size - 2_cw - name.size);
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, tmpl), factory};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, tmpl), factory, version, status};
     } else {
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, {}), factory};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, {}), factory, version, status};
     }
 }
 
