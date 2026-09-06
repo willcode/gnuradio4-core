@@ -28,7 +28,7 @@ namespace gr::tools::graphdoc {
 
 /// The block-entry keys the reader interprets; anything else a file carries is listed as an
 /// uninterpreted key rather than dropped, so a document never hides part of its input.
-inline constexpr std::array<std::string_view, 9> kKnownBlockKeys{"id", "name", "unique_name", "block_category", "meta_information", "parameters", "ctx_parameters", "scheduler", "graph"};
+inline constexpr std::array<std::string_view, 10> kKnownBlockKeys{"id", "version", "name", "unique_name", "block_category", "meta_information", "parameters", "ctx_parameters", "scheduler", "graph"};
 
 /// A composite entry -- the one carrying `graph` -- additionally declares what the definition
 /// exports, which `gr::detail::readRecipeDeclarations` reads from that entry and from no other.
@@ -170,7 +170,8 @@ struct Level {
 };
 
 struct Block {
-    std::string            type; ///< the `id` field; "SUBGRAPH" for a nested graph
+    std::string            type;          ///< the `id` field; "SUBGRAPH" for a nested graph
+    std::string            pinnedVersion; ///< the `version` field as the file spells it; empty when the entry pins none
     std::string            name;
     std::string            uniqueName;
     std::string            schedulerId; ///< empty unless the subgraph is scheduler-managed
@@ -254,6 +255,10 @@ struct Block {
     Block block;
     if (const pmt::Value* id = entryOf(entry, "id"); id != nullptr) {
         block.type = stringOf(*id).value_or(valueText(*id));
+    }
+    // an entry without the key takes the newest registered version, so there is nothing to show for it
+    if (const pmt::Value* version = entryOf(entry, "version"); version != nullptr) {
+        block.pinnedVersion = stringOf(*version).value_or(valueText(*version));
     }
     if (const pmt::Value* uniqueName = entryOf(entry, "unique_name"); uniqueName != nullptr) {
         block.uniqueName = stringOf(*uniqueName).value_or(std::string{});
@@ -777,6 +782,9 @@ inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a n
     if (!block.schedulerId.empty()) {
         add(std::format("scheduler {}", block.schedulerId));
     }
+    if (!block.pinnedVersion.empty()) {
+        add(std::format("version {} pinned", block.pinnedVersion));
+    }
     return kind.empty() ? cell : std::format("{}\n({})", cell, kind);
 }
 
@@ -874,6 +882,9 @@ inline void writeSubgraphs(DocWriter& writer, const Level& level, std::size_t de
 
         std::vector<std::string> facts;
         facts.push_back(writer.labeled("Type", block.type));
+        if (!block.pinnedVersion.empty()) {
+            facts.push_back(writer.labeled("Pinned version", block.pinnedVersion));
+        }
         if (!block.uniqueName.empty()) {
             facts.push_back(writer.labeled("Unique name", block.uniqueName));
         }
