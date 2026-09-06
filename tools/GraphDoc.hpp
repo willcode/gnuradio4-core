@@ -139,6 +139,17 @@ struct ExportedPort {
     std::string exportedName;
 };
 
+/// One entry of a composite's `exported_parameters` list, spelled as `gr::recipe::ParameterDeclaration`
+/// carries it: a name, a dialect type word, an optional default and an optional `doc` line. A
+/// declaration that states no default is required at instantiation, which is what `required` says.
+struct ExportedParameter {
+    std::string name;
+    std::string type;
+    std::string defaultValue; ///< empty unless the declaration states one
+    std::string doc;
+    bool        required = true;
+};
+
 struct Block;
 
 /// one graph level: what a file's top level and a subgraph's `graph` map both look like
@@ -161,6 +172,8 @@ struct Block {
     std::vector<NamedText> contexts;            ///< one entry per `ctx_parameters` context
     std::vector<NamedText> schedulerParameters; ///< the parameters of the scheduler managing a subgraph
     std::vector<NamedText> uninterpretedKeys;   ///< what the entry carries and the tables above do not render
+
+    std::vector<ExportedParameter> exportedParameters; ///< the `exported_parameters` a composite entry declares
 
     std::shared_ptr<Level> interior; ///< the nested graph of a SUBGRAPH entry
 
@@ -248,6 +261,46 @@ inline void sortByName(std::vector<NamedText>& entries) {
 /// The reader's result: a level, or the refusal of a file the importer would refuse as well. The
 /// tool prints the refusal on standard error and exits 1.
 using ReadResult = std::expected<Level, std::string>;
+
+/// The parameters a composite entry declares, in the order the file gives them. A declaration the
+/// loader would refuse -- no name, no type, or an entry that is not a map -- is reported as it
+/// stands rather than dropped or corrected: the document says what the file says, and the
+/// instantiation is where a malformed declaration is refused with a reason.
+[[nodiscard]] inline std::vector<ExportedParameter> exportedParametersOf(const property_map& entry) {
+    std::vector<ExportedParameter> parameters;
+
+    const pmt::Value* declarations = entryOf(entry, "exported_parameters");
+    if (declarations == nullptr) {
+        return parameters;
+    }
+    const Tensor<pmt::Value>* list = listOf(*declarations);
+    if (list == nullptr) {
+        return parameters;
+    }
+
+    for (const pmt::Value& declarationValue : *list) {
+        const property_map* declaration = mapOf(declarationValue);
+        if (declaration == nullptr) {
+            continue;
+        }
+        ExportedParameter parameter;
+        if (const pmt::Value* name = entryOf(*declaration, "name"); name != nullptr) {
+            parameter.name = stringOf(*name).value_or(valueText(*name));
+        }
+        if (const pmt::Value* type = entryOf(*declaration, "type"); type != nullptr) {
+            parameter.type = stringOf(*type).value_or(valueText(*type));
+        }
+        if (const pmt::Value* defaultValue = entryOf(*declaration, "default"); defaultValue != nullptr) {
+            parameter.defaultValue = valueText(*defaultValue);
+            parameter.required     = false;
+        }
+        if (const pmt::Value* doc = entryOf(*declaration, "doc"); doc != nullptr) {
+            parameter.doc = stringOf(*doc).value_or(valueText(*doc));
+        }
+        parameters.push_back(std::move(parameter));
+    }
+    return parameters;
+}
 
 /// Where a level sits in a document: the top level, or the `graph` map of a SUBGRAPH entry. The
 /// importer reads `exported_ports` in the second and nowhere else. The reader takes the place as an
@@ -434,6 +487,13 @@ enum class LevelKind { Root, Subgraph };
         }
         block.interior = std::make_shared<Level>(std::move(*interior));
         read.add("graph");
+
+        // a composite entry -- the one carrying `graph` -- declares what a definition exports, and the
+        // loader reads the declarations from that entry and from no other
+        block.exportedParameters = exportedParametersOf(entry);
+        if (entryOf(entry, "exported_parameters") != nullptr) {
+            read.add("exported_parameters");
+        }
     }
 
     block.uninterpretedKeys = unreadKeysOf(entry, read);
@@ -1073,6 +1133,19 @@ inline void writeSubgraphs(DocWriter& writer, const Level& level, std::size_t de
         if (!block.interior->metadata.empty()) {
             writer.heading(depth + 3UZ, "Definition metadata");
             writeNamedTable(writer, "Key", "Value", block.interior->metadata);
+        }
+
+        // the declarations come before the ports because they are what an instantiation must supply:
+        // a composite's interior is derived from them before it exists
+        if (!block.exportedParameters.empty()) {
+            writer.heading(depth + 3UZ, "Exported parameters");
+            std::vector<std::vector<std::string>> rows;
+            rows.reserve(block.exportedParameters.size());
+            for (const ExportedParameter& parameter : block.exportedParameters) {
+                rows.push_back({parameter.name, parameter.type, parameter.required ? "required" : parameter.defaultValue, parameter.doc});
+            }
+            const std::array<std::string_view, 4> headers{"Name", "Type", "Default", "Description"};
+            writer.table(headers, rows);
         }
 
         if (!block.interior->exportedPorts.empty()) {
