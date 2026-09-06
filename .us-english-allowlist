@@ -1,0 +1,28 @@
+# Spellings this tree does not change, for tools/us-english-scan.py.
+#
+# Everything we have written since upstream/main is US English. Text we inherited is not
+# retrofitted, and a name upstream owns is spelled the way upstream spells it, in code and in the
+# prose that names it. Each line is a path glob, or a path glob and the word it exempts.
+#
+# This file names British spellings, so it exempts itself.
+.us-english-allowlist
+
+# gr::lifecycle::State::INITIALISED is upstream's enumerator. Comments, messages and one test name
+# quote it.
+core/include/gnuradio-4.0/Scheduler.hpp:INITIALISED
+core/include/gnuradio-4.0/SchedulerModel.hpp:INITIALISED
+core/test/qa_SchedulerLifecycle.cpp:INITIALISED
+
+# Block::finaliseIO() is upstream's member function; a message and a comment name it.
+core/include/gnuradio-4.0/Block.hpp:finalise
+core/test/qa_SchedulerLifecycle.cpp:finalise
+
+# Upstream's own comment, moved only by a clang-format alignment shift.
+core/include/gnuradio-4.0/CircularBuffer.hpp:optimisations
+
+# A cross-reference to upstream's own heading, "## Settings synchronisation".
+docs/USER_API_Tag_mechanics.md:synchronisation
+
+# waitUntilInitialised is upstream's own member function.
+core/include/gnuradio-4.0/thread/thread_pool.hpp:Initialised
+core/test/qa_thread_pool.cpp:Initialised
