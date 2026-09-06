@@ -64,6 +64,13 @@ flowchart LR
 - **Blocks**: 2
 - **Connections**: 1
 
+### Exported parameters
+
+| Name | Type | Default | Description |
+| --- | --- | --- | --- |
+| front_gain | float32 | 2.000000 | the scale the front end applies before the inner chain |
+| channel_rate | float64 | required | input sample rate in hertz; required |
+
 ### Exported ports
 
 | Exported as | Direction | Inner block | Inner port |
