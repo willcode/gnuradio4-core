@@ -49,6 +49,12 @@ flowchart LR
 | --- | --- |
 | graph_version | 1 |
 
+## Other block keys
+
+| Block | Key | Value |
+| --- | --- | --- |
+| sink | layout_hint | "bottom-right" |
+
 <a id="subgraph-front-end"></a>
 
 ## Subgraph: front_end
@@ -57,6 +63,13 @@ flowchart LR
 - **Scheduler**: none, the parent schedules its blocks
 - **Blocks**: 2
 - **Connections**: 1
+
+### Exported parameters
+
+| Name | Type | Default | Description |
+| --- | --- | --- | --- |
+| front_gain | float32 | 2.000000 | the scale the front end applies before the inner chain |
+| channel_rate | float64 | required | input sample rate in hertz; required |
 
 ### Exported ports
 
