@@ -2,6 +2,7 @@
 #define GNURADIO_GRAPH_YAML_IMPORTER_H
 
 #include <array>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <optional>
@@ -145,6 +146,34 @@ struct LoadedBlocks {
         return std::unexpected(gr::Error(std::format("Unknown block '{}'", key)));
     }
 };
+
+/// The fifth element of a connection is the edge's buffer size in samples: a whole number, at
+/// least one. A floating value -- what a recipe expression produces as soon as it divides --
+/// states a minimum capacity rather than a quantity, so it rises to the next whole sample
+/// instead of refusing the fraction a scalar setting would refuse; the framework then rounds
+/// the request up to a power of two on its own. Every other spelling is refused by name: it
+/// used to become the unset marker, and an edge silently taking the default size while the
+/// document says otherwise is the failure this closes.
+[[nodiscard]] inline std::size_t edgeBufferSizeOf(const pmt::Value& element) {
+    if (element.is_integral()) {
+        const auto count = pmt::convert_safely<std::size_t>(element);
+        if (!count.has_value()) {
+            throw gr::exception(std::format("connection buffer size {} is not a usable sample count: {}", element, count.error()));
+        }
+        if (*count == 0UZ) {
+            throw gr::exception("connection buffer size must be at least one sample, not 0");
+        }
+        return *count;
+    }
+    if (element.is_floating_point()) {
+        const auto wanted = pmt::convert_safely<double>(element);
+        if (!wanted.has_value() || !std::isfinite(*wanted) || *wanted <= 0.0 || *wanted >= static_cast<double>(std::numeric_limits<std::size_t>::max())) {
+            throw gr::exception(std::format("connection buffer size {} is not a positive, finite sample count", element));
+        }
+        return static_cast<std::size_t>(std::ceil(*wanted));
+    }
+    throw gr::exception(std::format("connection buffer size {} is neither a number nor an expression over the recipe's parameters", element));
+}
 
 inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGraph, gr::property_map yaml, std::source_location location = std::source_location::current()) {
     LoadedBlocks createdBlocks;
@@ -405,16 +434,7 @@ inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGrap
                 throw gr::exception(std::format("connection failed: {}", r.error().message));
             }
         } else {
-            std::size_t minBufferSize{};
-            pmt::ValueVisitor([&minBufferSize]<typename TValue>(const TValue& value) {
-                if constexpr (std::is_same_v<TValue, std::size_t>) {
-                    minBufferSize = value;
-                } else if constexpr (std::is_integral_v<TValue>) {
-                    minBufferSize = static_cast<std::size_t>(value);
-                } else {
-                    minBufferSize = std::numeric_limits<std::size_t>::max();
-                }
-            }).visit(connection[4]);
+            const std::size_t minBufferSize = edgeBufferSizeOf(connection[4]);
 
             if (auto r = resultGraph.connect(src.block, src.port_definition, dst.block, dst.port_definition, EdgeParameters{.minBufferSize = minBufferSize, .weight = graph::defaultWeight, .name = graph::defaultEdgeName}, location); !r) {
                 throw gr::exception(std::format("connection failed: {}", r.error().message));
@@ -503,11 +523,84 @@ inline std::string saveGrc(PluginLoader& loader, const gr::Graph& rootGraph) { r
 
 namespace detail {
 
+/// A sequence-valued parameter derives element by element: every "=expr" element is evaluated
+/// and replaces itself in the document, and the sequence stays type-erased, so the settings
+/// conversion gives it the member's own element type by the rule a literal sequence follows.
+/// The returned program is empty unless at least one element really was an expression.
+[[nodiscard]] inline std::expected<std::vector<recipe::SequenceElement>, gr::Error> evaluateSequenceElements(Tensor<pmt::Value>& sequence, std::span<const recipe::ParameterDeclaration> declarations, std::span<const pmt::Value> values) {
+    std::vector<recipe::SequenceElement> program;
+    program.reserve(sequence.size());
+    bool derived = false;
+    for (std::size_t index = 0UZ; index < sequence.size(); ++index) {
+        pmt::Value& element = sequence[index];
+        const auto* text    = element.get_if<std::pmr::string>();
+        if (text != nullptr) {
+            const std::string_view textView(*text);
+            const auto             sentinel = recipe::detail::sentinelOf(textView);
+            if (sentinel == recipe::detail::SentinelKind::escapedLiteral) {
+                element = std::pmr::string(textView.substr(1UZ));
+            } else if (sentinel == recipe::detail::SentinelKind::expression) {
+                // an element is a number, so it takes the arithmetic path only: a parameter of a
+                // substituted type refuses here by the grammar's own message
+                auto expression = recipe::parseExpression(textView.substr(1UZ), declarations);
+                if (!expression.has_value()) {
+                    return std::unexpected(expression.error());
+                }
+                auto result = recipe::evaluate(*expression, values);
+                if (!result.has_value()) {
+                    return std::unexpected(result.error());
+                }
+                element = std::move(*result);
+                program.push_back({.expression = std::move(*expression), .literal = {}});
+                derived = true;
+                continue;
+            }
+        }
+        program.push_back({.expression = std::nullopt, .literal = element});
+    }
+    if (!derived) {
+        return std::vector<recipe::SequenceElement>{};
+    }
+    return program;
+}
+
+/// The fifth element of a connection is the edge's buffer size, and spelled "=expr" it derives
+/// like any other value. It joins no live binding: an edge is built once when the graph loads,
+/// so a later parameter change re-sizes nothing.
+[[nodiscard]] inline std::expected<void, gr::Error> evaluateConnectionBufferSizes(Tensor<pmt::Value>& connections, std::span<const recipe::ParameterDeclaration> declarations, std::span<const pmt::Value> values) {
+    for (std::size_t index = 0UZ; index < connections.size(); ++index) {
+        auto* connection = connections[index].get_if<Tensor<pmt::Value>>();
+        if (connection == nullptr || connection->size() < 5UZ) {
+            continue;
+        }
+        pmt::Value& element = (*connection)[4UZ];
+        const auto* text    = element.get_if<std::pmr::string>();
+        if (text == nullptr) {
+            continue;
+        }
+        const std::string_view textView(*text);
+        if (recipe::detail::sentinelOf(textView) != recipe::detail::SentinelKind::expression) {
+            continue;
+        }
+        auto expression = recipe::parseExpression(textView.substr(1UZ), declarations);
+        if (!expression.has_value()) {
+            return std::unexpected(expression.error());
+        }
+        auto result = recipe::evaluate(*expression, values);
+        if (!result.has_value()) {
+            return std::unexpected(result.error());
+        }
+        element = std::move(*result);
+    }
+    return {};
+}
+
 /// walks block entries at any nesting depth: a parameters value spelled "=expr" is evaluated
 /// against the recipe's declarations and replaced with the result; "\=text" unescapes to the
-/// literal "=text". Below the composite's own level each evaluated expression is also
-/// collected as a live binding, addressed by the block-name path from the interior downward,
-/// so a later parameter change can re-evaluate and re-stage it.
+/// literal "=text". A sequence-valued parameter derives element by element and a connection's
+/// buffer size derives the same way. Below the composite's own level each evaluated expression
+/// is also collected as a live binding, addressed by the block-name path from the interior
+/// downward, so a later parameter change can re-evaluate and re-stage it.
 // GCC's -Wnull-dereference mis-traces the inlined std::string copies through push_back here
 // (the sources are guarded non-null); same known false positive qa_MemoryAllocators suppresses
 #pragma GCC diagnostic push
@@ -528,19 +621,32 @@ inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Valu
                     }
                 }
                 for (auto& [key, value] : *parameters) {
+                    if (auto* sequence = value.get_if<Tensor<pmt::Value>>(); sequence != nullptr) {
+                        auto program = evaluateSequenceElements(*sequence, declarations, values);
+                        if (!program.has_value()) {
+                            return std::unexpected(program.error());
+                        }
+                        if (!program->empty() && insideComposite) {
+                            if (blockName.empty()) {
+                                return std::unexpected(gr::Error(std::format("recipe_expression_parse: the block holding a derived '{}' sequence needs a name so the elements can re-evaluate live", recipe::detail::printableEcho(key))));
+                            }
+                            std::vector<std::string> path = namePath;
+                            path.push_back(blockName);
+                            outBindings.push_back({.namePath = std::move(path), .settingKey = std::string(key), .expression = {}, .substituted = std::nullopt, .sequence = std::move(*program)});
+                        }
+                        continue;
+                    }
                     const auto* text = value.get_if<std::pmr::string>();
                     if (text == nullptr) {
                         continue;
                     }
                     const std::string_view textView(*text);
-                    // a leading run of backslashes before '=' loses exactly one backslash, so
-                    // every literal spelling stays expressible: "\=x" -> "=x", "\\=x" -> "\=x"
-                    const std::size_t backslashes = textView.find_first_not_of('\\');
-                    if (backslashes != std::string_view::npos && backslashes > 0 && textView[backslashes] == '=') {
+                    const auto             sentinel = recipe::detail::sentinelOf(textView);
+                    if (sentinel == recipe::detail::SentinelKind::escapedLiteral) {
                         value = std::pmr::string(textView.substr(1));
                         continue;
                     }
-                    if (!textView.starts_with("=")) {
+                    if (sentinel != recipe::detail::SentinelKind::expression) {
                         continue;
                     }
                     // `=name` naming a string, boolean or vector parameter hands that value through unchanged. Those
@@ -602,6 +708,13 @@ inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Valu
                         }
                         if (!walked.has_value()) {
                             return walked;
+                        }
+                    }
+                }
+                if (const auto connectionsIt = graphMap->find("connections"); connectionsIt != graphMap->end()) {
+                    if (auto* connections = connectionsIt->second.get_if<Tensor<pmt::Value>>(); connections != nullptr) {
+                        if (auto sized = evaluateConnectionBufferSizes(*connections, declarations, values); !sized.has_value()) {
+                            return sized;
                         }
                     }
                 }
