@@ -350,6 +350,27 @@ const boost::ut::suite<"staged type refusals"> stagedRefusalTests = [] {
         expect(!gr::settings::extractStagedValue<gr::Size_t>(wrong, "input_chunk_size").has_value()) << "scalar mismatch reports";
         expect(!gr::settings::extractStagedValue<std::vector<float>>(wrong, "taps").has_value()) << "tensor mismatch reports";
     };
+
+    // an untagged YAML sequence, and a sequence a recipe derived element by element, arrive as a
+    // tensor of type-erased values rather than of the member's own element type
+    "a type-erased value sequence converts element by element"_test = [] {
+        const std::vector<pmt::Value> mixed{pmt::Value(0.5), pmt::Value(std::int64_t{2}), pmt::Value(0.25f)};
+        const auto                    taps = gr::settings::convertParameter<std::vector<float>>("taps", pmt::Value(gr::Tensor<pmt::Value>(mixed.begin(), mixed.end())));
+        expect(taps.has_value()) << (taps.has_value() ? std::string{} : taps.error());
+        if (taps.has_value()) {
+            expect(eq(taps->size(), 3UZ));
+            expect(eq((*taps)[0], 0.5f));
+            expect(eq((*taps)[1], 2.0f));
+            expect(eq((*taps)[2], 0.25f));
+        }
+
+        const std::vector<pmt::Value> withText{pmt::Value(0.5), pmt::Value(std::pmr::string("two"))};
+        const auto                    refused = gr::settings::convertParameter<std::vector<float>>("taps", pmt::Value(gr::Tensor<pmt::Value>(withText.begin(), withText.end())));
+        expect(!refused.has_value()) << "an element the scalar rule would refuse refuses here too";
+        if (!refused.has_value()) {
+            expect(refused.error().contains("taps")) << refused.error();
+        }
+    };
 };
 
 [[nodiscard]] Decimator makeDecimator() {
