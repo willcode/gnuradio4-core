@@ -227,7 +227,8 @@ if(GR_ENABLE_BLOCK_REGISTRY AND INTERNAL_ENABLE_BLOCK_PLUGINS)
     abi_probe_plugin
     abi_probe_plugin_v1
     abi_probe_plugin_foreign_scheduler
-    opaque_stage_library)
+    opaque_stage_library
+    versioned_plugin)
 
   add_app_test(qa_PluginBlockLibrary)
   add_dependencies(
