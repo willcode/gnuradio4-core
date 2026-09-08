@@ -29,9 +29,9 @@ namespace gr::recipe {
  * into these types, and generated typed headers compile the same bindings statically — so a
  * composite behaves identically however it was made. The grammar is deliberately small:
  * numbers, parameter references, the named constants `pi` and `tau_circle` (2·pi), the four
- * arithmetic operators, unary sign and parentheses. No functions, no chaining: an expression
- * reads exported parameters and constants only, so evaluation is one pass by construction.
- * docs/specs/spec-recipe-parameters.md is the contract.
+ * arithmetic operators, unary sign, parentheses, and one function, `clamp(x, low, high)`. No
+ * chaining: an expression reads exported parameters and constants only, so evaluation is one
+ * pass by construction. docs/specs/spec-recipe-parameters.md is the contract.
  */
 
 /// One exported parameter of a recipe. A declaration without a default is REQUIRED at
@@ -137,7 +137,7 @@ namespace detail {
 /// declaration list the expression was parsed against, so evaluation needs only the value
 /// vector aligned with those declarations.
 struct Expression {
-    enum class OpKind : std::uint8_t { pushNumber, pushInteger, pushParameter, add, subtract, multiply, divide, negate };
+    enum class OpKind : std::uint8_t { pushNumber, pushInteger, pushParameter, add, subtract, multiply, divide, negate, clamp };
     struct Op {
         OpKind       kind;
         double       number{};
@@ -335,6 +335,9 @@ struct Parser {
             ++position;
         }
         const std::string_view name = text.substr(start, position - start);
+        if (peek() == '(') {
+            return parseCall(name);
+        }
         if (name == "pi") {
             allOperandsIntegral = false;
             out->ops.push_back({.kind = Expression::OpKind::pushNumber, .number = std::numbers::pi});
@@ -361,6 +364,37 @@ struct Parser {
             declared += declared.empty() ? declaration.name : (", " + declaration.name);
         }
         return std::unexpected(gr::Error(std::format("recipe_unknown_identifier: '{}' in '{}' — declared parameters: [{}]", printableEcho(name), printableEcho(text), printableEcho(declared))));
+    }
+
+    /// An identifier followed by '(' is a call. `clamp(x, low, high)` is the whole function
+    /// vocabulary: the arity is checked here, since a call is the only place the grammar takes
+    /// more than one operand, and the bounds' order is checked at evaluation, where their
+    /// values are known.
+    [[nodiscard]] std::expected<void, gr::Error> parseCall(std::string_view name) {
+        if (name != "clamp") {
+            return fail(std::format("unknown function '{}' — the dialect declares clamp(x, low, high)", printableEcho(name)));
+        }
+        ++position; // the '(' that peek() found
+        std::size_t arguments = 0UZ;
+        while (true) {
+            if (auto argument = parseExpr(); !argument.has_value()) {
+                return argument;
+            }
+            ++arguments;
+            if (peek() != ',') {
+                break;
+            }
+            ++position;
+        }
+        if (peek() != ')') {
+            return fail("expected ')'");
+        }
+        ++position;
+        if (arguments != 3UZ) {
+            return fail(std::format("clamp takes 3 arguments (value, low, high), not {}", arguments));
+        }
+        out->ops.push_back({.kind = Expression::OpKind::clamp});
+        return {};
     }
 };
 
@@ -408,6 +442,17 @@ struct Parser {
                 }
                 stack.back() = -stack.back();
                 break;
+            case Expression::OpKind::clamp: {
+                const std::int64_t high = stack.back();
+                stack.pop_back();
+                const std::int64_t low = stack.back();
+                stack.pop_back();
+                if (low > high) {
+                    return std::unexpected(gr::Error(std::format("recipe_expression_domain: clamp bounds {} and {} are not ordered low, high in '{}'", low, high, detail::printableEcho(expression.source))));
+                }
+                stack.back() = std::clamp(stack.back(), low, high);
+                break;
+            }
             default: {
                 const std::int64_t right = stack.back();
                 stack.pop_back();
@@ -447,6 +492,19 @@ struct Parser {
             break;
         }
         case Expression::OpKind::negate: stack.back() = -stack.back(); break;
+        case Expression::OpKind::clamp: {
+            const double high = stack.back();
+            stack.pop_back();
+            const double low = stack.back();
+            stack.pop_back();
+            // spelled against `<=` so a bound that arrived as a NaN is refused here rather than
+            // passing the value through untouched
+            if (!(low <= high)) {
+                return std::unexpected(gr::Error(std::format("recipe_expression_domain: clamp bounds {} and {} are not ordered low, high in '{}'", low, high, detail::printableEcho(expression.source))));
+            }
+            stack.back() = std::clamp(stack.back(), low, high);
+            break;
+        }
         default: {
             const double right = stack.back();
             stack.pop_back();
@@ -513,7 +571,8 @@ namespace detail {
 } // namespace detail
 
 [[nodiscard]] inline std::expected<void, gr::Error> validateDeclarations(std::span<const ParameterDeclaration> declarations) {
-    static constexpr std::array<std::string_view, 8> kReservedNames{"name", "compute_domain", "disconnect_on_done", "enabled", "ui_constraints", "meta_information", "pi", "tau_circle"};
+    // a parameter may not shadow a word the grammar already spells: the constants, and the one function
+    static constexpr std::array<std::string_view, 9> kReservedNames{"name", "compute_domain", "disconnect_on_done", "enabled", "ui_constraints", "meta_information", "pi", "tau_circle", "clamp"};
     for (std::size_t index = 0; index < declarations.size(); ++index) {
         const auto& declaration = declarations[index];
         if (!detail::knownTypeWord(declaration.type)) {
