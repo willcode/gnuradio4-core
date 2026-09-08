@@ -683,14 +683,32 @@ struct Binding {
     return evaluate(binding.expression, values);
 }
 
-/// What a live composite carries: its declarations, its bindings, and the current parameter
-/// values. A staged change to an exported parameter re-evaluates against a TRIAL copy of the
-/// values and commits only when every binding evaluated — a refusal rejects the change whole
-/// and the running values stand.
+/// Whether two derived values are the same value. `pmt::Value` compares a Tensor by identity,
+/// so a sequence — rebuilt whole on every evaluation — is compared element by element here;
+/// every other alternative defers to the value's own equality. Where equality cannot tell, the
+/// answer is "differs", so the engine restages a key it need not have rather than skipping one
+/// it owed.
+[[nodiscard]] inline bool derivedValuesAgree(const pmt::Value& left, const pmt::Value& right) {
+    const auto* leftElements  = left.get_if<Tensor<pmt::Value>>();
+    const auto* rightElements = right.get_if<Tensor<pmt::Value>>();
+    if (leftElements != nullptr && rightElements != nullptr) {
+        return std::ranges::equal(*leftElements, *rightElements);
+    }
+    return left == right;
+}
+
+/// What a live composite carries: its declarations, its bindings, the current parameter values,
+/// and what was last staged for each binding. A staged change to an exported parameter
+/// re-evaluates against a TRIAL copy of the values and commits only when every binding
+/// evaluated — a refusal rejects the change whole and the running values stand.
 struct AttachedBindings {
     std::vector<ParameterDeclaration> declarations;
     std::vector<Binding>              bindings;
     std::vector<pmt::Value>           values;
+    /// aligned with `bindings`: the value the engine last staged for each, so a change stages
+    /// only the keys that moved. Empty before the first application, which therefore stages
+    /// every bound key.
+    std::vector<std::optional<pmt::Value>> lastStaged;
 };
 
 } // namespace gr::recipe

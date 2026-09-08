@@ -340,7 +340,10 @@ public:
 
     /// Applies exported-parameter changes: trial-evaluates every binding against the updated
     /// values, stages the derived settings onto the interior blocks, and commits the values.
-    /// A refusal anywhere rejects the change whole; the running values stand.
+    /// A refusal anywhere rejects the change whole; the running values stand. Only the bindings
+    /// whose derived value moved are staged, so an interior block's settingsChanged names the
+    /// keys that actually changed and not every key the recipe binds to it; a block whose
+    /// bindings all held their value is not staged at all.
     [[nodiscard]] std::expected<void, Error> applyRecipeParameters(const property_map& changed) {
         if (_recipeBindings == nullptr) {
             return std::unexpected(Error("no recipe bindings attached"));
@@ -365,14 +368,25 @@ public:
             property_map derived;
         };
         std::vector<StagedTarget> staged;
-        for (const auto& binding : attached.bindings) {
-            auto result = recipe::bindingValue(binding, std::span<const pmt::Value>(trial));
+        if (attached.lastStaged.size() != attached.bindings.size()) {
+            attached.lastStaged.assign(attached.bindings.size(), std::nullopt);
+        }
+        std::vector<std::optional<pmt::Value>> derivedNow;
+        derivedNow.reserve(attached.bindings.size());
+        for (std::size_t index = 0; index < attached.bindings.size(); ++index) {
+            const recipe::Binding& binding = attached.bindings[index];
+            auto                   result  = recipe::bindingValue(binding, std::span<const pmt::Value>(trial));
             if (!result.has_value()) {
                 return std::unexpected(result.error());
             }
             auto target = resolveRecipeTarget(binding.namePath);
             if (!target.has_value()) {
                 return std::unexpected(target.error());
+            }
+            derivedNow.push_back(*result);
+            const std::optional<pmt::Value>& last = attached.lastStaged[index];
+            if (last.has_value() && recipe::derivedValuesAgree(*last, *result)) {
+                continue;
             }
             auto existing = std::ranges::find_if(staged, [&](const StagedTarget& entry) { return entry.block == *target; });
             if (existing == staged.end()) {
@@ -386,7 +400,10 @@ public:
                 return std::unexpected(Error("recipe_expression_conversion: an interior block refused a derived staged setting"));
             }
         }
-        attached.values = std::move(trial);
+        // recorded only once every target accepted: a refusal part-way leaves the record on the
+        // last committed values, so the next change restages what this one may have applied
+        attached.lastStaged = std::move(derivedNow);
+        attached.values     = std::move(trial);
         return {};
     }
 
