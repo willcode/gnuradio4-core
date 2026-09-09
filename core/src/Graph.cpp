@@ -14,34 +14,68 @@ Graph::Graph(property_map settings) : gr::Block<Graph>(std::move(settings)), _pl
 }
 
 [[maybe_unused]] std::shared_ptr<BlockModel> const& Graph::emplaceBlock(std::string_view type, property_map initialSettings) {
+    const std::expected<std::shared_ptr<BlockModel>, Error> emplaced = emplaceBlock(type, std::nullopt, std::move(initialSettings));
+    if (!emplaced.has_value()) {
+        throw gr::exception(emplaced.error().message);
+    }
+    return _blocks.back(); // addBlock() appended it, and the graph's own entry is what a caller binds to
+}
+
+std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::string_view type, std::optional<block::Version> pinnedVersion, property_map initialSettings) {
+    if (pinnedVersion.has_value()) {
+        std::expected<std::shared_ptr<BlockModel>, Error> pinned = _pluginLoader->instantiatePinnedOrError(type, *pinnedVersion, initialSettings);
+        if (!pinned.has_value()) {
+            return std::unexpected(pinned.error());
+        }
+        if (*pinned == nullptr) {
+            return std::unexpected(Error(std::format("Cannot create block '{}'", type)));
+        }
+        return addBlock(std::move(*pinned));
+    }
+
     if (type.starts_with("gr::Graph")) {
         // the nested graph inherits this graph's plugin loader, so blocks resolvable here stay
         // resolvable inside the subgraph
         auto subGraphModel = std::unique_ptr<BlockModel>(std::make_unique<GraphWrapper<Graph>>(Graph(*_pluginLoader, std::move(initialSettings))).release());
         return addBlock(std::move(subGraphModel));
     } else if (std::shared_ptr<BlockModel> block_load = _pluginLoader->instantiate(type, initialSettings); block_load) {
-        const std::shared_ptr<BlockModel>& newBlock = addBlock(block_load);
-        return newBlock;
+        return addBlock(block_load);
     } else if (std::shared_ptr<SchedulerModel> scheduler_load = _pluginLoader->instantiateScheduler(type, initialSettings); scheduler_load) {
-        const std::shared_ptr<BlockModel>& newBlock = addBlock(SchedulerModel::asBlockModelPtr(scheduler_load));
-        return newBlock;
+        return addBlock(SchedulerModel::asBlockModelPtr(scheduler_load));
     }
-    throw gr::exception(std::format("Cannot create block '{}'", type));
+    return std::unexpected(Error(std::format("Cannot create block '{}'", type)));
 }
 
 std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>> Graph::replaceBlock(std::string_view uniqueName, std::string_view type, const property_map& properties) {
+    std::expected<std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>>, Error> replaced = replaceBlock(uniqueName, type, std::nullopt, properties);
+    if (!replaced.has_value()) {
+        throw gr::exception(replaced.error().message);
+    }
+    return std::move(*replaced);
+}
+
+std::expected<std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>>, Error> Graph::replaceBlock(std::string_view uniqueName, std::string_view type, std::optional<block::Version> pinnedVersion, const property_map& properties) {
     auto found = std::ranges::find_if(_blocks, [&uniqueName](const auto& block) { return block->uniqueName() == uniqueName; });
     if (found == _blocks.end()) {
-        throw gr::exception(std::format("Block {} was not found in {}", uniqueName, this->unique_name));
+        return std::unexpected(Error(std::format("Block {} was not found in {}", uniqueName, this->unique_name)));
     }
     if (std::ranges::any_of(_exportedPorts, [&uniqueName](const ExportedPort& exported) { return exported.blockName == uniqueName; })) {
         throw gr::exception(std::format("Block {} in {} exports a port and cannot be replaced", uniqueName, this->unique_name));
     }
     const std::shared_ptr<BlockModel> replaced = *found;
 
-    std::shared_ptr<BlockModel> newBlock = _pluginLoader->instantiate(type, properties);
+    std::shared_ptr<BlockModel> newBlock;
+    if (pinnedVersion.has_value()) {
+        std::expected<std::shared_ptr<BlockModel>, Error> pinned = _pluginLoader->instantiatePinnedOrError(type, *pinnedVersion, properties);
+        if (!pinned.has_value()) {
+            return std::unexpected(pinned.error());
+        }
+        newBlock = std::move(*pinned);
+    } else {
+        newBlock = _pluginLoader->instantiate(type, properties);
+    }
     if (!newBlock) {
-        throw gr::exception(std::format("Can not create block {}", type));
+        return std::unexpected(Error(std::format("Can not create block {}", type)));
     }
     newBlock->init(_progress, this->compute_domain); // a setting can size a port collection
 
@@ -105,7 +139,7 @@ std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>> Graph::repla
     *found = newBlock;
     sizeUnconnectedOptionalOutputs(*newBlock);
 
-    return {replaced, newBlock};
+    return std::pair{replaced, newBlock};
 }
 
 std::optional<Message> Graph::propertyCallbackRegistryBlockTypes([[maybe_unused]] std::string_view propertyName, Message message) {

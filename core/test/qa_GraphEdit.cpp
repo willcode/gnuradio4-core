@@ -11,11 +11,13 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <memory_resource>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -183,6 +185,37 @@ struct LoaderCanary : gr::Block<LoaderCanary> {
 
     [[nodiscard]] constexpr float processOne() const noexcept { return 0.0f; }
 };
+
+// the older revision of a block registered twice, so a message can pin one of the two
+struct VersionedV1 : gr::Block<VersionedV1> {
+    static constexpr gr::block::Status  status{.deprecated = true};
+    static constexpr gr::block::Version version = 1U;
+
+    gr::PortIn<float>  in;
+    gr::PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(VersionedV1, in, out);
+
+    [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
+};
+
+struct VersionedV2 : gr::Block<VersionedV2> {
+    static constexpr gr::block::Version version = 2U;
+
+    gr::PortIn<float>  in;
+    gr::PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(VersionedV2, in, out);
+
+    [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
+};
+
+constexpr std::string_view kVersionedType = "qa_edit::Versioned";
+
+template<typename TBlock>
+bool insertVersioned(gr::BlockRegistry& registry) {
+    return registry.insert(gr::meta::type_name<TBlock>(), kVersionedType, [](gr::property_map params) -> std::unique_ptr<gr::BlockModel> { return std::make_unique<gr::BlockWrapper<TBlock>>(std::move(params)); }, gr::block::versionOf<TBlock>(), gr::block::statusOf<TBlock>());
+}
 
 using TestScheduler = gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::multiThreaded>;
 
@@ -631,6 +664,8 @@ void registerTestBlocks() {
         std::ignore = gr::globalBlockRegistry().insert<ConstructionCounter>();
         std::ignore = gr::globalBlockRegistry().insert<CountedTunable>();
         std::ignore = gr::globalBlockRegistry().insert<RacingStage>();
+        std::ignore = insertVersioned<VersionedV1>(gr::globalBlockRegistry());
+        std::ignore = insertVersioned<VersionedV2>(gr::globalBlockRegistry());
         return true;
     }();
     std::ignore = registered;
@@ -638,6 +673,16 @@ void registerTestBlocks() {
 
 // formats a port as the edge formatter prints it; the '/' keeps one block name from matching inside a longer one
 [[nodiscard]] std::string portOf(std::string_view blockName, std::string_view port) { return std::format("{}/{}", blockName, port); }
+
+[[nodiscard]] std::vector<const gr::BlockModel*> blocksOfType(const gr::Graph& graph, std::string_view typeFragment) {
+    std::vector<const gr::BlockModel*> found;
+    for (const auto& block : graph.blocks()) {
+        if (block->typeName().find(typeFragment) != std::string_view::npos) {
+            found.push_back(block.get());
+        }
+    }
+    return found;
+}
 
 [[nodiscard]] bool awaitReply(gr::MsgPortIn& port, std::string_view endpoint) {
     for (std::size_t i = 0UZ; i < 3000UZ; ++i) {
@@ -1242,6 +1287,128 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         const qa_edit::RefusedEmplacement refused = qa_edit::emplaceRefusedYaml(std::format("id: SUBGRAPH\nparameters:\n  name: group\ngraph:\n  blocks:\n    - id: {}\n      parameters:\n        name: stage\n        gian: !!float32 0.25\n", gr::meta::type_name<qa_edit::LimitedGain>()), gr::scheduler::property::kBlockEmplaced);
         expect(refused.refusal.contains("declares no setting named 'gian'") && refused.refusal.contains("'gain'")) << "the reply names the nearest key, got: " << refused.refusal;
         expect(eq(refused.namesAfter, refused.namesBefore)) << "the refused subgraph is in the graph";
+    };
+
+    // a graph file may pin the version of a block it wants; a graph edited at runtime says the same thing
+    // through the message that emplaces or replaces one, and a pinned instance is what the next save writes
+    "a block emplaced by message takes the version it pins"_test = [] {
+        qa_edit::registerTestBlocks();
+
+        qa_edit::TestScheduler scheduler;
+        {
+            gr::Graph flow;
+            auto&     source = flow.emplaceBlock<qa_edit::Source>();
+            auto&     sink   = flow.emplaceBlock<qa_edit::Sink>();
+            expect(flow.connect<"out", "in">(source, sink).has_value());
+            expect(scheduler.exchange(std::move(flow)).has_value());
+        }
+
+        gr::MsgPortOut toScheduler;
+        gr::MsgPortIn  fromScheduler;
+        expect(toScheduler.connect(scheduler.msgIn).has_value());
+        expect(scheduler.msgOut.connect(fromScheduler).has_value());
+
+        const std::string blockYaml = std::format("id: {}\nversion: 1\n", qa_edit::kVersionedType);
+        qa_edit::sendMessage(toScheduler, gr::scheduler::property::kEmplaceBlock, {{"yaml", blockYaml}});
+
+        expect(scheduler.changeStateTo(INITIALISED).has_value());
+        expect(scheduler.changeStateTo(RUNNING).has_value());
+        expect(qa_edit::awaitReply(fromScheduler, gr::scheduler::property::kBlockEmplaced)) << "the serialized block was never emplaced";
+
+        // the other form the message takes: the type named directly, with the pin beside it
+        qa_edit::sendMessage(toScheduler, gr::scheduler::property::kEmplaceBlock, {{"type", std::string(qa_edit::kVersionedType)}, {"version", gr::Size_t(1)}});
+        for (std::size_t i = 0UZ; i < 3000UZ && qa_edit::blocksOfType(scheduler.graph(), "Versioned").size() < 2UZ; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        const std::vector<const gr::BlockModel*> emplaced = qa_edit::blocksOfType(scheduler.graph(), "Versioned");
+        expect(fatal(eq(emplaced.size(), 2UZ))) << "both forms of the message must emplace their block";
+        for (const gr::BlockModel* block : emplaced) {
+            expect(eq(block->version(), gr::block::Version{1U})) << "the newest registered version was taken instead of the one the message pinned";
+            expect(block->pinnedVersion() == std::optional<gr::block::Version>{1U}) << "the instance did not record the pin, so the next save would drop it";
+        }
+
+        expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
+    };
+
+    "a block replaced by message takes the version it pins"_test = [] {
+        qa_edit::registerTestBlocks();
+
+        std::string            spareName;
+        qa_edit::TestScheduler scheduler;
+        {
+            gr::Graph flow;
+            auto&     source = flow.emplaceBlock<qa_edit::Source>();
+            auto&     sink   = flow.emplaceBlock<qa_edit::Sink>();
+            auto&     spare  = flow.emplaceBlock<qa_edit::Tunable>();
+            expect(flow.connect<"out", "in">(source, sink).has_value());
+            spareName = spare.unique_name.value();
+            expect(scheduler.exchange(std::move(flow)).has_value());
+        }
+
+        gr::MsgPortOut toScheduler;
+        gr::MsgPortIn  fromScheduler;
+        expect(toScheduler.connect(scheduler.msgIn).has_value());
+        expect(scheduler.msgOut.connect(fromScheduler).has_value());
+
+        qa_edit::sendMessage(toScheduler, gr::scheduler::property::kReplaceBlock, //
+            {{"uniqueName", spareName}, {"type", std::string(qa_edit::kVersionedType)}, {"version", gr::Size_t(1)}});
+
+        expect(scheduler.changeStateTo(INITIALISED).has_value());
+        expect(scheduler.changeStateTo(RUNNING).has_value());
+        expect(qa_edit::awaitReply(fromScheduler, gr::scheduler::property::kBlockReplaced)) << "the block was never replaced";
+
+        const std::vector<const gr::BlockModel*> replacement = qa_edit::blocksOfType(scheduler.graph(), "Versioned");
+        expect(fatal(eq(replacement.size(), 1UZ))) << "the replacement is not in the graph";
+        expect(eq(replacement.front()->version(), gr::block::Version{1U})) << "the replacement took the newest registered version instead of the one the message pinned";
+        expect(replacement.front()->pinnedVersion() == std::optional<gr::block::Version>{1U}) << "the replacement did not record the pin, so the next save would drop it";
+        expect(qa_edit::blocksOfType(scheduler.graph(), "Tunable").empty()) << "the block that was replaced is still in the graph";
+
+        expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
+    };
+
+    "a pin that cannot be honored is reported and changes nothing"_test = [] {
+        qa_edit::registerTestBlocks();
+
+        std::string            spareName;
+        qa_edit::TestScheduler scheduler;
+        {
+            gr::Graph flow;
+            auto&     source = flow.emplaceBlock<qa_edit::Source>();
+            auto&     sink   = flow.emplaceBlock<qa_edit::Sink>();
+            auto&     spare  = flow.emplaceBlock<qa_edit::Tunable>();
+            expect(flow.connect<"out", "in">(source, sink).has_value());
+            spareName = spare.unique_name.value();
+            expect(scheduler.exchange(std::move(flow)).has_value());
+        }
+
+        gr::MsgPortOut toScheduler;
+        gr::MsgPortIn  fromScheduler;
+        expect(toScheduler.connect(scheduler.msgIn).has_value());
+        expect(scheduler.msgOut.connect(fromScheduler).has_value());
+
+        const std::string blockYaml = std::format("id: {}\nversion: 9\n", qa_edit::kVersionedType);
+        qa_edit::sendMessage(toScheduler, gr::scheduler::property::kEmplaceBlock, {{"yaml", blockYaml}});
+
+        expect(scheduler.changeStateTo(INITIALISED).has_value());
+        expect(scheduler.changeStateTo(RUNNING).has_value());
+
+        const std::string emplaceReport = qa_edit::awaitError(fromScheduler, gr::scheduler::property::kBlockEmplaced);
+        expect(!emplaceReport.empty()) << "a pin that cannot be honored must be reported";
+        expect(emplaceReport.find("version 9") != std::string::npos) << emplaceReport;
+        expect(emplaceReport.find("1, 2") != std::string::npos) << emplaceReport << ": the versions that are registered are named";
+        expect(qa_edit::blocksOfType(scheduler.graph(), "Versioned").empty()) << "a block was added anyway, at a version nobody asked for";
+
+        qa_edit::sendMessage(toScheduler, gr::scheduler::property::kReplaceBlock, //
+            {{"uniqueName", spareName}, {"type", std::string(qa_edit::kVersionedType)}, {"version", gr::Size_t(9)}});
+
+        const std::string replaceReport = qa_edit::awaitError(fromScheduler, gr::scheduler::property::kReplaceBlock);
+        expect(!replaceReport.empty()) << "a pin that cannot be honored must be reported";
+        expect(replaceReport.find("version 9") != std::string::npos) << replaceReport;
+        expect(qa_edit::blocksOfType(scheduler.graph(), "Versioned").empty()) << "a block was added anyway, at a version nobody asked for";
+        expect(eq(qa_edit::blocksOfType(scheduler.graph(), "Tunable").size(), 1UZ)) << "the block that could not be replaced was removed all the same";
+
+        expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
     };
 
     "a subgraph emplaced by name inherits its parent's plugin loader"_test = [] {
