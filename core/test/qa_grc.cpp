@@ -14,6 +14,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -875,6 +876,24 @@ connections:
         expect(reported.contains("gain_factor")) << reported;
     };
 
+    // the scheduler's message handlers take the overloads that report rather than throw, so a recipe
+    // that cannot be built has to reach them as a returned error and leave the graph as it was
+    "emplaceBlock reports a failing recipe and adds nothing"_test = [] {
+        const RecipeAssetRoot assets;
+        auto                  loader = recipeLoader({assets.path.string()});
+
+        gr::Graph  graph(loader);
+        const auto emplaced = graph.emplaceBlock("qa::GainRecipe", std::nullopt, {{"name", std::string("demod")}});
+
+        expect(!emplaced.has_value()) << "a recipe without its required parameter must not be placed";
+        if (!emplaced.has_value()) {
+            expect(emplaced.error().message.contains("demod")) << emplaced.error().message;
+            expect(emplaced.error().message.contains("qa::GainRecipe")) << emplaced.error().message;
+            expect(emplaced.error().message.contains("gain_factor")) << emplaced.error().message;
+        }
+        expect(graph.blocks().empty()) << "the refused recipe was added anyway";
+    };
+
     // Graph::replaceBlock still handed the whole property map to the instantiation, which is the
     // defect emplaceBlock carried: a recipe put in the place of an existing block refused the
     // caller's `name` before it saw the parameter its interior is derived from
@@ -918,6 +937,25 @@ connections:
         expect(reported.contains("demod")) << reported;
         expect(reported.contains("qa::GainRecipe")) << reported;
         expect(reported.contains("gain_factor")) << reported;
+    };
+
+    "replaceBlock reports a failing recipe and keeps the block it holds"_test = [] {
+        const RecipeAssetRoot assets;
+        auto                  loader = recipeLoader({assets.path.string()});
+
+        gr::Graph         graph(loader);
+        const std::string replacedName(graph.emplaceBlock("qa::Scale", {{"name", std::string("scale")}})->uniqueName());
+
+        const auto replaced = graph.replaceBlock(replacedName, "qa::GainRecipe", std::nullopt, {{"name", std::string("demod")}});
+
+        expect(!replaced.has_value()) << "a recipe without its required parameter must not replace a block";
+        if (!replaced.has_value()) {
+            expect(replaced.error().message.contains("gain_factor")) << replaced.error().message;
+        }
+        expect(eq(graph.blocks().size(), 1UZ)) << "the graph must still hold exactly the block it had";
+        if (graph.blocks().size() == 1UZ) {
+            expect(eq(std::string(graph.blocks().front()->uniqueName()), replacedName)) << "the block that was there was replaced anyway";
+        }
     };
 };
 

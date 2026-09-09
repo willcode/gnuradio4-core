@@ -53,7 +53,7 @@ std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::strin
         const auto blockName    = nameIt == split.remaining.end() ? std::string_view{} : nameIt->second.value_or(std::string_view{});
         const auto instantiated = _pluginLoader->instantiateOrError(type, split.exported);
         if (!instantiated.has_value()) {
-            throw gr::exception(std::format("Unable to create block '{}' of type '{}': {}", blockName, type, instantiated.error().message));
+            return std::unexpected(Error(std::format("Unable to create block '{}' of type '{}': {}", blockName, type, instantiated.error().message)));
         }
         if (*instantiated) {
             const std::shared_ptr<BlockModel>& newBlock = addBlock(*instantiated);
@@ -111,7 +111,7 @@ std::expected<std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>
             const auto blockName    = nameIt == split.remaining.end() ? std::string_view{} : nameIt->second.value_or(std::string_view{});
             const auto instantiated = _pluginLoader->instantiateOrError(type, split.exported);
             if (!instantiated.has_value()) {
-                throw gr::exception(std::format("Unable to create block '{}' of type '{}': {}", blockName, type, instantiated.error().message));
+                return std::unexpected(Error(std::format("Unable to create block '{}' of type '{}': {}", blockName, type, instantiated.error().message)));
             }
             newBlock = *instantiated;
             if (newBlock) {
