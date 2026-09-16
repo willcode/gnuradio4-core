@@ -145,7 +145,7 @@ std::chrono::nanoseconds runErased(std::size_t nChain, std::size_t ringSize) {
     const auto       sink   = graph.emplace("bm::Counter", "sink");
     boost::ut::expect(source.has_value() && sink.has_value());
 
-    const gr::EdgeSpec           edge{.minBufferSize = ringSize};
+    const gr::EdgeSpec           edge{.minBufferSize = ringSize, .weight = 0, .name = {}};
     std::vector<gr::BlockHandle> chain;
     chain.reserve(nChain);
     for (std::size_t i = 0UZ; i < nChain; ++i) {
