@@ -198,7 +198,7 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
 
         const std::vector<gr::pmt::Value> values{gr::pmt::Value(std::pmr::string("gardner")), gr::pmt::Value(std::vector<std::int32_t>{-2, 0, 3}), gr::pmt::Value(48000.0)};
 
-        const gr::recipe::Binding substituted{.namePath = {"inner"}, .settingKey = "detector", .expression = {}, .substituted = 0UZ};
+        const gr::recipe::Binding substituted{.namePath = {"inner"}, .settingKey = "detector", .expression = {}, .substituted = 0UZ, .sequence = {}};
         const auto                bound = gr::recipe::bindingValue(substituted, std::span<const gr::pmt::Value>(values));
         expect(bound.has_value());
         const auto* text = bound->get_if<std::pmr::string>();
@@ -207,13 +207,13 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
             expect(eq(std::string_view(*text), std::string_view("gardner")));
         }
 
-        const gr::recipe::Binding vectorBound{.namePath = {"inner"}, .settingKey = "carriers", .expression = {}, .substituted = 1UZ};
+        const gr::recipe::Binding vectorBound{.namePath = {"inner"}, .settingKey = "carriers", .expression = {}, .substituted = 1UZ, .sequence = {}};
         const auto                carriers = gr::recipe::bindingValue(vectorBound, std::span<const gr::pmt::Value>(values));
         expect(carriers.has_value());
         expect(carriers->get_if<gr::Tensor<std::int32_t>>() != nullptr) << "the sequence arrives whole";
 
         // an index past the values is a refusal rather than a read off the end
-        const gr::recipe::Binding outOfRange{.namePath = {"inner"}, .settingKey = "x", .expression = {}, .substituted = 9UZ};
+        const gr::recipe::Binding outOfRange{.namePath = {"inner"}, .settingKey = "x", .expression = {}, .substituted = 9UZ, .sequence = {}};
         expect(!gr::recipe::bindingValue(outOfRange, std::span<const gr::pmt::Value>(values)).has_value());
     };
 
@@ -250,7 +250,7 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
         }
 
         const std::vector<gr::pmt::Value> values{gr::pmt::Value(false), gr::pmt::Value(48000.0)};
-        const gr::recipe::Binding         toggle{.namePath = {"inner"}, .settingKey = "enabled", .expression = {}, .substituted = 0UZ};
+        const gr::recipe::Binding         toggle{.namePath = {"inner"}, .settingKey = "enabled", .expression = {}, .substituted = 0UZ, .sequence = {}};
         const auto                        bound = gr::recipe::bindingValue(toggle, std::span<const gr::pmt::Value>(values));
         expect(bound.has_value());
         const auto* flag = bound->get_if<bool>();

@@ -667,7 +667,7 @@ inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Valu
                             }
                             std::vector<std::string> path = namePath;
                             path.push_back(blockName);
-                            outBindings.push_back({.namePath = std::move(path), .settingKey = std::string(key), .expression = {}, .substituted = substituted});
+                            outBindings.push_back({.namePath = std::move(path), .settingKey = std::string(key), .expression = {}, .substituted = substituted, .sequence = {}});
                         }
                         value = values[*substituted];
                         continue;
@@ -687,7 +687,7 @@ inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Valu
                         }
                         std::vector<std::string> path = namePath;
                         path.push_back(blockName);
-                        outBindings.push_back({.namePath = std::move(path), .settingKey = std::string(key), .expression = *expression, .substituted = std::nullopt});
+                        outBindings.push_back({.namePath = std::move(path), .settingKey = std::string(key), .expression = *expression, .substituted = std::nullopt, .sequence = {}});
                     }
                     value = std::move(*result);
                 }
@@ -770,7 +770,7 @@ inline std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> detail::instant
             // re-evaluate and re-stage. A scheduler-managed composite has no GraphWrapper to
             // carry the bindings; its parameters are instantiation-time only.
             if (auto* wrapper = dynamic_cast<GraphWrapper<gr::Graph>*>(blocks.front().get()); wrapper != nullptr) {
-                if (auto attached = wrapper->attachRecipeBindings({.declarations = std::move(declarations), .bindings = std::move(bindings), .values = std::move(*values)}); !attached.has_value()) {
+                if (auto attached = wrapper->attachRecipeBindings({.declarations = std::move(declarations), .bindings = std::move(bindings), .values = std::move(*values), .lastStaged = {}}); !attached.has_value()) {
                     return std::unexpected(attached.error());
                 }
             }
