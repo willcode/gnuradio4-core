@@ -20,14 +20,19 @@ using gr::recipe::validateDeclarations;
 
 namespace {
 
-const std::vector<ParameterDeclaration> kNbfmDeclarations{
-    {.name = "sample_rate", .type = "float32", .defaultValue = std::nullopt, .doc = ""},
-    {.name = "deviation", .type = "float32", .defaultValue = std::nullopt, .doc = ""},
-    {.name = "tau", .type = "float64", .defaultValue = gr::pmt::Value(7.5e-05), .doc = ""},
-};
+// boost.ut runs a suite from its runner's destructor, after the objects of this translation unit have been
+// destroyed, so anything a test body reads is held by a function-local static and outlives the run.
+[[nodiscard]] const std::vector<ParameterDeclaration>& nbfmDeclarations() {
+    static const std::vector<ParameterDeclaration> declarations{
+        {.name = "sample_rate", .type = "float32", .defaultValue = std::nullopt, .doc = ""},
+        {.name = "deviation", .type = "float32", .defaultValue = std::nullopt, .doc = ""},
+        {.name = "tau", .type = "float64", .defaultValue = gr::pmt::Value(7.5e-05), .doc = ""},
+    };
+    return declarations;
+}
 
 [[nodiscard]] double evaluated(std::string_view source, const std::vector<gr::pmt::Value>& values) {
-    const auto expression = parseExpression(source, kNbfmDeclarations);
+    const auto expression = parseExpression(source, nbfmDeclarations());
     expect(expression.has_value()) << source;
     // expect() does not abort, so a refusal must be answered with a value that fails every
     // comparison after it, never with a dereference of the error
@@ -85,15 +90,15 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
     };
 
     "clamp refuses a wrong arity, a non-numeric argument and unordered bounds"_test = [] {
-        const auto arity = parseExpression("clamp(sample_rate, 1)", kNbfmDeclarations);
+        const auto arity = parseExpression("clamp(sample_rate, 1)", nbfmDeclarations());
         expect(!arity.has_value());
         expect(arity.error().message.contains("recipe_expression_parse")) << arity.error().message;
         expect(arity.error().message.contains("clamp takes 3 arguments")) << arity.error().message;
-        expect(!parseExpression("clamp(sample_rate, 1, 2, 3)", kNbfmDeclarations).has_value()) << "a fourth argument is refused too";
-        expect(!parseExpression("clamp()", kNbfmDeclarations).has_value());
-        expect(!parseExpression("clamp(sample_rate, 1, 2", kNbfmDeclarations).has_value()) << "an unclosed call is refused";
+        expect(!parseExpression("clamp(sample_rate, 1, 2, 3)", nbfmDeclarations()).has_value()) << "a fourth argument is refused too";
+        expect(!parseExpression("clamp()", nbfmDeclarations()).has_value());
+        expect(!parseExpression("clamp(sample_rate, 1, 2", nbfmDeclarations()).has_value()) << "an unclosed call is refused";
 
-        const auto unknownFunction = parseExpression("ceil(sample_rate)", kNbfmDeclarations);
+        const auto unknownFunction = parseExpression("ceil(sample_rate)", nbfmDeclarations());
         expect(!unknownFunction.has_value());
         expect(unknownFunction.error().message.contains("unknown function")) << unknownFunction.error().message;
         expect(unknownFunction.error().message.contains("clamp")) << "the refusal names the vocabulary it has";
@@ -109,7 +114,7 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
         }
 
         const std::vector<gr::pmt::Value> values{gr::pmt::Value(2000000.0f), gr::pmt::Value(2500.0f), gr::pmt::Value(7.5e-05)};
-        const auto                        unordered = parseExpression("clamp(sample_rate, 4194304, 32768)", kNbfmDeclarations);
+        const auto                        unordered = parseExpression("clamp(sample_rate, 4194304, 32768)", nbfmDeclarations());
         expect(unordered.has_value()) << "the bounds' order is a value question, not a grammar one";
         if (unordered.has_value()) {
             const auto refused = evaluate(*unordered, values);
@@ -166,11 +171,11 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
     };
 
     "parse refusals carry position and name"_test = [] {
-        expect(!parseExpression("1 +", kNbfmDeclarations).has_value());
-        expect(!parseExpression("(1 + 2", kNbfmDeclarations).has_value());
-        expect(!parseExpression("1 ; 2", kNbfmDeclarations).has_value());
-        expect(!parseExpression("", kNbfmDeclarations).has_value());
-        const auto unknown = parseExpression("sample_rate * bandwidth", kNbfmDeclarations);
+        expect(!parseExpression("1 +", nbfmDeclarations()).has_value());
+        expect(!parseExpression("(1 + 2", nbfmDeclarations()).has_value());
+        expect(!parseExpression("1 ; 2", nbfmDeclarations()).has_value());
+        expect(!parseExpression("", nbfmDeclarations()).has_value());
+        const auto unknown = parseExpression("sample_rate * bandwidth", nbfmDeclarations());
         expect(!unknown.has_value());
         expect(unknown.error().message.contains("recipe_unknown_identifier")) << unknown.error().message;
         expect(unknown.error().message.contains("bandwidth")) << unknown.error().message;
@@ -283,13 +288,13 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
 
     "a non-finite result is refused"_test = [] {
         const std::vector<gr::pmt::Value> values{gr::pmt::Value(1.0f), gr::pmt::Value(0.0f), gr::pmt::Value(0.0)};
-        const auto                        expression = parseExpression("sample_rate / deviation", kNbfmDeclarations);
+        const auto                        expression = parseExpression("sample_rate / deviation", nbfmDeclarations());
         expect(expression.has_value());
         expect(!evaluate(*expression, values).has_value());
     };
 
     "required parameters are refused together, all named"_test = [] {
-        const auto resolved = resolveParameters(kNbfmDeclarations, {});
+        const auto resolved = resolveParameters(nbfmDeclarations(), {});
         expect(!resolved.has_value());
         expect(resolved.error().message.contains("recipe_parameter_required")) << resolved.error().message;
         expect(resolved.error().message.contains("sample_rate") && resolved.error().message.contains("deviation")) << resolved.error().message;
@@ -300,20 +305,20 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
         gr::property_map supplied;
         supplied["sample_rate"] = 48000.0f;
         supplied["deviation"]   = 2500.0f;
-        const auto resolved     = resolveParameters(kNbfmDeclarations, supplied);
+        const auto resolved     = resolveParameters(nbfmDeclarations(), supplied);
         expect(resolved.has_value());
         expect(eq((*resolved)[0].value_or(float{}), 48000.0f));
         expect(eq((*resolved)[2].value_or(double{}), 7.5e-05)) << "the default filled in";
 
         supplied["bandwidth"] = 1.0f;
-        const auto unknown    = resolveParameters(kNbfmDeclarations, supplied);
+        const auto unknown    = resolveParameters(nbfmDeclarations(), supplied);
         expect(!unknown.has_value());
         expect(unknown.error().message.contains("recipe_unknown_parameter")) << unknown.error().message;
     };
 
     "hostile input cannot escape: depth, overflow and echo are all bounded"_test = [] {
         const std::string deep   = std::string(300, '(') + "1" + std::string(300, ')');
-        const auto        nested = parseExpression(deep, kNbfmDeclarations);
+        const auto        nested = parseExpression(deep, nbfmDeclarations());
         expect(!nested.has_value()) << "hostile nesting is a refusal, not a stack overflow";
         expect(nested.error().message.contains("too deeply")) << nested.error().message;
 
@@ -325,15 +330,15 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
         expect(!overflowed.has_value()) << "integer overflow refuses, never wraps or invokes undefined behavior";
         expect(overflowed.error().message.contains("overflows")) << overflowed.error().message;
 
-        expect(!parseExpression("1e999", kNbfmDeclarations).has_value()) << "an out-of-range literal is refused at parse";
+        expect(!parseExpression("1e999", nbfmDeclarations()).has_value()) << "an out-of-range literal is refused at parse";
 
-        const auto echoed = parseExpression("\x1b[31mred\x1b[0m", kNbfmDeclarations);
+        const auto echoed = parseExpression("\x1b[31mred\x1b[0m", nbfmDeclarations());
         expect(!echoed.has_value());
         expect(echoed.error().message.find('\x1b') == std::string::npos) << "control characters never reach an error message";
     };
 
     "declaration validation refuses duplicates, reserved names, unknown types and mistyped defaults"_test = [] {
-        expect(validateDeclarations(kNbfmDeclarations).has_value());
+        expect(validateDeclarations(nbfmDeclarations()).has_value());
         const std::vector<ParameterDeclaration> duplicate{{.name = "a", .type = "float32", .defaultValue = std::nullopt, .doc = ""}, {.name = "a", .type = "float32", .defaultValue = std::nullopt, .doc = ""}};
         expect(!validateDeclarations(duplicate).has_value());
         const std::vector<ParameterDeclaration> reserved{{.name = "pi", .type = "float32", .defaultValue = std::nullopt, .doc = ""}};
@@ -345,7 +350,7 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
     };
 };
 
-namespace {
+namespace qa_recipe_definitions {
 
 struct RecipeScale : gr::Block<RecipeScale> {
     gr::PortIn<float>  in;
@@ -370,7 +375,10 @@ struct SettingsChangedRecord {
     std::vector<std::string> keys;
 };
 
-std::map<std::string, SettingsChangedRecord> recipeWatches;
+[[nodiscard]] std::map<std::string, SettingsChangedRecord>& recipeWatches() {
+    static std::map<std::string, SettingsChangedRecord> watches;
+    return watches;
+}
 
 struct RecipeWatched : gr::Block<RecipeWatched> {
     gr::PortIn<float>  in;
@@ -386,7 +394,7 @@ struct RecipeWatched : gr::Block<RecipeWatched> {
     [[nodiscard]] float processOne(float sample) const noexcept { return gain * sample; }
 
     void settingsChanged(const gr::property_map& /*oldSettings*/, const gr::property_map& newSettings) {
-        SettingsChangedRecord& record = recipeWatches[std::string(this->name)];
+        SettingsChangedRecord& record = recipeWatches()[std::string(this->name)];
         ++record.calls;
         record.keys.clear();
         for (const auto& [key, value] : newSettings) {
@@ -615,7 +623,9 @@ blocks:
     return composite->graph()->blocks().front();
 }
 
-} // namespace
+} // namespace qa_recipe_definitions
+
+using namespace qa_recipe_definitions;
 
 const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
     "a parameterized definition instantiates with required parameters and derives interior settings"_test = [] {
@@ -876,7 +886,7 @@ const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
         const auto settle = [&] {
             std::ignore = first->settings().applyStagedParameters();
             std::ignore = second->settings().applyStagedParameters();
-            recipeWatches.clear();
+            recipeWatches().clear();
         };
 
         gr::property_map unchanged;
@@ -896,20 +906,20 @@ const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
 
         std::ignore = first->settings().applyStagedParameters();
         std::ignore = second->settings().applyStagedParameters();
-        expect(eq(recipeWatches["second"].calls, 0UZ)) << "so its settingsChanged is never called";
-        expect(eq(recipeWatches["first"].calls, 1UZ));
-        expect(eq(recipeWatches["first"].keys.size(), 1UZ)) << "the block that moved sees the moved key alone";
-        if (recipeWatches["first"].keys.size() == 1UZ) {
-            expect(eq(recipeWatches["first"].keys.front(), std::string("gain")));
+        expect(eq(recipeWatches()["second"].calls, 0UZ)) << "so its settingsChanged is never called";
+        expect(eq(recipeWatches()["first"].calls, 1UZ));
+        expect(eq(recipeWatches()["first"].keys.size(), 1UZ)) << "the block that moved sees the moved key alone";
+        if (recipeWatches()["first"].keys.size() == 1UZ) {
+            expect(eq(recipeWatches()["first"].keys.front(), std::string("gain")));
         }
 
-        recipeWatches.clear();
+        recipeWatches().clear();
         expect(wrapper->applyRecipeParameters(change).has_value()) << "the same value again";
         expect(first->settings().stagedParameters().empty() && second->settings().stagedParameters().empty()) << "a parameter restated at its own value stages nothing";
         std::ignore = first->settings().applyStagedParameters();
         std::ignore = second->settings().applyStagedParameters();
-        expect(eq(recipeWatches["first"].calls, 0UZ));
-        expect(eq(recipeWatches["second"].calls, 0UZ));
+        expect(eq(recipeWatches()["first"].calls, 0UZ));
+        expect(eq(recipeWatches()["second"].calls, 0UZ));
     };
 
     "a literal definition is untouched, and parameters against it are refused"_test = [] {

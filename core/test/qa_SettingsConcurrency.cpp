@@ -316,26 +316,26 @@ const boost::ut::suite<"settings concurrency"> settingsConcurrencyTests = [] {
     };
 
     "a float32 rate tag crosses a double-typed block and reaches a float sink"_test = [] {
-        gr::test::RuntimeTest        test;
-        auto&                        source    = test.emplace<qa_settings::RateSource>({{"sample_rate", 2.4e6f}});
-        qa_settings::WideRateBlock*  wideBlock = &test.emplace<qa_settings::WideRateBlock>();
-        qa_settings::NarrowRateSink* sink      = &test.emplace<qa_settings::NarrowRateSink>();
-        expect(test.connect(source, "out", *wideBlock, "in").has_value());
-        expect(test.connect(*wideBlock, "out", *sink, "in").has_value());
+        gr::test::RuntimeTest        harness;
+        auto&                        source    = harness.emplace<qa_settings::RateSource>({{"sample_rate", 2.4e6f}});
+        qa_settings::WideRateBlock*  wideBlock = &harness.emplace<qa_settings::WideRateBlock>();
+        qa_settings::NarrowRateSink* sink      = &harness.emplace<qa_settings::NarrowRateSink>();
+        expect(harness.connect(source, "out", *wideBlock, "in").has_value());
+        expect(harness.connect(*wideBlock, "out", *sink, "in").has_value());
 
-        expect(test.run().has_value()) << "the graph did not run to completion";
+        expect(harness.run().has_value()) << "the graph did not run to completion";
         expect(gt(sink->_nReceived, 0UZ)) << "the sink received nothing";
         expect(eq(wideBlock->sample_rate.value, 2.4e6)) << "the forwarded float32 rate did not reach the double member";
         expect(eq(sink->sample_rate.value, 2.4e6f)) << "the re-forwarded float64 rate did not reach the float member";
     };
 
     "a default-tag value the graph cannot convert does not stop the graph"_test = [] {
-        gr::test::RuntimeTest        test;
-        auto&                        source = test.emplace<qa_settings::BadTagSource>();
-        qa_settings::NarrowRateSink* sink   = &test.emplace<qa_settings::NarrowRateSink>();
-        expect(test.connect(source, "out", *sink, "in").has_value());
+        gr::test::RuntimeTest        harness;
+        auto&                        source = harness.emplace<qa_settings::BadTagSource>();
+        qa_settings::NarrowRateSink* sink   = &harness.emplace<qa_settings::NarrowRateSink>();
+        expect(harness.connect(source, "out", *sink, "in").has_value());
 
-        expect(test.run().has_value()) << "a rejected tag value took the graph down";
+        expect(harness.run().has_value()) << "a rejected tag value took the graph down";
         expect(gt(sink->_nReceived, 0UZ)) << "the sink received nothing";
         expect(eq(sink->sample_rate.value, 1.0f)) << "an unconvertible value reached the member";
     };
