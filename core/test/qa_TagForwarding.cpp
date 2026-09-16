@@ -11,6 +11,8 @@
 #include <vector>
 
 #include <gnuradio-4.0/Block.hpp>
+#include <gnuradio-4.0/Graph.hpp>
+#include <gnuradio-4.0/Scheduler.hpp>
 
 #include "RuntimeTest.hpp"
 
@@ -373,16 +375,16 @@ template<typename TMiddle, typename TInspect>
 void runChain(const std::vector<std::size_t>& tagAt, TInspect&& inspect, auto&& configure) {
     using namespace boost::ut;
 
-    gr::test::RuntimeTest test;
-    auto&                 source = test.emplace<Source>(gr::property_map{{"name", std::string("src")}});
+    gr::test::RuntimeTest harness;
+    auto&                 source = harness.emplace<Source>(gr::property_map{{"name", std::string("src")}});
     source.tagAt                 = tagAt;
-    auto& middle                 = test.emplace<TMiddle>(gr::property_map{{"name", std::string("mid")}});
-    auto& sink                   = test.emplace<Sink>(gr::property_map{{"name", std::string("snk")}});
+    auto& middle                 = harness.emplace<TMiddle>(gr::property_map{{"name", std::string("mid")}});
+    auto& sink                   = harness.emplace<Sink>(gr::property_map{{"name", std::string("snk")}});
     configure(middle);
-    expect(test.connect(source, "out", middle, "in").has_value());
-    expect(test.connect(middle, "out", sink, "in").has_value());
+    expect(harness.connect(source, "out", middle, "in").has_value());
+    expect(harness.connect(middle, "out", sink, "in").has_value());
 
-    expect(test.run().has_value());
+    expect(harness.run().has_value());
 
     inspect(middle, sink);
 }
@@ -448,16 +450,16 @@ const boost::ut::suite<"tag forwarding"> _tagForwarding = [] {
     };
 
     "tags ride the tail through processEpilogue"_test = [] {
-        gr::test::RuntimeTest test;
-        auto&                 source = test.emplace<Source>(gr::property_map{{"name", std::string("src")}});
+        gr::test::RuntimeTest harness;
+        auto&                 source = harness.emplace<Source>(gr::property_map{{"name", std::string("src")}});
         source.nTotal                = 62UZ; // seven full chunks of kChunk, then a six-sample tail
         source.tagAt                 = {56UZ, 60UZ};
-        auto& middle                 = test.emplace<EpilogueChunk>(gr::property_map{{"name", std::string("mid")}});
-        auto& sink                   = test.emplace<Sink>(gr::property_map{{"name", std::string("snk")}});
-        expect(test.connect(source, "out", middle, "in").has_value());
-        expect(test.connect(middle, "out", sink, "in").has_value());
+        auto& middle                 = harness.emplace<EpilogueChunk>(gr::property_map{{"name", std::string("mid")}});
+        auto& sink                   = harness.emplace<Sink>(gr::property_map{{"name", std::string("snk")}});
+        expect(harness.connect(source, "out", middle, "in").has_value());
+        expect(harness.connect(middle, "out", sink, "in").has_value());
 
-        expect(test.run().has_value());
+        expect(harness.run().has_value());
 
         expect(eq(middle.epilogueRuns, 1UZ)) << "the tail did not go through the epilogue, so this test discriminates nothing";
         expect(eq(countNamed(sink.tags, "t56"), 1UZ)) << "the tag at the tail's first sample was dropped";
@@ -545,15 +547,15 @@ const boost::ut::suite<"tag forwarding"> _tagForwarding = [] {
     };
 
     "a block that stages a setting and stops forwards it through its open output span"_test = [] {
-        gr::test::RuntimeTest test;
-        auto&                 source = test.emplace<Source>(gr::property_map{{"name", std::string("src")}});
-        auto&                 middle = test.emplace<StageAndStop>(gr::property_map{{"name", std::string("mid")}});
-        auto&                 sink   = test.emplace<Sink>(gr::property_map{{"name", std::string("snk")}});
+        gr::test::RuntimeTest harness;
+        auto&                 source = harness.emplace<Source>(gr::property_map{{"name", std::string("src")}});
+        auto&                 middle = harness.emplace<StageAndStop>(gr::property_map{{"name", std::string("mid")}});
+        auto&                 sink   = harness.emplace<Sink>(gr::property_map{{"name", std::string("snk")}});
         middle.in.max_samples        = kChunk; // the staging work call must not be the first, so its window does not start at 0
-        expect(test.connect(source, "out", middle, "in").has_value());
-        expect(test.connect(middle, "out", sink, "in").has_value());
+        expect(harness.connect(source, "out", middle, "in").has_value());
+        expect(harness.connect(middle, "out", sink, "in").has_value());
 
-        expect(test.run().has_value());
+        expect(harness.run().has_value());
 
         const std::vector<TagRecord> retuned = carrying(sink.tags, "sample_rate");
         expect(eq(retuned.size(), 1UZ)) << "the staged parameters must reach the sink exactly once";

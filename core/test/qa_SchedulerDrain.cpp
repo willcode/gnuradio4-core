@@ -169,28 +169,28 @@ const boost::ut::suite<"end-of-stream drain"> drainTests = [] {
     using enum gr::lifecycle::State;
 
     "a block emitting one item per call is given every item it holds"_test = [] {
-        gr::test::RuntimeTest test;
-        auto&                 source = test.emplace<qa_drain::BurstSource>();
-        auto&                 relay  = test.emplace<qa_drain::OneAtATime>();
-        auto&                 sink   = test.emplace<qa_drain::CountingSink>();
-        expect(test.connect(source, "out", relay, "in").has_value());
-        expect(test.connect(relay, "out", sink, "in").has_value());
+        gr::test::RuntimeTest harness;
+        auto&                 source = harness.emplace<qa_drain::BurstSource>();
+        auto&                 relay  = harness.emplace<qa_drain::OneAtATime>();
+        auto&                 sink   = harness.emplace<qa_drain::CountingSink>();
+        expect(harness.connect(source, "out", relay, "in").has_value());
+        expect(harness.connect(relay, "out", sink, "in").has_value());
 
-        expect(test.runWithin(qa_drain::kRunBound)) << "the graph did not end";
+        expect(harness.runWithin(qa_drain::kRunBound)) << "the graph did not end";
 
         expect(eq(relay._nForwarded, qa_drain::kBurst)) << "the end of the stream cut the block short of the items already in its queue";
         expect(eq(sink._nReceived, qa_drain::kBurst)) << "items accepted upstream never reached the sink";
     };
 
     "a block that never takes its remainder does not hold the graph open"_test = [] {
-        gr::test::RuntimeTest test;
-        auto&                 source = test.emplace<qa_drain::BurstSource>();
-        auto&                 relay  = test.emplace<qa_drain::StuckRelay>();
-        auto&                 sink   = test.emplace<qa_drain::CountingSink>();
-        expect(test.connect(source, "out", relay, "in").has_value());
-        expect(test.connect(relay, "out", sink, "in").has_value());
+        gr::test::RuntimeTest harness;
+        auto&                 source = harness.emplace<qa_drain::BurstSource>();
+        auto&                 relay  = harness.emplace<qa_drain::StuckRelay>();
+        auto&                 sink   = harness.emplace<qa_drain::CountingSink>();
+        expect(harness.connect(source, "out", relay, "in").has_value());
+        expect(harness.connect(relay, "out", sink, "in").has_value());
 
-        expect(test.runWithin(qa_drain::kRunBound)) << "a block making no progress held the graph open";
+        expect(harness.runWithin(qa_drain::kRunBound)) << "a block making no progress held the graph open";
 
         expect(gt(relay._nCalls, 1UZ)) << "the block was not offered its remainder at all";
         expect(eq(sink._nReceived, 0UZ));
@@ -198,14 +198,14 @@ const boost::ut::suite<"end-of-stream drain"> drainTests = [] {
     };
 
     "an input minimum published from processBulk governs the next call and ends the stream"_test = [] {
-        gr::test::RuntimeTest test;
-        auto&                 source = test.emplace<qa_drain::BurstSource>();
-        auto&                 relay  = test.emplace<qa_drain::WindowedRelay>();
-        auto&                 sink   = test.emplace<qa_drain::CountingSink>();
-        expect(test.connect(source, "out", relay, "in").has_value());
-        expect(test.connect(relay, "out", sink, "in").has_value());
+        gr::test::RuntimeTest harness;
+        auto&                 source = harness.emplace<qa_drain::BurstSource>();
+        auto&                 relay  = harness.emplace<qa_drain::WindowedRelay>();
+        auto&                 sink   = harness.emplace<qa_drain::CountingSink>();
+        expect(harness.connect(source, "out", relay, "in").has_value());
+        expect(harness.connect(relay, "out", sink, "in").has_value());
 
-        expect(test.runWithin(qa_drain::kRunBound)) << "the block was offered a span it cannot use and the graph never ended";
+        expect(harness.runWithin(qa_drain::kRunBound)) << "the block was offered a span it cannot use and the graph never ended";
 
         expect(eq(relay._nShortCalls, 0UZ)) << "the scheduler kept offering less than the published minimum";
         expect(eq(sink._nReceived, qa_drain::kBurst - qa_drain::kWindow + 1UZ)) << "one item per sample the window could be filled from";
@@ -214,16 +214,16 @@ const boost::ut::suite<"end-of-stream drain"> drainTests = [] {
     };
 
     "a graph ending on an error does not drain"_test = [] {
-        gr::test::RuntimeTest test;
-        auto&                 source = test.emplace<qa_drain::BurstSource>();
-        auto&                 relay  = test.emplace<qa_drain::FailingRelay>();
-        auto&                 sink   = test.emplace<qa_drain::CountingSink>();
-        expect(test.connect(source, "out", relay, "in").has_value());
-        expect(test.connect(relay, "out", sink, "in").has_value());
+        gr::test::RuntimeTest harness;
+        auto&                 source = harness.emplace<qa_drain::BurstSource>();
+        auto&                 relay  = harness.emplace<qa_drain::FailingRelay>();
+        auto&                 sink   = harness.emplace<qa_drain::CountingSink>();
+        expect(harness.connect(source, "out", relay, "in").has_value());
+        expect(harness.connect(relay, "out", sink, "in").has_value());
 
-        expect(test.runWithin(qa_drain::kRunBound)) << "the failing graph did not end";
+        expect(harness.runWithin(qa_drain::kRunBound)) << "the failing graph did not end";
 
-        expect(test.state() == gr::Runtime::State::Error) << "a failing block drives the scheduler to ERROR";
+        expect(harness.state() == gr::Runtime::State::Error) << "a failing block drives the scheduler to ERROR";
         expect(eq(relay._nForwarded, qa_drain::kItemsBeforeFailure)) << "the failed block was kept running to empty its queue";
         expect(le(sink._nReceived, qa_drain::kItemsBeforeFailure));
     };
