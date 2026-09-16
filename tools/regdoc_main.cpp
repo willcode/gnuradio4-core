@@ -12,9 +12,9 @@
 
 namespace {
 
-constexpr std::string_view kUsage = R"(gnuradio_4_0_registry_doc - describe the registered blocks as Markdown or HTML
+constexpr std::string_view kUsage = R"(regdoc - describe the registered blocks as Markdown or HTML
 
-Usage: gnuradio_4_0_registry_doc [options]
+Usage: regdoc [options]
 
   --plugin-dir <dir> a directory to load plugins and block definitions from; repeatable
   --format md|html   output format (default: md)
@@ -74,20 +74,20 @@ int main(int argc, char** argv) {
     for (std::size_t index = 0UZ; index < arguments.size();) {
         switch (readCommonOption(arguments, index, options, error)) {
         case OptionResult::Taken: continue;
-        case OptionResult::Failed: std::println(stderr, "gnuradio_4_0_registry_doc: {}", error); return 2;
+        case OptionResult::Failed: std::println(stderr, "regdoc: {}", error); return 2;
         case OptionResult::NotMine: break;
         }
         const std::string_view argument = arguments[index];
         if (argument == "--plugin-dir") {
             if (index + 1UZ >= arguments.size()) {
-                std::println(stderr, "gnuradio_4_0_registry_doc: --plugin-dir needs a value");
+                std::println(stderr, "regdoc: --plugin-dir needs a value");
                 return 2;
             }
             pluginDirectories.emplace_back(arguments[index + 1UZ]);
             index += 2UZ;
             continue;
         }
-        std::println(stderr, "gnuradio_4_0_registry_doc: unknown option '{}'", argument);
+        std::println(stderr, "regdoc: unknown option '{}'", argument);
         return 2;
     }
 
@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
     const registrydoc::Inputs inputs{.loader = loader, .pluginDirectories = pluginDirectories, .coreVersion = GR_TOOLS_CORE_VERSION};
     const auto                written = writeDocument(options.output, registrydoc::render(inputs, options.format, options.title));
     if (!written.has_value()) {
-        std::println(stderr, "gnuradio_4_0_registry_doc: {}", written.error());
+        std::println(stderr, "regdoc: {}", written.error());
         return 2;
     }
     return 0;

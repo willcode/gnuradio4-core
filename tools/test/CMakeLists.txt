@@ -42,7 +42,7 @@ add_option_handling_tests(graphdoc)
 if(GR_ENABLE_BLOCK_REGISTRY)
   add_ut_test(qa_RegistryDoc)
   target_link_libraries(qa_RegistryDoc PRIVATE gnuradio-doctools)
-  add_option_handling_tests(gnuradio_4_0_registry_doc)
+  add_option_handling_tests(regdoc)
   if(INTERNAL_ENABLE_BLOCK_PLUGINS)
     # the registry document is built over core's own test plugins, which are built beside them
     target_link_libraries(qa_RegistryDoc PRIVATE gnuradio-plugin)

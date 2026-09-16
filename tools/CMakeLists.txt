@@ -20,12 +20,12 @@ install(TARGETS graphdoc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # the registry document is read from gr::globalBlockRegistry(), which only a build with the registry defines
 if(GR_ENABLE_BLOCK_REGISTRY)
-  add_executable(gnuradio_4_0_registry_doc registry_doc_main.cpp)
-  target_link_libraries(gnuradio_4_0_registry_doc PRIVATE gnuradio-doctools)
+  add_executable(regdoc regdoc_main.cpp)
+  target_link_libraries(regdoc PRIVATE gnuradio-doctools)
   if(TARGET gnuradio-plugin)
-    target_link_libraries(gnuradio_4_0_registry_doc PRIVATE gnuradio-plugin)
+    target_link_libraries(regdoc PRIVATE gnuradio-plugin)
   endif()
-  install(TARGETS gnuradio_4_0_registry_doc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(TARGETS regdoc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 # rungraph, an ordinary consumer of the installed headers: it is not compiled into the libraries. It builds its graph by
