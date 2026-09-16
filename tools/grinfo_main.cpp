@@ -559,6 +559,8 @@ struct Instantiation {
     std::string              typeName;
     std::string              blockCategory;
     std::string              uiCategory;
+    std::string              status;
+    gr::block::Version       version = gr::block::kDefaultVersion;
     std::string              error; // why no instance could be made; nothing below is filled then
     bool                     detailed = false;
     std::string              description;
@@ -637,6 +639,18 @@ struct Context {
     }
     const std::string_view text = entry->second.value_or(std::string_view{});
     return text.data() == nullptr ? gr::pmt::to_string(entry->second) : std::string(text);
+}
+
+// the qualities a block declares, named; a block that declares none reads as empty
+[[nodiscard]] std::string statusText(gr::block::Status status) {
+    std::string text;
+    if (status.deprecated) {
+        text += "deprecated";
+    }
+    if (status.experimental) {
+        text += text.empty() ? "experimental" : ", experimental";
+    }
+    return text;
 }
 
 void collectPorts(gr::BlockModel::DynamicPorts& ports, std::string_view direction, std::vector<Port>& into) {
@@ -762,6 +776,8 @@ void collectSettings(const gr::BlockModel& block, std::vector<Setting>& into) {
     fact.file     = fileOfType(*instance);
     fact.origin   = originOfFile(context, fact.file);
     fact.typeName = std::string(instance->typeName());
+    fact.version  = instance->version();
+    fact.status   = statusText(instance->status());
     if (registry == Registry::Blocks) {
         fact.blockCategory = std::format("{}", instance->blockCategory());
         fact.uiCategory    = std::format("{}", instance->uiCategory());
@@ -1229,6 +1245,12 @@ void printPortsAndSettings(const BlockTables& tables, std::string_view indent) {
     }
     if (first.registry == Registry::Blocks) {
         facts.emplace_back("category", std::format("{}, UI {}", first.blockCategory, first.uiCategory));
+    }
+    facts.emplace_back("version", std::to_string(first.version));
+    if (!first.status.empty()) {
+        facts.emplace_back("status", first.status);
+    }
+    if (first.registry == Registry::Blocks) {
         // A key registered under a name of its own reports the type it is an alias of, and only then is the row
         // worth a line: the type name of a key that is not an alias is the key itself.
         const auto alias = std::ranges::find_if(block.instantiations, [](const Instantiation& fact) { return !fact.typeName.empty() && fact.typeName != fact.key; });
@@ -1439,6 +1461,8 @@ void writeInstantiation(JsonWriter& json, const Instantiation& fact) {
     json.member("typeName", fact.typeName);
     json.member("blockCategory", fact.blockCategory);
     json.member("uiCategory", fact.uiCategory);
+    json.count("version", static_cast<std::size_t>(fact.version));
+    json.member("status", fact.status);
     json.member("error", fact.error);
     json.member("settingsError", fact.settingsError);
     if (fact.detailed) {
