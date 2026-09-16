@@ -11,9 +11,9 @@
 
 namespace {
 
-constexpr std::string_view kUsage = R"(gnuradio_4_0_graph_doc - describe a GNU Radio 4 flowgraph as Markdown or HTML
+constexpr std::string_view kUsage = R"(graphdoc - describe a GNU Radio 4 flowgraph as Markdown or HTML
 
-Usage: gnuradio_4_0_graph_doc [options] <graph.yaml>
+Usage: graphdoc [options] <graph.yaml>
 
   --format md|html   output format (default: md)
   --output <file>    write the document to <file> (default: standard output)
@@ -45,16 +45,16 @@ int main(int argc, char** argv) {
     for (std::size_t index = 0UZ; index < arguments.size();) {
         switch (readCommonOption(arguments, index, options, error)) {
         case OptionResult::Taken: continue;
-        case OptionResult::Failed: std::println(stderr, "gnuradio_4_0_graph_doc: {}", error); return 2;
+        case OptionResult::Failed: std::println(stderr, "graphdoc: {}", error); return 2;
         case OptionResult::NotMine: break;
         }
         const std::string_view argument = arguments[index];
         if (argument.starts_with("-") && argument != "-") {
-            std::println(stderr, "gnuradio_4_0_graph_doc: unknown option '{}'", argument);
+            std::println(stderr, "graphdoc: unknown option '{}'", argument);
             return 2;
         }
         if (!inputPath.empty()) {
-            std::println(stderr, "gnuradio_4_0_graph_doc: more than one input file given ('{}' and '{}')", inputPath, argument);
+            std::println(stderr, "graphdoc: more than one input file given ('{}' and '{}')", inputPath, argument);
             return 2;
         }
         inputPath.assign(argument);
@@ -66,13 +66,13 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (inputPath.empty()) {
-        std::println(stderr, "gnuradio_4_0_graph_doc: no input file given; --help describes the options");
+        std::println(stderr, "graphdoc: no input file given; --help describes the options");
         return 2;
     }
 
     std::ifstream input(inputPath, std::ios::binary);
     if (!input) {
-        std::println(stderr, "gnuradio_4_0_graph_doc: cannot read '{}'", inputPath);
+        std::println(stderr, "graphdoc: cannot read '{}'", inputPath);
         return 2;
     }
     std::ostringstream contents;
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
 
     const auto level = graphdoc::read(contents.str());
     if (!level.has_value()) {
-        std::println(stderr, "gnuradio_4_0_graph_doc: '{}' is not a valid graph document: {}", inputPath, level.error());
+        std::println(stderr, "graphdoc: '{}' is not a valid graph document: {}", inputPath, level.error());
         return 1;
     }
 
@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
 
     const auto written = writeDocument(options.output, graphdoc::render(*level, options.format, options.title));
     if (!written.has_value()) {
-        std::println(stderr, "gnuradio_4_0_graph_doc: {}", written.error());
+        std::println(stderr, "graphdoc: {}", written.error());
         return 2;
     }
     return 0;

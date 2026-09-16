@@ -11,7 +11,7 @@ function(add_pinned_document_test TEST_NAME FORMAT)
   add_test(
     NAME ${TEST_NAME}
     COMMAND
-      ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:gnuradio_4_0_graph_doc> -DINPUT=${GR_TOOLS_TEST_ASSETS}/nested_graph.yaml
+      ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:graphdoc> -DINPUT=${GR_TOOLS_TEST_ASSETS}/nested_graph.yaml
       -DFORMAT=${FORMAT} "-DTITLE=Nested graph fixture"
       -DACTUAL=${CMAKE_CURRENT_BINARY_DIR}/nested_graph.${FORMAT}.actual
       -DEXPECTED=${GR_TOOLS_TEST_ASSETS}/nested_graph.${FORMAT}.expected -P
@@ -30,12 +30,12 @@ function(add_option_handling_tests TOOL_TARGET)
   set_tests_properties(qa_${TOOL_TARGET}_unknown_option qa_${TOOL_TARGET}_missing_value PROPERTIES WILL_FAIL TRUE)
 endfunction()
 
-add_option_handling_tests(gnuradio_4_0_graph_doc)
+add_option_handling_tests(graphdoc)
 
 if(GR_ENABLE_BLOCK_REGISTRY)
   add_ut_test(qa_RegistryDoc)
   target_link_libraries(qa_RegistryDoc PRIVATE gnuradio-doctools)
-  add_option_handling_tests(gnuradio_4_0_registry_doc)
+  add_option_handling_tests(regdoc)
   if(INTERNAL_ENABLE_BLOCK_PLUGINS)
     # the registry document is built over core's own test plugins, which are built beside them
     target_link_libraries(qa_RegistryDoc PRIVATE gnuradio-plugin)
