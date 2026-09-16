@@ -648,7 +648,7 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
 
         // both arms are timed the same way -- start, wait for the whole stream, stop -- because the
         // nested one cannot use runAndWait()
-        const auto timeFlat = [kSamples] {
+        const auto timeFlat = [] {
             auto runtime = erasedChain("e4-timing-flat", kSamples, 2.0f, gr::Runtime::kDefaultScheduler);
             expect(runtime.has_value());
             const auto elapsed = runUntilCollected(*runtime, "e4-timing-flat", kSamples);
