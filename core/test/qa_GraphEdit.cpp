@@ -594,7 +594,7 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         using gr::graph::kMaxEdgeBufferSize;
         using gr::graph::kMinEdgeBufferSize;
 
-        constexpr double rates[] = {48.0e3, 2.4e6, 25.0e6, 61.44e6};
+        constexpr double rates[] = {8.0e3, 48.0e3, 96.0e3, 240.0e3, 2.4e6, 25.0e6, 61.44e6};
         for (const double rate : rates) {
             const std::size_t nSamples = edgeBufferSizeFor(rate);
             expect(eq(nSamples, std::bit_ceil(nSamples))) << rate << ": the ring is not a power of two";
@@ -613,6 +613,15 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         expect(eq(edgeBufferSizeFor(-1.0), kMinEdgeBufferSize)) << "a negative rate must get the smallest ring, not an empty one";
         expect(eq(edgeBufferSizeFor(1.0e12), kMaxEdgeBufferSize)) << "a rate asking for hundreds of megabytes must be held at the ceiling";
         expect(eq(edgeBufferSizeFor(2.4e6, 0.001), kMinEdgeBufferSize)) << "a shorter duration must reach the floor at a rate the default does not";
+
+        expect(eq(kMinEdgeBufferSize, 1UZ << 12)) << "the floor is Port.hpp's kDefaultBufferSize";
+        expect(eq(edgeBufferSizeFor(8.0e3), 4096UZ)) << "8 kHz: below the floor, so the floor";
+        expect(eq(edgeBufferSizeFor(48.0e3), 4096UZ)) << "48 kHz: below the floor, so the floor";
+        expect(eq(edgeBufferSizeFor(96.0e3), 8192UZ)) << "96 kHz: 4800 rounded up";
+        expect(eq(edgeBufferSizeFor(240.0e3), 16384UZ)) << "240 kHz: 12000 rounded up";
+        expect(eq(edgeBufferSizeFor(81920.0), kMinEdgeBufferSize)) << "the lower knee is the floor over the seconds, and the floor still answers it";
+        expect(eq(edgeBufferSizeFor(81940.0), 2UZ * kMinEdgeBufferSize)) << "one sample past the knee the rate takes over";
+        expect(eq(edgeBufferSizeFor(83886080.0), kMaxEdgeBufferSize)) << "the upper knee is the ceiling over the seconds";
     };
 };
 
