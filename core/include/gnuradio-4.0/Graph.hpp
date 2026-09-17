@@ -107,7 +107,7 @@ inline static constexpr std::int32_t defaultWeight   = 0;
 inline static const std::string      defaultEdgeName = "unnamed edge"; // Emscripten doesn't want constexpr strings
 
 inline constexpr double      kDefaultEdgeBufferSeconds = 0.05;
-inline constexpr std::size_t kMinEdgeBufferSize        = 1UZ << 15;
+inline constexpr std::size_t kMinEdgeBufferSize        = 1UZ << 12; // Port.hpp's kDefaultBufferSize; see edgeBufferSizeFor()
 inline constexpr std::size_t kMaxEdgeBufferSize        = 1UZ << 22;
 
 /**
@@ -116,7 +116,21 @@ inline constexpr std::size_t kMaxEdgeBufferSize        = 1UZ << 22;
  * defaultMinBufferSize()'s fixed 65536 samples is 27 ms at 2.4 MS/s and under 3 ms at 24 MS/s, so a
  * ring long enough to ride out the scheduler's wake-up jitter at one rate is short at a higher one.
  * Here the duration is fixed and the count follows the rate, rounded up to a power of two and clamped
- * at both ends against single-chunk rings at very low rates and needless latency at very high ones.
+ * at both ends.
+ *
+ * The floor answers only the block that declares something. One that declares nothing runs on a single
+ * sample, so nothing below binds it. For one that declares a chunk, computeSampleLimits() caps the call
+ * at the room left in the output ring and computeResampling() then yields zero chunks while that room is
+ * under one output_chunk_size: a work call that consumes and publishes nothing, and a scheduler that
+ * spins. A ring of exactly one chunk runs but has to drain completely between calls; two chunks is the
+ * first depth that lets one be written while the other is read. kMinEdgeBufferSize is therefore two of
+ * any chunk up to 2048, and it is also Port.hpp's kDefaultBufferSize, so a rate-derived edge is never
+ * shallower than a port nobody sized. Going much below it buys nothing anyway: CircularBuffer rounds a
+ * double-mapped ring up to a whole page's worth of elements, 1024 float or 512 complex<float> on a
+ * 4 kiB page.
+ *
+ * A consumer that asks for more than half the ring in one call -- a transform taking a whole window, a
+ * resampler with a long polyphase step -- is the caller's to size explicitly. No rate can imply it.
  */
 [[nodiscard]] inline constexpr std::size_t edgeBufferSizeFor(double sampleRate, double seconds = kDefaultEdgeBufferSeconds) noexcept {
     const double      wanted = sampleRate > 0.0 && seconds > 0.0 ? sampleRate * seconds : 0.0;
