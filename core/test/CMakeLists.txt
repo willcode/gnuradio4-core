@@ -88,7 +88,13 @@ message(
 )
 
 if(NOT GR_ENABLE_BLOCK_REGISTRY)
-  list(REMOVE_ITEM _CORE_TESTS qa_BlockRegistration qa_ErasedRuntime qa_RuntimeTest qa_SchedulerRegistration)
+  list(
+    REMOVE_ITEM
+    _CORE_TESTS
+    qa_BlockRegistration
+    qa_ErasedRuntime
+    qa_RuntimeTest
+    qa_SchedulerRegistration)
 endif()
 
 foreach(TEST_NAME IN LISTS _CORE_TESTS)
@@ -132,8 +138,9 @@ if(GR_ENABLE_BLOCK_REGISTRY)
     add_test(
       NAME qa_RuntimeCascade
       COMMAND
-        ${CMAKE_CURRENT_SOURCE_DIR}/check_runtime_cascade.sh ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../include
-        ${CMAKE_CURRENT_BINARY_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/../../meta/include ${vir-simd_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_runtime_cascade.sh ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_BINARY_DIR}/../include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../meta/include ${vir-simd_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/magic_enum)
     set_tests_properties(qa_RuntimeCascade PROPERTIES ENVIRONMENT "CXX_FOR_CASCADE_GATE=${GR_CASCADE_GATE_CLANG}")
   else()
