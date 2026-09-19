@@ -528,7 +528,8 @@ inline constexpr double      kNodePadding     = 10.0;
 inline constexpr double      kNodeGap         = 22.0; ///< between two nodes of one rank
 inline constexpr double      kRankGap         = 74.0; ///< between two ranks, which the port labels share
 inline constexpr double      kMargin          = 12.0;
-inline constexpr std::size_t kLabelCharacters = 28UZ; ///< the widest label a node draws; a longer one is cut
+inline constexpr double      kPageWidth       = 920.0; ///< the text column of the page, 60rem less its side padding
+inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a node draws; a longer one is cut
 
 /// the three characters that would otherwise end a text node or open a tag
 [[nodiscard]] inline std::string svgText(std::string_view label) {
@@ -727,10 +728,15 @@ inline constexpr std::size_t kLabelCharacters = 28UZ; ///< the widest label a no
         body += std::format("<text class=\"type\" x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\n", coordinate(node.x + node.width / 2.0), coordinate(node.y + 31.0), svgText(node.type));
     }
 
-    return std::format("<svg class=\"flowgraph\" viewBox=\"0 0 {0} {1}\" width=\"{0}\" height=\"{1}\" style=\"max-width:100%;height:auto\">\n"
+    // A drawing scaled into the page's own width stays legible while it is roughly as wide as the
+    // page. A long chain is not: twenty ranks across a text column put the labels below a pixel, so
+    // a drawing wider than the column keeps its own size and the box around it scrolls instead.
+    const std::string floor = width > kPageWidth ? std::format(";min-width:{}px", coordinate(width)) : std::string{};
+
+    return std::format("<svg class=\"flowgraph\" viewBox=\"0 0 {0} {1}\" width=\"{0}\" height=\"{1}\" style=\"max-width:100%;height:auto{4}\">\n"
                        "<defs><marker id=\"{2}-arrow\" viewBox=\"0 0 8 6\" refX=\"8\" refY=\"3\" markerWidth=\"8\" markerHeight=\"6\" markerUnits=\"userSpaceOnUse\" orient=\"auto\"><path class=\"arrow\" d=\"M 0 0 L 8 3 L 0 6 z\"/></marker></defs>\n"
                        "{3}</svg>\n",
-        coordinate(width), coordinate(height), prefix, body);
+        coordinate(width), coordinate(height), prefix, body, floor);
 }
 
 /// The name cell of the block table: the name, and the unique name in parentheses under it where

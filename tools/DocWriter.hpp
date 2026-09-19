@@ -223,8 +223,10 @@ public:
     void mermaid(std::string_view source) { _body += std::format("```mermaid\n{}```\n\n", source); }
 
     /// A drawn diagram, placed in the page as it stands. The caller owns the markup, including the
-    /// escaping of its labels; the page's style sheet declares the classes it draws with.
-    void svg(std::string_view markup) { _body += markup; }
+    /// escaping of its labels; the page's style sheet declares the classes it draws with. The box
+    /// around it scrolls sideways, as the one around a table does, so a drawing too wide to be
+    /// legible at the page's width can keep its own size instead.
+    void svg(std::string_view markup) { _body += std::format("<div class=\"diagram\">\n{}</div>\n", markup); }
 
     [[nodiscard]] std::string finish() const {
         if (_format == Format::Markdown) {
@@ -264,6 +266,7 @@ table {{ border-collapse: collapse; width: 100%; margin: 0.8rem 0; }}
 th, td {{ border: 1px solid var(--rule); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }}
 th {{ background: var(--panel); font-weight: 600; }}
 tbody tr:nth-child(even) {{ background: color-mix(in srgb, var(--panel) 45%, transparent); }}
+div.diagram {{ overflow-x: auto; }}
 svg.flowgraph {{ display: block; margin: 0.9rem 0; }}
 svg.flowgraph .node {{ fill: var(--panel); stroke: var(--muted); stroke-width: 1.2; }}
 svg.flowgraph .node.unresolved {{ stroke-dasharray: 5 4; }}

@@ -29,6 +29,7 @@ table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; }
 th, td { border: 1px solid var(--rule); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }
 th { background: var(--panel); font-weight: 600; }
 tbody tr:nth-child(even) { background: color-mix(in srgb, var(--panel) 45%, transparent); }
+div.diagram { overflow-x: auto; }
 svg.flowgraph { display: block; margin: 0.9rem 0; }
 svg.flowgraph .node { fill: var(--panel); stroke: var(--muted); stroke-width: 1.2; }
 svg.flowgraph .node.unresolved { stroke-dasharray: 5 4; }
@@ -65,6 +66,7 @@ svg.flowgraph .arrow { fill: var(--accent); }
 </table>
 </div>
 <h2>Diagram</h2>
+<div class="diagram">
 <svg class="flowgraph" viewBox="0 0 450.4 66.0" width="450.4" height="66.0" style="max-width:100%;height:auto">
 <defs><marker id="g-arrow" viewBox="0 0 8 6" refX="8" refY="3" markerWidth="8" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path class="arrow" d="M 0 0 L 8 3 L 0 6 z"/></marker></defs>
 <path class="edge" marker-end="url(#g-arrow)" d="M 98.0 33.0 C 135.0 33.0, 135.0 33.0, 172.0 33.0"/>
@@ -84,6 +86,7 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <text class="name" x="385.5" y="29.0" text-anchor="middle">sink</text>
 <text class="type" x="385.5" y="43.0" text-anchor="middle">RecordingSink</text>
 </svg>
+</div>
 <h2>Blocks</h2>
 <div class="table">
 <table>
@@ -163,6 +166,7 @@ svg.flowgraph .arrow { fill: var(--accent); }
 </table>
 </div>
 <h3>Diagram</h3>
+<div class="diagram">
 <svg class="flowgraph" viewBox="0 0 283.4 66.0" width="283.4" height="66.0" style="max-width:100%;height:auto">
 <defs><marker id="gs1-arrow" viewBox="0 0 8 6" refX="8" refY="3" markerWidth="8" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path class="arrow" d="M 0 0 L 8 3 L 0 6 z"/></marker></defs>
 <path class="edge" marker-end="url(#gs1-arrow)" d="M 96.0 33.0 C 133.0 33.0, 133.0 33.0, 170.0 33.0"/>
@@ -176,6 +180,7 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <text class="name" x="220.7" y="29.0" text-anchor="middle">inner_chain</text>
 <text class="type" x="220.7" y="43.0" text-anchor="middle">SUBGRAPH</text>
 </svg>
+</div>
 <h3>Blocks</h3>
 <div class="table">
 <table>
@@ -219,6 +224,7 @@ svg.flowgraph .arrow { fill: var(--accent); }
 </table>
 </div>
 <h4>Diagram</h4>
+<div class="diagram">
 <svg class="flowgraph" viewBox="0 0 268.6 66.0" width="268.6" height="66.0" style="max-width:100%;height:auto">
 <defs><marker id="gs1s1-arrow" viewBox="0 0 8 6" refX="8" refY="3" markerWidth="8" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path class="arrow" d="M 0 0 L 8 3 L 0 6 z"/></marker></defs>
 <path class="edge" marker-end="url(#gs1s1-arrow)" d="M 98.6 33.0 C 135.6 33.0, 135.6 33.0, 172.6 33.0"/>
@@ -231,6 +237,7 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <text class="name" x="214.6" y="29.0" text-anchor="middle">combiner</text>
 <text class="type" x="214.6" y="43.0" text-anchor="middle">SumInputs</text>
 </svg>
+</div>
 <h4>Blocks</h4>
 <div class="table">
 <table>

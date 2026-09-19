@@ -275,9 +275,30 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         expect(eq(occurrences(document, "<path class=\"edge\""), 4UZ)) << "one edge per connection of every level";
         expect(eq(occurrences(document, "<pre class=\"mermaid\""), 0UZ)) << "the page carries no diagram as text";
         expect(document.find("viewBox=\"0 0 ") != std::string::npos) << "the drawing scales with the page";
+        expect(eq(occurrences(document, "<div class=\"diagram\">"), 3UZ)) << "each drawing sits in a box of its own";
+        expect(document.find("style=\"max-width:100%;height:auto\"") != std::string::npos) << "a drawing that fits the page is scaled to it";
+        expect(document.find("min-width:") == std::string::npos) << "and is given no floor";
         expect(document.find("<rect class=\"inner\"") != std::string::npos) << "the subgraph node carries a second border";
         expect(document.find(">front_end<") != std::string::npos) << "a node is labeled with the block's name";
         expect(document.find(">RampSource<") != std::string::npos) << "and with its type";
+    };
+
+    "a chain too long to scale into the page keeps its own size"_test = [] {
+        constexpr std::size_t kRanks = 20UZ;
+        std::string           chain  = "blocks:\n";
+        for (std::size_t i = 0UZ; i < kRanks; ++i) {
+            chain += std::format("  - id: qa::Scale\n    parameters:\n      name: b{}\n", i);
+        }
+        chain += "connections:\n";
+        for (std::size_t i = 0UZ; i + 1UZ < kRanks; ++i) {
+            chain += std::format("  - [b{}, out, b{}, in]\n", i, i + 1UZ);
+        }
+
+        const auto level = graphdoc::read(chain);
+        expect(fatal(level.has_value()));
+        const std::string drawn = graphdoc::svgOf(*level, "g");
+        expect(drawn.find("style=\"max-width:100%;height:auto;min-width:") != std::string::npos) << "the drawing keeps its width and the box scrolls";
+        expect(eq(occurrences(drawn, "<rect class=\"node\""), kRanks)) << "one node per block, whatever the width";
     };
 
     "the diagram stands before the blocks of its level in both formats"_test = [] {
