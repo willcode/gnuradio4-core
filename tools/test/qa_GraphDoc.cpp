@@ -156,13 +156,13 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
     };
 
     "a templated type splits at its first angle bracket"_test = [] {
-        const auto level = graphdoc::read("blocks:\n  - id: qa::Convert<float32, complex<float32>>\n    parameters:\n      name: widen\n");
+        const auto level = graphdoc::read("blocks:\n  - id: qa::Convert<float32, complex<float32>>\n    version: 2\n    parameters:\n      name: widen\n");
         expect(level.has_value());
         const std::string markdown = graphdoc::render(*level, Format::Markdown, "t");
-        expect(markdown.find("qa::Convert<br><float32, complex<float32>>") != std::string::npos) << markdown;
+        expect(markdown.find("qa::Convert<br><float32, complex<float32>><br>(version 2 pinned)") != std::string::npos) << markdown;
 
         const std::string html = graphdoc::render(*level, Format::Html, "t");
-        expect(html.find("qa::Convert<br>&lt;float32, complex&lt;float32&gt;&gt;") != std::string::npos) << html;
+        expect(html.find("qa::Convert<br>&lt;float32, complex&lt;float32&gt;&gt;<br>(version 2 pinned)") != std::string::npos) << html;
     };
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
