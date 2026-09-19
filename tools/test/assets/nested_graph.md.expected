@@ -21,9 +21,9 @@
 
 ```mermaid
 flowchart LR
-    gb0["source<br/>qa::RampSource"]
-    gb1[["front_end<br/>SUBGRAPH"]]
-    gb2["sink<br/>qa::RecordingSink"]
+    gb0["source"]
+    gb1[["front_end"]]
+    gb2["sink"]
     gb0 -- "0 to 0" --> gb1
     gb1 -- "0 to 0" --> gb2
 ```
@@ -82,8 +82,8 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    gs1b0["pre_gain<br/>qa::Scale"]
-    gs1b1[["inner_chain<br/>SUBGRAPH"]]
+    gs1b0["pre_gain"]
+    gs1b1[["inner_chain"]]
     gs1b0 -- "out to in" --> gs1b1
 ```
 
@@ -120,8 +120,8 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    gs1s1b0["fine_gain<br/>qa::Scale"]
-    gs1s1b1["combiner<br/>qa::SumInputs"]
+    gs1s1b0["fine_gain"]
+    gs1s1b1["combiner"]
     gs1s1b0 -- "out to 0.0" --> gs1s1b1
 ```
 

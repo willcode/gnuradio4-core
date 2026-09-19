@@ -448,6 +448,27 @@ inline void collectSchedulers(const Level& level, std::vector<std::string>& out)
     }
 }
 
+/// the item types the framework spells with a short name, which is short enough for a node label
+inline constexpr std::array<std::string_view, 12> kSimpleItemTypes{"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64", "complex<float32>", "complex<float64>"};
+
+/**
+ * @brief The item type a node is labeled with, or nothing.
+ *
+ * A key whose one template argument is a scalar or a complex of one says what the block carries in
+ * a few characters, which is all a node has room for: `PpmFramer<complex<float32>>` gives
+ * `complex<float32>`. A key with no template argument, with more than one, or with one the
+ * framework does not spell with a short name gives nothing, and the block table below the drawing
+ * spells the type in full.
+ */
+[[nodiscard]] inline std::string nodeType(std::string_view type) {
+    const std::size_t open = type.find('<');
+    if (open == std::string_view::npos || !type.ends_with('>')) {
+        return {};
+    }
+    const std::string_view argument = type.substr(open + 1UZ, type.size() - open - 2UZ);
+    return std::ranges::find(kSimpleItemTypes, argument) == kSimpleItemTypes.end() ? std::string{} : std::string(argument);
+}
+
 /// mermaid takes its labels between quotes, so the quote and the entity marker are spelled as entities
 [[nodiscard]] inline std::string mermaidLabel(std::string_view label) {
     std::string out;
@@ -479,7 +500,9 @@ inline void collectSchedulers(const Level& level, std::vector<std::string>& out)
     for (std::size_t i = 0UZ; i < level.blocks.size(); ++i) {
         const Block&      block = level.blocks[i];
         const std::string id    = std::format("{}b{}", prefix, i);
-        const std::string label = mermaidLabel(std::format("{}\n{}", block.name.empty() ? "(unnamed)" : block.name, block.type));
+        const std::string name  = block.name.empty() ? std::string("(unnamed)") : block.name;
+        const std::string type  = nodeType(block.type);
+        const std::string label = mermaidLabel(type.empty() ? name : std::format("{}\n{}", name, type));
         nodes += block.isSubgraph() ? std::format("    {}[[\"{}\"]]\n", id, label) : std::format("    {}[\"{}\"]\n", id, label);
         if (!block.uniqueName.empty()) {
             idForName.emplace(block.uniqueName, id);
@@ -551,15 +574,6 @@ inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a n
 
 /// `text` cut to `limit` characters, its tail replaced by an ellipsis
 [[nodiscard]] inline std::string fitLabel(std::string_view text, std::size_t limit) { return text.size() <= limit ? std::string(text) : std::format("{}...", text.substr(0UZ, limit - 3UZ)); }
-
-/// The type a node is labeled with: the key's own name with its template arguments, without the
-/// namespace, which the block table below the diagram spells in full.
-[[nodiscard]] inline std::string nodeType(std::string_view type) {
-    const std::size_t      open      = type.find('<');
-    const std::string_view qualified = open == std::string_view::npos ? type : type.substr(0UZ, open);
-    const std::size_t      separator = qualified.rfind("::");
-    return fitLabel(separator == std::string_view::npos ? type : type.substr(separator + 2UZ), kLabelCharacters);
-}
 
 /**
  * @brief One graph level drawn as an inline SVG: a layered flowgraph, the signal running left to right.
@@ -724,8 +738,11 @@ inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a n
         if (node.subgraph) {
             body += std::format("<rect class=\"inner\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"5\" ry=\"5\"/>\n", coordinate(node.x + 3.0), coordinate(node.y + 3.0), coordinate(node.width - 6.0), coordinate(kNodeHeight - 6.0));
         }
-        body += std::format("<text class=\"name\" x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\n", coordinate(node.x + node.width / 2.0), coordinate(node.y + 17.0), svgText(node.name));
-        body += std::format("<text class=\"type\" x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\n", coordinate(node.x + node.width / 2.0), coordinate(node.y + 31.0), svgText(node.type));
+        // a node with nothing on its second line carries the name in the middle of the box instead
+        body += std::format("<text class=\"name\" x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\n", coordinate(node.x + node.width / 2.0), coordinate(node.y + (node.type.empty() ? 26.0 : 17.0)), svgText(node.name));
+        if (!node.type.empty()) {
+            body += std::format("<text class=\"type\" x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\n", coordinate(node.x + node.width / 2.0), coordinate(node.y + 31.0), svgText(node.type));
+        }
     }
 
     // A drawing scaled into the page's own width stays legible while it is roughly as wide as the
@@ -805,8 +822,9 @@ inline void writeLevelBody(DocWriter& writer, const Level& level, std::size_t de
             }
             rows.push_back({nameCell(block), typeCell(block), parameters, block.metaInformation});
         }
+        // the block table is the one that grows without bound, so it is the one held in a box
         const std::array<std::string_view, 4> headers{"Name", "Type", "Parameters", "Meta information"};
-        writer.table(headers, rows);
+        writer.table(headers, rows, true);
     }
 
     writer.heading(headingLevel, "Connections");

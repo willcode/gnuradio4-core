@@ -25,6 +25,10 @@ code { background: var(--panel); padding: 0.1em 0.35em; border-radius: 3px; }
 pre { background: var(--panel); border: 1px solid var(--rule); border-radius: 5px; padding: 0.9rem 1rem; overflow-x: auto; }
 pre code { background: none; padding: 0; }
 div.table { overflow-x: auto; }
+div.table.bounded { max-height: 60vh; overflow: auto; margin: 0.8rem 0; }
+div.table.bounded table { margin: 0; }
+/* a collapsed border does not travel with a sticky cell, so the header keeps its rule as a shadow */
+div.table.bounded thead th { position: sticky; top: 0; z-index: 1; box-shadow: inset 0 -1px var(--rule); }
 table { border-collapse: collapse; width: 100%; margin: 0.8rem 0; }
 th, td { border: 1px solid var(--rule); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }
 th { background: var(--panel); font-weight: 600; }
@@ -67,28 +71,25 @@ svg.flowgraph .arrow { fill: var(--accent); }
 </div>
 <h2>Diagram</h2>
 <div class="diagram">
-<svg class="flowgraph" viewBox="0 0 450.4 66.0" width="450.4" height="66.0" style="max-width:100%;height:auto">
+<svg class="flowgraph" viewBox="0 0 426.6 66.0" width="426.6" height="66.0" style="max-width:100%;height:auto">
 <defs><marker id="g-arrow" viewBox="0 0 8 6" refX="8" refY="3" markerWidth="8" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path class="arrow" d="M 0 0 L 8 3 L 0 6 z"/></marker></defs>
-<path class="edge" marker-end="url(#g-arrow)" d="M 98.0 33.0 C 135.0 33.0, 135.0 33.0, 172.0 33.0"/>
-<text class="port" x="103.0" y="28.0">0</text>
-<text class="port" x="167.0" y="28.0" text-anchor="end">0</text>
-<path class="edge" marker-end="url(#g-arrow)" d="M 258.6 33.0 C 295.6 33.0, 295.6 33.0, 332.6 33.0"/>
-<text class="port" x="263.6" y="28.0">0</text>
-<text class="port" x="327.6" y="28.0" text-anchor="end">0</text>
-<rect class="node" x="12.0" y="12.0" width="86.0" height="42.0" rx="7" ry="7"/>
-<text class="name" x="55.0" y="29.0" text-anchor="middle">source</text>
-<text class="type" x="55.0" y="43.0" text-anchor="middle">RampSource</text>
-<rect class="node" x="172.0" y="12.0" width="86.6" height="42.0" rx="7" ry="7"/>
-<rect class="inner" x="175.0" y="15.0" width="80.6" height="36.0" rx="5" ry="5"/>
-<text class="name" x="215.3" y="29.0" text-anchor="middle">front_end</text>
-<text class="type" x="215.3" y="43.0" text-anchor="middle">SUBGRAPH</text>
-<rect class="node" x="332.6" y="12.0" width="105.8" height="42.0" rx="7" ry="7"/>
-<text class="name" x="385.5" y="29.0" text-anchor="middle">sink</text>
-<text class="type" x="385.5" y="43.0" text-anchor="middle">RecordingSink</text>
+<path class="edge" marker-end="url(#g-arrow)" d="M 96.0 33.0 C 133.0 33.0, 133.0 33.0, 170.0 33.0"/>
+<text class="port" x="101.0" y="28.0">0</text>
+<text class="port" x="165.0" y="28.0" text-anchor="end">0</text>
+<path class="edge" marker-end="url(#g-arrow)" d="M 256.6 33.0 C 293.6 33.0, 293.6 33.0, 330.6 33.0"/>
+<text class="port" x="261.6" y="28.0">0</text>
+<text class="port" x="325.6" y="28.0" text-anchor="end">0</text>
+<rect class="node" x="12.0" y="12.0" width="84.0" height="42.0" rx="7" ry="7"/>
+<text class="name" x="54.0" y="38.0" text-anchor="middle">source</text>
+<rect class="node" x="170.0" y="12.0" width="86.6" height="42.0" rx="7" ry="7"/>
+<rect class="inner" x="173.0" y="15.0" width="80.6" height="36.0" rx="5" ry="5"/>
+<text class="name" x="213.3" y="38.0" text-anchor="middle">front_end</text>
+<rect class="node" x="330.6" y="12.0" width="84.0" height="42.0" rx="7" ry="7"/>
+<text class="name" x="372.6" y="38.0" text-anchor="middle">sink</text>
 </svg>
 </div>
 <h2>Blocks</h2>
-<div class="table">
+<div class="table bounded">
 <table>
 <thead>
 <tr><th>Name</th><th>Type</th><th>Parameters</th><th>Meta information</th></tr>
@@ -173,16 +174,14 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <text class="port" x="101.0" y="28.0">out</text>
 <text class="port" x="165.0" y="28.0" text-anchor="end">in</text>
 <rect class="node" x="12.0" y="12.0" width="84.0" height="42.0" rx="7" ry="7"/>
-<text class="name" x="54.0" y="29.0" text-anchor="middle">pre_gain</text>
-<text class="type" x="54.0" y="43.0" text-anchor="middle">Scale</text>
+<text class="name" x="54.0" y="38.0" text-anchor="middle">pre_gain</text>
 <rect class="node" x="170.0" y="12.0" width="101.4" height="42.0" rx="7" ry="7"/>
 <rect class="inner" x="173.0" y="15.0" width="95.4" height="36.0" rx="5" ry="5"/>
-<text class="name" x="220.7" y="29.0" text-anchor="middle">inner_chain</text>
-<text class="type" x="220.7" y="43.0" text-anchor="middle">SUBGRAPH</text>
+<text class="name" x="220.7" y="38.0" text-anchor="middle">inner_chain</text>
 </svg>
 </div>
 <h3>Blocks</h3>
-<div class="table">
+<div class="table bounded">
 <table>
 <thead>
 <tr><th>Name</th><th>Type</th><th>Parameters</th><th>Meta information</th></tr>
@@ -231,15 +230,13 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <text class="port" x="103.6" y="28.0">out</text>
 <text class="port" x="167.6" y="28.0" text-anchor="end">0.0</text>
 <rect class="node" x="12.0" y="12.0" width="86.6" height="42.0" rx="7" ry="7"/>
-<text class="name" x="55.3" y="29.0" text-anchor="middle">fine_gain</text>
-<text class="type" x="55.3" y="43.0" text-anchor="middle">Scale</text>
+<text class="name" x="55.3" y="38.0" text-anchor="middle">fine_gain</text>
 <rect class="node" x="172.6" y="12.0" width="84.0" height="42.0" rx="7" ry="7"/>
-<text class="name" x="214.6" y="29.0" text-anchor="middle">combiner</text>
-<text class="type" x="214.6" y="43.0" text-anchor="middle">SumInputs</text>
+<text class="name" x="214.6" y="38.0" text-anchor="middle">combiner</text>
 </svg>
 </div>
 <h4>Blocks</h4>
-<div class="table">
+<div class="table bounded">
 <table>
 <thead>
 <tr><th>Name</th><th>Type</th><th>Parameters</th><th>Meta information</th></tr>

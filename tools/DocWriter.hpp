@@ -179,13 +179,16 @@ public:
         return _format == Format::Html ? std::format("<a href=\"#{}\">{}</a>", anchorName, text(label)) : std::format("[{}](#{})", text(label), anchorName);
     }
 
-    /// rows carry raw cell text; the writer escapes each one
-    void table(std::span<const std::string_view> headers, std::span<const std::vector<std::string>> rows) {
+    /// Rows carry raw cell text; the writer escapes each one. A `bounded` table is given a box of
+    /// its own that scrolls in both directions past a fixed height, its header row staying in view,
+    /// so that a long table does not push what follows it off the page. Markdown has one table
+    /// shape and ignores the request.
+    void table(std::span<const std::string_view> headers, std::span<const std::vector<std::string>> rows, bool bounded = false) {
         if (headers.empty()) {
             return;
         }
         if (_format == Format::Html) {
-            _body += "<div class=\"table\">\n<table>\n<thead>\n<tr>";
+            _body += bounded ? "<div class=\"table bounded\">\n<table>\n<thead>\n<tr>" : "<div class=\"table\">\n<table>\n<thead>\n<tr>";
             for (const std::string_view header : headers) {
                 _body += std::format("<th>{}</th>", cell(header));
             }
@@ -262,6 +265,10 @@ code {{ background: var(--panel); padding: 0.1em 0.35em; border-radius: 3px; }}
 pre {{ background: var(--panel); border: 1px solid var(--rule); border-radius: 5px; padding: 0.9rem 1rem; overflow-x: auto; }}
 pre code {{ background: none; padding: 0; }}
 div.table {{ overflow-x: auto; }}
+div.table.bounded {{ max-height: 60vh; overflow: auto; margin: 0.8rem 0; }}
+div.table.bounded table {{ margin: 0; }}
+/* a collapsed border does not travel with a sticky cell, so the header keeps its rule as a shadow */
+div.table.bounded thead th {{ position: sticky; top: 0; z-index: 1; box-shadow: inset 0 -1px var(--rule); }}
 table {{ border-collapse: collapse; width: 100%; margin: 0.8rem 0; }}
 th, td {{ border: 1px solid var(--rule); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }}
 th {{ background: var(--panel); font-weight: 600; }}

@@ -247,8 +247,8 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
     "the diagram labels nodes and edges"_test = [] {
         const std::string diagram = graphdoc::diagramOf(readFixture(), "g");
         expect(diagram.starts_with("flowchart LR\n"));
-        expect(diagram.find("source<br/>qa::RampSource") != std::string::npos) << "a node carries the block name and its type";
-        expect(diagram.find("[[\"front_end<br/>SUBGRAPH\"]]") != std::string::npos) << "a subgraph node uses the subroutine shape";
+        expect(diagram.find("[\"source\"]") != std::string::npos) << "a node carries the block name";
+        expect(diagram.find("[[\"front_end\"]]") != std::string::npos) << "a subgraph node uses the subroutine shape";
         expect(eq(occurrences(diagram, " --> "), 2UZ)) << "one edge per connection of the level";
         expect(diagram.find("-- \"0 to 0\" -->") != std::string::npos) << "an edge is labeled with its ports";
     };
@@ -280,7 +280,36 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         expect(document.find("min-width:") == std::string::npos) << "and is given no floor";
         expect(document.find("<rect class=\"inner\"") != std::string::npos) << "the subgraph node carries a second border";
         expect(document.find(">front_end<") != std::string::npos) << "a node is labeled with the block's name";
-        expect(document.find(">RampSource<") != std::string::npos) << "and with its type";
+    };
+
+    "a node names the item type a key spells simply, and nothing where it does not"_test = [] {
+        const auto level = graphdoc::read("blocks:\n"
+                                          "  - id: qa::PpmFramer<complex<float32>>\n    parameters:\n      name: framer\n"
+                                          "  - id: qa::RampSource\n    parameters:\n      name: plain\n"
+                                          "  - id: qa::Convert<float32, uint8>\n    parameters:\n      name: pair\n"
+                                          "  - id: qa::TagSink<DataSet<uint8>>\n    parameters:\n      name: nested\n");
+        expect(fatal(level.has_value()));
+
+        const std::string diagram = graphdoc::diagramOf(*level, "g");
+        expect(diagram.find("[\"framer<br/>complex<float32>\"]") != std::string::npos) << diagram;
+        expect(diagram.find("[\"plain\"]") != std::string::npos) << "a key with no template argument carries its name alone";
+        expect(diagram.find("[\"pair\"]") != std::string::npos) << "and so does one with two arguments";
+        expect(diagram.find("[\"nested\"]") != std::string::npos) << "and one whose argument is not a simple item type";
+
+        const std::string drawn = graphdoc::svgOf(*level, "g");
+        expect(eq(occurrences(drawn, "<text class=\"type\""), 1UZ)) << "the drawing labels the one node that has an item type";
+        expect(drawn.find(">complex&lt;float32&gt;<") != std::string::npos) << drawn;
+    };
+
+    "the block table sits in a box that scrolls, and the tables beside it do not"_test = [] {
+        const std::string html = graphdoc::render(readFixture(), Format::Html, "Nested graph fixture");
+        expect(eq(occurrences(html, "<div class=\"table bounded\">"), 3UZ)) << "the block table of each of the three levels";
+        expect(html.find("max-height: 60vh") != std::string::npos) << "the box is bounded in height";
+        expect(html.find("position: sticky") != std::string::npos) << "and the header row stays in view while it scrolls";
+        expect(occurrences(html, "<div class=\"table\">") > 0UZ) << "a table that is not the block table keeps the plain box";
+
+        const std::string markdown = graphdoc::render(readFixture(), Format::Markdown, "Nested graph fixture");
+        expect(markdown.find("bounded") == std::string::npos) << "Markdown has one table shape";
     };
 
     "a chain too long to scale into the page keeps its own size"_test = [] {
