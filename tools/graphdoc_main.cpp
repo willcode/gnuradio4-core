@@ -22,14 +22,15 @@ Usage: graphdoc [options] <graph.yaml>
 
 Reads the GRC YAML dialect the framework's own importer reads: blocks with their
 parameters, connections, and SUBGRAPH entries with their nested graphs and exported
-ports, to any depth. The document carries a summary, a table of blocks, a table of
-connections and a mermaid flowchart for every graph level.
+ports, to any depth. Every graph level gets a diagram, a table of blocks and a table
+of connections, in that order, under a summary of the whole file.
 
 No block is instantiated and no registry is consulted, so a graph whose blocks this
 build does not provide is described just as well as one it does.
 
-The HTML is a single self-contained page: its style sheet is embedded and it loads
-nothing over the network.
+The HTML is a single self-contained page: its style sheet is embedded, it loads
+nothing over the network, and it draws every diagram itself as an inline SVG. The
+Markdown carries the same diagram as a mermaid flowchart.
 )";
 
 } // namespace

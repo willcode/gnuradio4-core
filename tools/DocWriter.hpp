@@ -31,9 +31,10 @@ enum class Format { Markdown, Html };
  *
  * The caller describes the document structurally -- headings, lists, tables, diagrams -- and
  * the writer spells it for the chosen format. The HTML page carries its style sheet inline and
- * references nothing outside itself, so it renders with the network unavailable; a diagram is
- * carried as mermaid source in both formats, fenced in Markdown and in a `pre.mermaid` in HTML,
- * which a mermaid-aware viewer draws and any other viewer shows as legible text.
+ * references nothing outside itself, so it renders with the network unavailable; a diagram
+ * reaches it as an inline `svg` the caller drew, which a browser draws with no script and no
+ * library. Markdown carries a diagram as mermaid source in a fenced block, which a
+ * mermaid-aware reader draws and any other reader shows as legible text.
  *
  * Anchors are minted here rather than left to the renderer, because CommonMark has no anchor
  * syntax and a heading-derived anchor differs between renderers. Markdown headings therefore
@@ -47,6 +48,9 @@ class DocWriter {
 
 public:
     DocWriter(Format format, std::string title) : _format(format), _title(std::move(title)) {}
+
+    /// the format the document is being spelled in; a caller that draws a diagram picks its form from it
+    [[nodiscard]] Format format() const noexcept { return _format; }
 
     /// escapes text for a table cell: a newline becomes a line break, and the cell separator and
     /// the markup characters of the target format lose their meaning
@@ -215,25 +219,12 @@ public:
         }
     }
 
-    /// the diagram source travels in both formats; a mermaid-aware viewer draws it and any other
-    /// shows it as text, which is why the HTML keeps the line breaks rather than escaping them away
-    void mermaid(std::string_view source) {
-        if (_format == Format::Markdown) {
-            _body += std::format("```mermaid\n{}```\n\n", source);
-            return;
-        }
-        std::string escaped;
-        escaped.reserve(source.size());
-        for (const char c : source) {
-            switch (c) {
-            case '&': escaped += "&amp;"; break;
-            case '<': escaped += "&lt;"; break;
-            case '>': escaped += "&gt;"; break;
-            default: escaped += c; break;
-            }
-        }
-        _body += std::format("<pre class=\"mermaid\">\n{}</pre>\n", escaped);
-    }
+    /// a mermaid diagram, which a Markdown reader draws from its fenced source
+    void mermaid(std::string_view source) { _body += std::format("```mermaid\n{}```\n\n", source); }
+
+    /// A drawn diagram, placed in the page as it stands. The caller owns the markup, including the
+    /// escaping of its labels; the page's style sheet declares the classes it draws with.
+    void svg(std::string_view markup) { _body += markup; }
 
     [[nodiscard]] std::string finish() const {
         if (_format == Format::Markdown) {
@@ -273,6 +264,15 @@ table {{ border-collapse: collapse; width: 100%; margin: 0.8rem 0; }}
 th, td {{ border: 1px solid var(--rule); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }}
 th {{ background: var(--panel); font-weight: 600; }}
 tbody tr:nth-child(even) {{ background: color-mix(in srgb, var(--panel) 45%, transparent); }}
+svg.flowgraph {{ display: block; margin: 0.9rem 0; }}
+svg.flowgraph .node {{ fill: var(--panel); stroke: var(--muted); stroke-width: 1.2; }}
+svg.flowgraph .node.unresolved {{ stroke-dasharray: 5 4; }}
+svg.flowgraph .inner {{ fill: none; stroke: var(--muted); stroke-width: 1; }}
+svg.flowgraph .name {{ fill: var(--fg); font: 600 13px -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }}
+svg.flowgraph .type {{ fill: var(--muted); font: 11px ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; }}
+svg.flowgraph .port {{ fill: var(--muted); font: 10px ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; }}
+svg.flowgraph .edge {{ fill: none; stroke: var(--accent); stroke-width: 1.3; }}
+svg.flowgraph .arrow {{ fill: var(--accent); }}
 </style>
 </head>
 <body>

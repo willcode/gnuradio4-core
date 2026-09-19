@@ -1,6 +1,7 @@
 #include <boost/ut.hpp>
 
 #include <array>
+#include <cstddef>
 #include <format>
 #include <fstream>
 #include <sstream>
@@ -35,6 +36,16 @@ using namespace gr::tools;
         ++count;
     }
     return count;
+}
+
+/// the `x` the element beginning at `at` is drawn at, or -1 where it states none
+[[nodiscard]] double leftEdgeOf(std::string_view document, std::size_t at) {
+    const std::size_t attribute = document.find(" x=\"", at);
+    if (attribute == std::string_view::npos) {
+        return -1.0;
+    }
+    const std::size_t begin = attribute + 4UZ;
+    return std::stod(std::string(document.substr(begin, document.find('"', begin) - begin)));
 }
 
 [[nodiscard]] graphdoc::Level readFixture() {
@@ -158,8 +169,31 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
             expect(document.find(forbidden) == std::string::npos) << std::format("the page reaches outside itself: '{}'", forbidden);
         }
         expect(document.starts_with("<!DOCTYPE html>"));
-        expect(document.find("<pre class=\"mermaid\">") != std::string::npos) << "the diagram source travels with the page";
+        expect(document.find("<svg class=\"flowgraph\"") != std::string::npos) << "the diagram is drawn into the page";
         expect(document.find("&lt;") != std::string::npos || document.find("&amp;") != std::string::npos) << "the page escapes its content";
+    };
+
+    "the HTML draws one picture per level, one node per block and one edge per connection"_test = [] {
+        const std::string document = graphdoc::render(readFixture(), Format::Html, "Nested graph fixture");
+        expect(eq(occurrences(document, "<svg class=\"flowgraph\""), 3UZ)) << "one drawing per graph level";
+        expect(eq(occurrences(document, "<rect class=\"node"), 7UZ)) << "one node per block of every level";
+        expect(eq(occurrences(document, "<path class=\"edge\""), 4UZ)) << "one edge per connection of every level";
+        expect(eq(occurrences(document, "<pre class=\"mermaid\""), 0UZ)) << "the page carries no diagram as text";
+        expect(document.find("viewBox=\"0 0 ") != std::string::npos) << "the drawing scales with the page";
+        expect(document.find("<rect class=\"inner\"") != std::string::npos) << "the subgraph node carries a second border";
+        expect(document.find(">front_end<") != std::string::npos) << "a node is labeled with the block's name";
+        expect(document.find(">RampSource<") != std::string::npos) << "and with its type";
+    };
+
+    "the diagram stands before the blocks of its level in both formats"_test = [] {
+        const std::string markdown = graphdoc::render(readFixture(), Format::Markdown, "Nested graph fixture");
+        expect(markdown.find("## Diagram") < markdown.find("## Blocks")) << "the Markdown diagram follows the summary and leads the tables";
+        expect(markdown.find("## Summary") < markdown.find("## Diagram"));
+        expect(markdown.find("### Diagram") < markdown.find("### Blocks")) << "and so does a subgraph's";
+
+        const std::string html = graphdoc::render(readFixture(), Format::Html, "Nested graph fixture");
+        expect(html.find("<svg class=\"flowgraph\"") < html.find("<h2>Blocks</h2>"));
+        expect(html.find("<h2>Summary</h2>") < html.find("<svg class=\"flowgraph\""));
     };
 
     "the same input yields the same bytes"_test = [] {
@@ -189,6 +223,29 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         const std::string diagram = graphdoc::diagramOf(*level, "g");
         expect(diagram.find("(unresolved)") != std::string::npos) << "the missing end is drawn and marked";
         expect(diagram.find("classDef unresolved") != std::string::npos);
+
+        const std::string drawing = graphdoc::svgOf(*level, "g");
+        expect(eq(occurrences(drawing, "<rect class=\"node"), 2UZ)) << "the missing end is a node of the drawing too";
+        expect(drawing.find("<rect class=\"node unresolved\"") != std::string::npos) << "and it is drawn dashed";
+        expect(drawing.find(">(unresolved)<") != std::string::npos);
+    };
+
+    "the drawing ranks a chain left to right and breaks a cycle at the edge that closes it"_test = [] {
+        const auto chain = graphdoc::read("blocks:\n  - id: qa::Scale\n    parameters:\n      name: first\n  - id: qa::Scale\n    parameters:\n      name: second\nconnections:\n  - [first, out, second, in]\n");
+        expect(chain.has_value());
+        const std::string drawn = graphdoc::svgOf(*chain, "g");
+        const std::size_t firstNode  = drawn.find("<rect class=\"node\"");
+        const std::size_t secondNode = drawn.find("<rect class=\"node\"", firstNode + 1UZ);
+        expect(firstNode != std::string::npos && secondNode != std::string::npos);
+        expect(leftEdgeOf(drawn, firstNode) < leftEdgeOf(drawn, secondNode)) << "the destination stands to the right of its source";
+
+        const auto loop = graphdoc::read("blocks:\n  - id: qa::Scale\n    parameters:\n      name: first\n  - id: qa::Scale\n    parameters:\n      name: second\nconnections:\n  - [first, out, second, in]\n  - [second, out, first, in]\n");
+        expect(loop.has_value());
+        const std::string cycle      = graphdoc::svgOf(*loop, "g");
+        const std::size_t cycleFirst = cycle.find("<rect class=\"node\"");
+        const std::size_t cycleAfter = cycle.find("<rect class=\"node\"", cycleFirst + 1UZ);
+        expect(leftEdgeOf(cycle, cycleFirst) < leftEdgeOf(cycle, cycleAfter)) << "the edge that closes the cycle does not rank its destination";
+        expect(eq(occurrences(cycle, "<path class=\"edge\""), 2UZ)) << "both connections are still drawn";
     };
 };
 

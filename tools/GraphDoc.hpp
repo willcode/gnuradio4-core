@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <format>
 #include <map>
@@ -11,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <gnuradio-4.0/Tag.hpp>
@@ -421,7 +424,7 @@ inline void collectSchedulers(const Level& level, std::vector<std::string>& out)
 }
 
 /**
- * @brief A `flowchart LR` of one graph level.
+ * @brief A `flowchart LR` of one graph level, the form a Markdown reader draws a diagram from.
  *
  * Node identifiers are minted from the level prefix and the block position, so they are stable
  * across runs and unique across nesting depths. An endpoint no block of the level answers to is
@@ -473,6 +476,223 @@ inline void collectSchedulers(const Level& level, std::vector<std::string>& out)
     return diagram;
 }
 
+/// The geometry of a drawn flowgraph, in the units of the page. A label's width is estimated from a
+/// fixed advance per character rather than measured: the two fonts are the page's own, which
+/// `DocWriter`'s style sheet declares, and each constant is the advance that font takes for an
+/// ASCII identifier.
+inline constexpr double      kNameCharWidth   = 7.4;  ///< 13 px of the page's sans stack
+inline constexpr double      kTypeCharWidth   = 6.6;  ///< 11 px of the page's monospace stack
+inline constexpr double      kNodeHeight      = 42.0;
+inline constexpr double      kNodeMinWidth    = 84.0;
+inline constexpr double      kNodePadding     = 10.0;
+inline constexpr double      kNodeGap         = 22.0; ///< between two nodes of one rank
+inline constexpr double      kRankGap         = 74.0; ///< between two ranks, which the port labels share
+inline constexpr double      kMargin          = 12.0;
+inline constexpr std::size_t kLabelCharacters = 28UZ; ///< the widest label a node draws; a longer one is cut
+
+/// the three characters that would otherwise end a text node or open a tag
+[[nodiscard]] inline std::string svgText(std::string_view label) {
+    std::string out;
+    out.reserve(label.size());
+    for (const char c : label) {
+        switch (c) {
+        case '&': out += "&amp;"; break;
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        default: out += c; break;
+        }
+    }
+    return out;
+}
+
+/// a coordinate to one decimal, so the same graph draws the same bytes
+[[nodiscard]] inline std::string coordinate(double value) { return std::format("{:.1f}", value); }
+
+/// `text` cut to `limit` characters, its tail replaced by an ellipsis
+[[nodiscard]] inline std::string fitLabel(std::string_view text, std::size_t limit) { return text.size() <= limit ? std::string(text) : std::format("{}...", text.substr(0UZ, limit - 3UZ)); }
+
+/// The type a node is labeled with: the key's own name with its template arguments, without the
+/// namespace, which the block table below the diagram spells in full.
+[[nodiscard]] inline std::string nodeType(std::string_view type) {
+    const std::size_t      open      = type.find('<');
+    const std::string_view qualified = open == std::string_view::npos ? type : type.substr(0UZ, open);
+    const std::size_t      separator = qualified.rfind("::");
+    return fitLabel(separator == std::string_view::npos ? type : type.substr(separator + 2UZ), kLabelCharacters);
+}
+
+/**
+ * @brief One graph level drawn as an inline SVG: a layered flowgraph, the signal running left to right.
+ *
+ * A block's rank is the longest path to it from a source, so every edge but the one that closes a
+ * cycle runs left to right; a depth-first walk in block order finds that edge and the ranking
+ * leaves it out. Within a rank the blocks keep the order the file gives them. A subgraph carries a
+ * second border inside its first, and an endpoint no block of the level answers to a dashed one:
+ * a dashed node marks a connection that will not connect. Each drawing names its arrow marker
+ * from the level prefix, so the identifiers of several drawings on one page do not collide.
+ */
+[[nodiscard]] inline std::string svgOf(const Level& level, std::string_view prefix) {
+    struct Node {
+        std::string name;
+        std::string type;
+        bool        subgraph   = false;
+        bool        unresolved = false;
+        double      x          = 0.0;
+        double      y          = 0.0;
+        double      width      = kNodeMinWidth;
+    };
+    struct Edge {
+        std::size_t from = 0UZ;
+        std::size_t to   = 0UZ;
+        std::string fromPort;
+        std::string toPort;
+    };
+
+    std::vector<Node>                               nodes;
+    std::map<std::string, std::size_t, std::less<>> indexForName;
+    for (const Block& block : level.blocks) {
+        const std::size_t at = nodes.size();
+        nodes.push_back({.name = block.name.empty() ? std::string("(unnamed)") : fitLabel(block.name, kLabelCharacters), .type = nodeType(block.type), .subgraph = block.isSubgraph()});
+        if (!block.uniqueName.empty()) {
+            indexForName.emplace(block.uniqueName, at);
+        }
+        if (!block.name.empty()) {
+            indexForName.emplace(block.name, at);
+        }
+    }
+
+    auto indexOf = [&nodes, &indexForName](const std::string& blockName) -> std::size_t {
+        if (const auto held = indexForName.find(blockName); held != indexForName.end()) {
+            return held->second;
+        }
+        const std::size_t at = nodes.size();
+        nodes.push_back({.name = fitLabel(blockName, kLabelCharacters), .type = "(unresolved)", .unresolved = true});
+        indexForName.emplace(blockName, at);
+        return at;
+    };
+
+    std::vector<Edge> edges;
+    edges.reserve(level.connections.size());
+    for (const Connection& connection : level.connections) {
+        const std::size_t from = indexOf(connection.sourceBlock);
+        const std::size_t to   = indexOf(connection.destinationBlock);
+        edges.push_back({.from = from, .to = to, .fromPort = connection.sourcePort, .toPort = connection.destinationPort});
+    }
+
+    const std::size_t                     nodeCount = nodes.size();
+    std::vector<std::vector<std::size_t>> outgoing(nodeCount);
+    for (std::size_t e = 0UZ; e < edges.size(); ++e) {
+        outgoing[edges[e].from].push_back(e);
+    }
+
+    std::vector<bool>                                closesCycle(edges.size(), false);
+    std::vector<std::uint8_t>                        state(nodeCount, std::uint8_t{0}); // 0 not reached, 1 on the walk, 2 left behind
+    std::vector<std::pair<std::size_t, std::size_t>> walk;
+    for (std::size_t start = 0UZ; start < nodeCount; ++start) {
+        if (state[start] != std::uint8_t{0}) {
+            continue;
+        }
+        state[start] = std::uint8_t{1};
+        walk.emplace_back(start, 0UZ);
+        while (!walk.empty()) {
+            const std::size_t node = walk.back().first;
+            if (walk.back().second == outgoing[node].size()) {
+                state[node] = std::uint8_t{2};
+                walk.pop_back();
+                continue;
+            }
+            const std::size_t edge = outgoing[node][walk.back().second++];
+            const std::size_t next = edges[edge].to;
+            if (state[next] == std::uint8_t{1}) {
+                closesCycle[edge] = true;
+            } else if (state[next] == std::uint8_t{0}) {
+                state[next] = std::uint8_t{1};
+                walk.emplace_back(next, 0UZ);
+            }
+        }
+    }
+
+    std::vector<std::size_t> rank(nodeCount, 0UZ);
+    for (std::size_t pass = 0UZ; pass < nodeCount; ++pass) {
+        bool moved = false;
+        for (std::size_t e = 0UZ; e < edges.size(); ++e) {
+            if (!closesCycle[e] && rank[edges[e].from] + 1UZ > rank[edges[e].to]) {
+                rank[edges[e].to] = rank[edges[e].from] + 1UZ;
+                moved             = true;
+            }
+        }
+        if (!moved) {
+            break;
+        }
+    }
+
+    std::size_t rankCount = 0UZ;
+    for (const std::size_t r : rank) {
+        rankCount = std::max(rankCount, r + 1UZ);
+    }
+    std::vector<std::vector<std::size_t>> column(rankCount);
+    for (std::size_t i = 0UZ; i < nodeCount; ++i) {
+        column[rank[i]].push_back(i);
+    }
+
+    auto columnHeight = [&column](std::size_t r) { return column[r].empty() ? 0.0 : static_cast<double>(column[r].size()) * kNodeHeight + static_cast<double>(column[r].size() - 1UZ) * kNodeGap; };
+
+    std::vector<double> columnWidth(rankCount, kNodeMinWidth);
+    double              tallest = 0.0;
+    for (std::size_t r = 0UZ; r < rankCount; ++r) {
+        for (const std::size_t i : column[r]) {
+            const double text = std::max(static_cast<double>(nodes[i].name.size()) * kNameCharWidth, static_cast<double>(nodes[i].type.size()) * kTypeCharWidth);
+            columnWidth[r]    = std::max(columnWidth[r], text + 2.0 * kNodePadding);
+        }
+        tallest = std::max(tallest, columnHeight(r));
+    }
+
+    double left = kMargin;
+    for (std::size_t r = 0UZ; r < rankCount; ++r) {
+        double top = kMargin + (tallest - columnHeight(r)) / 2.0;
+        for (const std::size_t i : column[r]) {
+            nodes[i].x     = left;
+            nodes[i].y     = top;
+            nodes[i].width = columnWidth[r];
+            top += kNodeHeight + kNodeGap;
+        }
+        left += columnWidth[r] + kRankGap;
+    }
+    const double width  = rankCount == 0UZ ? 2.0 * kMargin : left - kRankGap + kMargin;
+    const double height = tallest + 2.0 * kMargin;
+
+    // the edges first, so that a node sits over the curves that reach it
+    std::string body;
+    for (const Edge& edge : edges) {
+        const Node&  from  = nodes[edge.from];
+        const Node&  to    = nodes[edge.to];
+        const double x1    = from.x + from.width;
+        const double y1    = from.y + kNodeHeight / 2.0;
+        const double x2    = to.x;
+        const double y2    = to.y + kNodeHeight / 2.0;
+        const double reach = std::max(kRankGap / 2.0, (x2 - x1) * 0.45);
+        body += std::format("<path class=\"edge\" marker-end=\"url(#{}-arrow)\" d=\"M {} {} C {} {}, {} {}, {} {}\"/>\n", prefix, coordinate(x1), coordinate(y1), coordinate(x1 + reach), coordinate(y1), coordinate(x2 - reach), coordinate(y2), coordinate(x2), coordinate(y2));
+        if (!edge.fromPort.empty()) {
+            body += std::format("<text class=\"port\" x=\"{}\" y=\"{}\">{}</text>\n", coordinate(x1 + 5.0), coordinate(y1 - 5.0), svgText(fitLabel(edge.fromPort, kLabelCharacters)));
+        }
+        if (!edge.toPort.empty()) {
+            body += std::format("<text class=\"port\" x=\"{}\" y=\"{}\" text-anchor=\"end\">{}</text>\n", coordinate(x2 - 5.0), coordinate(y2 - 5.0), svgText(fitLabel(edge.toPort, kLabelCharacters)));
+        }
+    }
+    for (const Node& node : nodes) {
+        body += std::format("<rect class=\"node{}\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"7\" ry=\"7\"/>\n", node.unresolved ? " unresolved" : "", coordinate(node.x), coordinate(node.y), coordinate(node.width), coordinate(kNodeHeight));
+        if (node.subgraph) {
+            body += std::format("<rect class=\"inner\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"5\" ry=\"5\"/>\n", coordinate(node.x + 3.0), coordinate(node.y + 3.0), coordinate(node.width - 6.0), coordinate(kNodeHeight - 6.0));
+        }
+        body += std::format("<text class=\"name\" x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\n", coordinate(node.x + node.width / 2.0), coordinate(node.y + 17.0), svgText(node.name));
+        body += std::format("<text class=\"type\" x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>\n", coordinate(node.x + node.width / 2.0), coordinate(node.y + 31.0), svgText(node.type));
+    }
+
+    return std::format("<svg class=\"flowgraph\" viewBox=\"0 0 {0} {1}\" width=\"{0}\" height=\"{1}\" style=\"max-width:100%;height:auto\">\n"
+                       "<defs><marker id=\"{2}-arrow\" viewBox=\"0 0 8 6\" refX=\"8\" refY=\"3\" markerWidth=\"8\" markerHeight=\"6\" markerUnits=\"userSpaceOnUse\" orient=\"auto\"><path class=\"arrow\" d=\"M 0 0 L 8 3 L 0 6 z\"/></marker></defs>\n"
+                       "{3}</svg>\n",
+        coordinate(width), coordinate(height), prefix, body);
+}
+
 inline void writeNamedTable(DocWriter& writer, std::string_view firstColumn, std::string_view secondColumn, const std::vector<NamedText>& entries) {
     if (entries.empty()) {
         return;
@@ -488,6 +708,14 @@ inline void writeNamedTable(DocWriter& writer, std::string_view firstColumn, std
 
 inline void writeLevelBody(DocWriter& writer, const Level& level, std::size_t depth, std::string_view prefix) {
     const std::size_t headingLevel = depth + 2UZ;
+
+    // the picture comes first; the tables below it give the detail a node label cuts short
+    writer.heading(headingLevel, "Diagram");
+    if (writer.format() == Format::Html) {
+        writer.svg(svgOf(level, prefix));
+    } else {
+        writer.mermaid(diagramOf(level, prefix));
+    }
 
     writer.heading(headingLevel, "Blocks");
     if (level.blocks.empty()) {
@@ -528,9 +756,6 @@ inline void writeLevelBody(DocWriter& writer, const Level& level, std::size_t de
         const std::array<std::string_view, 5> headers{"From", "Port", "To", "Port", "Minimum buffer"};
         writer.table(headers, rows);
     }
-
-    writer.heading(headingLevel, "Diagram");
-    writer.mermaid(diagramOf(level, prefix));
 
     if (!level.uninterpretedKeys.empty()) {
         writer.heading(headingLevel, "Other keys");

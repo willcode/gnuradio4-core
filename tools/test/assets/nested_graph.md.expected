@@ -17,6 +17,17 @@
 | plugin_name | "Doc Tools Fixture" |
 | plugin_version | "1" |
 
+## Diagram
+
+```mermaid
+flowchart LR
+    gb0["source<br/>qa::RampSource"]
+    gb1[["front_end<br/>SUBGRAPH"]]
+    gb2["sink<br/>qa::RecordingSink"]
+    gb0 -- "0 to 0" --> gb1
+    gb1 -- "0 to 0" --> gb2
+```
+
 ## Blocks
 
 | Name | Type | Kind | Unique name | Parameters | Meta information |
@@ -31,17 +42,6 @@
 | --- | --- | --- | --- | --- |
 | source_1 | 0 | front_end | 0 |  |
 | front_end | 0 | sink | 0 | 4096 |
-
-## Diagram
-
-```mermaid
-flowchart LR
-    gb0["source<br/>qa::RampSource"]
-    gb1[["front_end<br/>SUBGRAPH"]]
-    gb2["sink<br/>qa::RecordingSink"]
-    gb0 -- "0 to 0" --> gb1
-    gb1 -- "0 to 0" --> gb2
-```
 
 ## Other keys
 
@@ -78,6 +78,15 @@ flowchart LR
 | in | INPUT | pre_gain | in |
 | out | OUTPUT | inner_chain | out |
 
+### Diagram
+
+```mermaid
+flowchart LR
+    gs1b0["pre_gain<br/>qa::Scale"]
+    gs1b1[["inner_chain<br/>SUBGRAPH"]]
+    gs1b0 -- "out to in" --> gs1b1
+```
+
 ### Blocks
 
 | Name | Type | Kind | Unique name | Parameters | Meta information |
@@ -90,15 +99,6 @@ flowchart LR
 | From | Port | To | Port | Minimum buffer |
 | --- | --- | --- | --- | --- |
 | pre_gain | out | inner_chain | in |  |
-
-### Diagram
-
-```mermaid
-flowchart LR
-    gs1b0["pre_gain<br/>qa::Scale"]
-    gs1b1[["inner_chain<br/>SUBGRAPH"]]
-    gs1b0 -- "out to in" --> gs1b1
-```
 
 <a id="subgraph-front-end-inner-chain"></a>
 
@@ -116,6 +116,15 @@ flowchart LR
 | in | INPUT | fine_gain | in |
 | out | OUTPUT | combiner | out |
 
+#### Diagram
+
+```mermaid
+flowchart LR
+    gs1s1b0["fine_gain<br/>qa::Scale"]
+    gs1s1b1["combiner<br/>qa::SumInputs"]
+    gs1s1b0 -- "out to 0.0" --> gs1s1b1
+```
+
 #### Blocks
 
 | Name | Type | Kind | Unique name | Parameters | Meta information |
@@ -128,12 +137,3 @@ flowchart LR
 | From | Port | To | Port | Minimum buffer |
 | --- | --- | --- | --- | --- |
 | fine_gain | out | combiner | 0.0 |  |
-
-#### Diagram
-
-```mermaid
-flowchart LR
-    gs1s1b0["fine_gain<br/>qa::Scale"]
-    gs1s1b1["combiner<br/>qa::SumInputs"]
-    gs1s1b0 -- "out to 0.0" --> gs1s1b1
-```
