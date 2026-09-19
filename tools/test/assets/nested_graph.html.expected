@@ -101,11 +101,11 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <div class="table">
 <table>
 <thead>
-<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Minimum buffer</th></tr>
+<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Type</th><th>Minimum buffer</th></tr>
 </thead>
 <tbody>
-<tr><td>source_1</td><td>0</td><td>front_end</td><td>0</td><td></td></tr>
-<tr><td>front_end</td><td>0</td><td>sink</td><td>0</td><td>4096</td></tr>
+<tr><td>source_1</td><td>0</td><td>front_end</td><td>0</td><td></td><td></td></tr>
+<tr><td>front_end</td><td>0</td><td>sink</td><td>0</td><td></td><td>4096</td></tr>
 </tbody>
 </table>
 </div>
@@ -192,10 +192,10 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <div class="table">
 <table>
 <thead>
-<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Minimum buffer</th></tr>
+<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Type</th><th>Minimum buffer</th></tr>
 </thead>
 <tbody>
-<tr><td>pre_gain</td><td>out</td><td>inner_chain</td><td>in</td><td></td></tr>
+<tr><td>pre_gain</td><td>out</td><td>inner_chain</td><td>in</td><td></td><td></td></tr>
 </tbody>
 </table>
 </div>
@@ -247,10 +247,10 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <div class="table">
 <table>
 <thead>
-<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Minimum buffer</th></tr>
+<tr><th>From</th><th>Port</th><th>To</th><th>Port</th><th>Type</th><th>Minimum buffer</th></tr>
 </thead>
 <tbody>
-<tr><td>fine_gain</td><td>out</td><td>combiner</td><td>0.0</td><td></td></tr>
+<tr><td>fine_gain</td><td>out</td><td>combiner</td><td>0.0</td><td></td><td></td></tr>
 </tbody>
 </table>
 </div>

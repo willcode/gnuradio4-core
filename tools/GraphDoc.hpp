@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -136,6 +137,7 @@ struct Connection {
     std::string destinationBlock;
     std::string destinationPort;
     std::string minBufferSize; ///< empty unless the connection carries a fifth element
+    std::string itemType;      ///< empty until a resolver fills it, and where it resolves nothing
 };
 
 struct ExportedPort {
@@ -385,6 +387,44 @@ inline Level readLevel(const property_map& map) {
     return level;
 }
 
+/// Answers the type of the items an output port carries, given the block's registry key and the
+/// port as a connection spells it. An empty answer leaves the connection's type cell blank.
+using ConnectionTypeResolver = std::function<std::string(std::string_view blockType, std::string_view port)>;
+
+/**
+ * @brief Fills the item type of every connection of `level` and of every level below it.
+ *
+ * The type belongs to the source block's output port, so the lookup takes the source end: the
+ * block the level holds under that name, and its `id` as the registry key. A subgraph is passed
+ * over because SUBGRAPH is no key; its exported port is answered by the block behind it, which
+ * this level does not name.
+ */
+inline void resolveConnectionTypes(Level& level, const ConnectionTypeResolver& typeOf) {
+    if (!typeOf) {
+        return;
+    }
+    std::map<std::string, const Block*, std::less<>> blockForName;
+    for (const Block& block : level.blocks) {
+        if (!block.uniqueName.empty()) {
+            blockForName.emplace(block.uniqueName, &block);
+        }
+        if (!block.name.empty()) {
+            blockForName.emplace(block.name, &block);
+        }
+    }
+    for (Connection& connection : level.connections) {
+        const auto source = blockForName.find(connection.sourceBlock);
+        if (source != blockForName.end() && !source->second->isSubgraph()) {
+            connection.itemType = typeOf(source->second->type, connection.sourcePort);
+        }
+    }
+    for (Block& block : level.blocks) {
+        if (block.isSubgraph()) {
+            resolveConnectionTypes(*block.interior, typeOf);
+        }
+    }
+}
+
 /// how many subgraphs a level holds, counting every depth below it
 [[nodiscard]] inline std::size_t countSubgraphs(const Level& level) {
     std::size_t count = 0UZ;
@@ -480,8 +520,8 @@ inline void collectSchedulers(const Level& level, std::vector<std::string>& out)
 /// fixed advance per character rather than measured: the two fonts are the page's own, which
 /// `DocWriter`'s style sheet declares, and each constant is the advance that font takes for an
 /// ASCII identifier.
-inline constexpr double      kNameCharWidth   = 7.4;  ///< 13 px of the page's sans stack
-inline constexpr double      kTypeCharWidth   = 6.6;  ///< 11 px of the page's monospace stack
+inline constexpr double      kNameCharWidth   = 7.4; ///< 13 px of the page's sans stack
+inline constexpr double      kTypeCharWidth   = 6.6; ///< 11 px of the page's monospace stack
 inline constexpr double      kNodeHeight      = 42.0;
 inline constexpr double      kNodeMinWidth    = 84.0;
 inline constexpr double      kNodePadding     = 10.0;
@@ -770,9 +810,9 @@ inline void writeLevelBody(DocWriter& writer, const Level& level, std::size_t de
         std::vector<std::vector<std::string>> rows;
         rows.reserve(level.connections.size());
         for (const Connection& connection : level.connections) {
-            rows.push_back({connection.sourceBlock, connection.sourcePort, connection.destinationBlock, connection.destinationPort, connection.minBufferSize});
+            rows.push_back({connection.sourceBlock, connection.sourcePort, connection.destinationBlock, connection.destinationPort, connection.itemType, connection.minBufferSize});
         }
-        const std::array<std::string_view, 5> headers{"From", "Port", "To", "Port", "Minimum buffer"};
+        const std::array<std::string_view, 6> headers{"From", "Port", "To", "Port", "Type", "Minimum buffer"};
         writer.table(headers, rows);
     }
 

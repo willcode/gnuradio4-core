@@ -1,6 +1,7 @@
 #include <boost/ut.hpp>
 
 #include <array>
+#include <complex>
 #include <cstddef>
 #include <format>
 #include <fstream>
@@ -8,7 +9,14 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <vector>
 
+#include <gnuradio-4.0/Block.hpp>
+#include <gnuradio-4.0/BlockRegistry.hpp>
+#include <gnuradio-4.0/PluginLoader.hpp>
+
+#include "BlockLookup.hpp"
 #include "GraphDoc.hpp"
 
 /**
@@ -54,6 +62,25 @@ using namespace gr::tools;
         throw std::runtime_error(level.error());
     }
     return std::move(*level);
+}
+
+/// An output whose type is neither the input's nor anything the registry key spells, so a
+/// connection type that comes out right can only have been read from the block.
+struct Widener : gr::Block<Widener> {
+    gr::PortIn<float>                in;
+    gr::PortOut<std::complex<float>> out;
+
+    GR_MAKE_REFLECTABLE(Widener, in, out);
+
+    [[nodiscard]] constexpr std::complex<float> processOne(float value) const noexcept { return {value, 0.0f}; }
+};
+
+void registerTestBlocks() {
+    static const bool registered = [] {
+        std::ignore = gr::globalBlockRegistry().insert<Widener>();
+        return true;
+    }();
+    std::ignore = registered;
 }
 
 /// every block name and type, and both ends of every connection, at every level of the fixture
@@ -146,6 +173,44 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         expect(html.find("qa::Convert<br>&lt;float32, complex&lt;float32&gt;&gt;<br>(version 2 pinned)") != std::string::npos) << html;
     };
 
+    "the connection table names the type the source block's output port carries"_test = [] {
+        registerTestBlocks();
+        const std::vector<std::string> noDirectories;
+        gr::PluginLoader               loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), noDirectories);
+        OutputPortTypes                outputPortTypes(loader);
+
+        const std::string key    = gr::meta::type_name<Widener>();
+        const std::string source = std::format("blocks:\n"
+                                               "  - id: {0}\n    parameters:\n      name: first\n"
+                                               "  - id: {0}\n    parameters:\n      name: second\n"
+                                               "  - id: qa::NoSuchBlockIsRegistered\n    parameters:\n      name: third\n"
+                                               "connections:\n"
+                                               "  - [first, out, second, in]\n"
+                                               "  - [first, 0, third, in]\n"
+                                               "  - [third, out, second, in]\n"
+                                               "  - [second, no_such_port, third, in]\n",
+            key);
+        auto              level  = graphdoc::read(source);
+        expect(fatal(level.has_value()));
+        graphdoc::resolveConnectionTypes(*level, [&outputPortTypes](std::string_view blockType, std::string_view port) { return outputPortTypes(blockType, port); });
+
+        expect(eq(level->connections[0].itemType, std::string("complex<float32>"))) << "the output port's type, not the input's and not the key's";
+        expect(eq(level->connections[1].itemType, std::string("complex<float32>"))) << "a port named by its position resolves as well";
+        expect(level->connections[2].itemType.empty()) << "a block no registry holds leaves the column blank";
+        expect(level->connections[3].itemType.empty()) << "a port the block does not declare leaves it blank too";
+
+        const std::string markdown = graphdoc::render(*level, Format::Markdown, "t");
+        expect(markdown.find("| From | Port | To | Port | Type | Minimum buffer |") != std::string::npos) << markdown;
+        expect(markdown.find("| first | out | second | in | complex<float32> |  |") != std::string::npos) << markdown;
+        expect(markdown.find("| third | out | second | in |  |  |") != std::string::npos) << markdown;
+    };
+
+    "a document made without a resolver keeps the type column empty"_test = [] {
+        const std::string markdown = graphdoc::render(readFixture(), Format::Markdown, "Nested graph fixture");
+        expect(markdown.find("| From | Port | To | Port | Type | Minimum buffer |") != std::string::npos) << "the column is there";
+        expect(markdown.find("| front_end | 0 | sink | 0 |  | 4096 |") != std::string::npos) << markdown;
+    };
+
     "a block's uninterpreted keys are documented with the block"_test = [] {
         const graphdoc::Level level = readFixture();
         expect(eq(level.blocks[2].uninterpretedKeys.size(), 1UZ)) << "layout_hint is not a key the reader interprets";
@@ -195,7 +260,12 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         }
         expect(document.starts_with("<!DOCTYPE html>"));
         expect(document.find("<svg class=\"flowgraph\"") != std::string::npos) << "the diagram is drawn into the page";
-        expect(document.find("&lt;") != std::string::npos || document.find("&amp;") != std::string::npos) << "the page escapes its content";
+
+        const auto markup = graphdoc::read("blocks:\n  - id: qa::Convert<float32>\n    parameters:\n      name: a & b\nconnections:\n  - [a & b, out, a & b, in]\n");
+        expect(fatal(markup.has_value()));
+        const std::string page = graphdoc::render(*markup, Format::Html, "t");
+        expect(page.find("&lt;float32&gt;") != std::string::npos) << "the page escapes the angle brackets of its content";
+        expect(page.find("a &amp; b") != std::string::npos) << "and its ampersands, in the tables and in the drawing alike";
     };
 
     "the HTML draws one picture per level, one node per block and one edge per connection"_test = [] {
@@ -258,7 +328,7 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
     "the drawing ranks a chain left to right and breaks a cycle at the edge that closes it"_test = [] {
         const auto chain = graphdoc::read("blocks:\n  - id: qa::Scale\n    parameters:\n      name: first\n  - id: qa::Scale\n    parameters:\n      name: second\nconnections:\n  - [first, out, second, in]\n");
         expect(chain.has_value());
-        const std::string drawn = graphdoc::svgOf(*chain, "g");
+        const std::string drawn      = graphdoc::svgOf(*chain, "g");
         const std::size_t firstNode  = drawn.find("<rect class=\"node\"");
         const std::size_t secondNode = drawn.find("<rect class=\"node\"", firstNode + 1UZ);
         expect(firstNode != std::string::npos && secondNode != std::string::npos);

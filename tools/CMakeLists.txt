@@ -7,8 +7,16 @@ target_link_libraries(gnuradio-doctools INTERFACE gnuradio-options gnuradio-core
 # the project version is not in config.hpp, so the build hands it to the tool that reports it
 target_compile_definitions(gnuradio-doctools INTERFACE GR_TOOLS_CORE_VERSION="${PROJECT_VERSION}")
 
+# graphdoc reads the type a connection carries out of the block registry and the plugin directories, the way grinfo
+# does, so it links what grinfo links and is told where this installation puts its plugins. Everything else in its
+# document comes from the graph file, so it is still built whether or not the registry is on.
 add_executable(graphdoc graphdoc_main.cpp)
 target_link_libraries(graphdoc PRIVATE gnuradio-doctools)
+if(TARGET gnuradio-plugin)
+  target_link_libraries(graphdoc PRIVATE gnuradio-plugin)
+endif()
+target_compile_definitions(
+  graphdoc PRIVATE GR_TOOLS_INSTALLED_PLUGIN_DIRECTORY="${CMAKE_INSTALL_FULL_LIBDIR}/gnuradio-4/plugins")
 install(TARGETS graphdoc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # the registry document is read from gr::globalBlockRegistry(), which only a build with the registry defines

@@ -3,6 +3,10 @@ set(GR_TOOLS_TEST_ASSETS ${CMAKE_CURRENT_SOURCE_DIR}/assets)
 add_ut_test(qa_GraphDoc)
 target_link_libraries(qa_GraphDoc PRIVATE gnuradio-doctools)
 target_compile_definitions(qa_GraphDoc PRIVATE GR_TOOLS_TEST_ASSETS="${GR_TOOLS_TEST_ASSETS}")
+# the connection type is read from a block the test registers in its own process, which needs the plugin loader
+if(TARGET gnuradio-plugin)
+  target_link_libraries(qa_GraphDoc PRIVATE gnuradio-plugin)
+endif()
 
 # The pinned documents are what a reader would review, so they are compared as files rather than asserted piecewise: a
 # formatting change shows up as a diff of the document itself. They carry the `.expected` extension because the document

@@ -38,10 +38,10 @@ flowchart LR
 
 ## Connections
 
-| From | Port | To | Port | Minimum buffer |
-| --- | --- | --- | --- | --- |
-| source_1 | 0 | front_end | 0 |  |
-| front_end | 0 | sink | 0 | 4096 |
+| From | Port | To | Port | Type | Minimum buffer |
+| --- | --- | --- | --- | --- | --- |
+| source_1 | 0 | front_end | 0 |  |  |
+| front_end | 0 | sink | 0 |  | 4096 |
 
 ## Other keys
 
@@ -96,9 +96,9 @@ flowchart LR
 
 ### Connections
 
-| From | Port | To | Port | Minimum buffer |
-| --- | --- | --- | --- | --- |
-| pre_gain | out | inner_chain | in |  |
+| From | Port | To | Port | Type | Minimum buffer |
+| --- | --- | --- | --- | --- | --- |
+| pre_gain | out | inner_chain | in |  |  |
 
 <a id="subgraph-front-end-inner-chain"></a>
 
@@ -134,6 +134,6 @@ flowchart LR
 
 #### Connections
 
-| From | Port | To | Port | Minimum buffer |
-| --- | --- | --- | --- | --- |
-| fine_gain | out | combiner | 0.0 |  |
+| From | Port | To | Port | Type | Minimum buffer |
+| --- | --- | --- | --- | --- | --- |
+| fine_gain | out | combiner | 0.0 |  |  |
