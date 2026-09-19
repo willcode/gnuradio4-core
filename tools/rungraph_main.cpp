@@ -300,7 +300,7 @@ struct StagedSettings {
     return staged;
 }
 
-// Applies the settings to the scheduler, before the graph reaches it and before the plan is built.
+// Applies the settings to the scheduler, before the graph reaches it.
 //
 // The name is checked against the settings the scheduler declares first: a key outside that set is filed as meta
 // information by the settings map itself, and the run would then proceed as if the caller had asked for nothing.
