@@ -291,7 +291,7 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         expect(fatal(level.has_value()));
 
         const std::string diagram = graphdoc::diagramOf(*level, "g");
-        expect(diagram.find("[\"framer<br/>complex<float32>\"]") != std::string::npos) << diagram;
+        expect(diagram.find("[\"framer<br/>complex#lt;float32#gt;\"]") != std::string::npos) << diagram;
         expect(diagram.find("[\"plain\"]") != std::string::npos) << "a key with no template argument carries its name alone";
         expect(diagram.find("[\"pair\"]") != std::string::npos) << "and so does one with two arguments";
         expect(diagram.find("[\"nested\"]") != std::string::npos) << "and one whose argument is not a simple item type";
@@ -299,6 +299,26 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         const std::string drawn = graphdoc::svgOf(*level, "g");
         expect(eq(occurrences(drawn, "<text class=\"type\""), 1UZ)) << "the drawing labels the one node that has an item type";
         expect(drawn.find(">complex&lt;float32&gt;<") != std::string::npos) << drawn;
+    };
+
+    "a mermaid label spells its angle brackets as entities"_test = [] {
+        const auto level = graphdoc::read("blocks:\n"
+                                          "  - id: qa::PpmFramer<complex<float32>>\n    parameters:\n      name: radio\n"
+                                          "  - id: qa::Scale\n    parameters:\n      name: gain\n"
+                                          "connections:\n"
+                                          "  - [radio, out, gain, in]\n");
+        expect(fatal(level.has_value()));
+
+        const std::string diagram = graphdoc::diagramOf(*level, "g");
+        expect(diagram.find("complex#lt;float32#gt;") != std::string::npos) << diagram;
+        // a renderer reads what stands between the quotes as HTML, so the line break is the only markup a label may hold
+        for (std::size_t at = diagram.find('<'); at != std::string::npos; at = diagram.find('<', at + 1UZ)) {
+            expect(diagram.compare(at, 5UZ, "<br/>") == 0) << std::format("a raw angle bracket at {} in {}", at, diagram);
+        }
+        expect(diagram.find("<float32>") == std::string::npos) << "so no label reaches a renderer as a tag";
+
+        const std::string markdown = graphdoc::render(*level, Format::Markdown, "t");
+        expect(markdown.find("complex#lt;float32#gt;") != std::string::npos) << "the fence of the document carries the same label";
     };
 
     "the block table sits in a box that scrolls, and the tables beside it do not"_test = [] {

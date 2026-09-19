@@ -469,7 +469,10 @@ inline constexpr std::array<std::string_view, 12> kSimpleItemTypes{"int8", "int1
     return std::ranges::find(kSimpleItemTypes, argument) == kSimpleItemTypes.end() ? std::string{} : std::string(argument);
 }
 
-/// mermaid takes its labels between quotes, so the quote and the entity marker are spelled as entities
+/// A label for mermaid, which takes it between quotes and reads HTML inside them: the quote, the
+/// entity marker and both angle brackets are spelled as entities, so a renderer shows
+/// `complex<float32>` rather than reading `<float32>` as a tag. The line break the newline becomes
+/// is the one piece of markup a label keeps.
 [[nodiscard]] inline std::string mermaidLabel(std::string_view label) {
     std::string out;
     out.reserve(label.size());
@@ -477,6 +480,8 @@ inline constexpr std::array<std::string_view, 12> kSimpleItemTypes{"int8", "int1
         switch (c) {
         case '"': out += "#quot;"; break;
         case '#': out += "#35;"; break;
+        case '<': out += "#lt;"; break;
+        case '>': out += "#gt;"; break;
         case '\n': out += "<br/>"; break;
         default: out += c; break;
         }
