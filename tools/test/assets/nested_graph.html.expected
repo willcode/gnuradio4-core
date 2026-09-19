@@ -88,12 +88,12 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <div class="table">
 <table>
 <thead>
-<tr><th>Name</th><th>Type</th><th>Kind</th><th>Unique name</th><th>Parameters</th><th>Meta information</th></tr>
+<tr><th>Name</th><th>Type</th><th>Parameters</th><th>Meta information</th></tr>
 </thead>
 <tbody>
-<tr><td>source</td><td>qa::RampSource</td><td>block</td><td>source_1</td><td>n_samples: 4096<br>name: &quot;source&quot;</td><td></td></tr>
-<tr><td>front_end</td><td>SUBGRAPH</td><td>subgraph</td><td></td><td></td><td></td></tr>
-<tr><td>sink</td><td>qa::RecordingSink</td><td>block</td><td></td><td>name: &quot;sink&quot;<br>[context fast @ 0] buffer_size: 512</td><td>role: &quot;terminal&quot;</td></tr>
+<tr><td>source<br>(source_1)</td><td>qa::RampSource</td><td>n_samples: 4096<br>name: &quot;source&quot;</td><td></td></tr>
+<tr><td>front_end</td><td>SUBGRAPH<br>(subgraph)</td><td></td><td></td></tr>
+<tr><td>sink</td><td>qa::RecordingSink</td><td>name: &quot;sink&quot;<br>[context fast @ 0] buffer_size: 512</td><td>role: &quot;terminal&quot;</td></tr>
 </tbody>
 </table>
 </div>
@@ -180,11 +180,11 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <div class="table">
 <table>
 <thead>
-<tr><th>Name</th><th>Type</th><th>Kind</th><th>Unique name</th><th>Parameters</th><th>Meta information</th></tr>
+<tr><th>Name</th><th>Type</th><th>Parameters</th><th>Meta information</th></tr>
 </thead>
 <tbody>
-<tr><td>pre_gain</td><td>qa::Scale</td><td>block</td><td></td><td>enabled: true<br>gain: 2.000000<br>label: &quot;front&quot;<br>name: &quot;pre_gain&quot;</td><td></td></tr>
-<tr><td>inner_chain</td><td>SUBGRAPH</td><td>subgraph, scheduler gr::scheduler::Simple</td><td></td><td>name: &quot;inner_chain&quot;</td><td></td></tr>
+<tr><td>pre_gain</td><td>qa::Scale</td><td>enabled: true<br>gain: 2.000000<br>label: &quot;front&quot;<br>name: &quot;pre_gain&quot;</td><td></td></tr>
+<tr><td>inner_chain</td><td>SUBGRAPH<br>(subgraph, scheduler gr::scheduler::Simple)</td><td>name: &quot;inner_chain&quot;</td><td></td></tr>
 </tbody>
 </table>
 </div>
@@ -235,11 +235,11 @@ svg.flowgraph .arrow { fill: var(--accent); }
 <div class="table">
 <table>
 <thead>
-<tr><th>Name</th><th>Type</th><th>Kind</th><th>Unique name</th><th>Parameters</th><th>Meta information</th></tr>
+<tr><th>Name</th><th>Type</th><th>Parameters</th><th>Meta information</th></tr>
 </thead>
 <tbody>
-<tr><td>fine_gain</td><td>qa::Scale</td><td>block</td><td></td><td>gain: 0.500000<br>name: &quot;fine_gain&quot;</td><td></td></tr>
-<tr><td>combiner</td><td>qa::SumInputs</td><td>block</td><td></td><td>n_inputs: 2<br>name: &quot;combiner&quot;</td><td></td></tr>
+<tr><td>fine_gain</td><td>qa::Scale</td><td>gain: 0.500000<br>name: &quot;fine_gain&quot;</td><td></td></tr>
+<tr><td>combiner</td><td>qa::SumInputs</td><td>n_inputs: 2<br>name: &quot;combiner&quot;</td><td></td></tr>
 </tbody>
 </table>
 </div>

@@ -693,6 +693,32 @@ inline constexpr std::size_t kLabelCharacters = 28UZ; ///< the widest label a no
         coordinate(width), coordinate(height), prefix, body);
 }
 
+/// The name cell of the block table: the name, and the unique name in parentheses under it where
+/// the file gives one, so that a column standing empty in most documents is not spent on it.
+[[nodiscard]] inline std::string nameCell(const Block& block) { return block.uniqueName.empty() ? block.name : std::format("{}\n({})", block.name, block.uniqueName); }
+
+/// The type cell: the type name, a templated type's arguments on a second line, and a kind other
+/// than a plain block in parentheses on a third, for the same reason the name cell folds.
+[[nodiscard]] inline std::string typeCell(const Block& block) {
+    std::string cell = block.type;
+    if (const std::size_t open = block.type.find('<'); open != std::string::npos) {
+        cell = std::format("{}\n{}", block.type.substr(0UZ, open), block.type.substr(open));
+    }
+
+    std::string kind;
+    auto        add = [&kind](std::string_view text) { kind += kind.empty() ? std::string(text) : std::format(", {}", text); };
+    if (block.isSubgraph()) {
+        add("subgraph");
+    }
+    if (!block.schedulerId.empty()) {
+        add(std::format("scheduler {}", block.schedulerId));
+    }
+    if (!block.pinnedVersion.empty()) {
+        add(std::format("version {} pinned", block.pinnedVersion));
+    }
+    return kind.empty() ? cell : std::format("{}\n({})", cell, kind);
+}
+
 inline void writeNamedTable(DocWriter& writer, std::string_view firstColumn, std::string_view secondColumn, const std::vector<NamedText>& entries) {
     if (entries.empty()) {
         return;
@@ -731,16 +757,9 @@ inline void writeLevelBody(DocWriter& writer, const Level& level, std::size_t de
                 }
                 parameters += std::format("[context {}] {}", context.name, context.value);
             }
-            std::string kind = block.isSubgraph() ? "subgraph" : "block";
-            if (!block.schedulerId.empty()) {
-                kind += std::format(", scheduler {}", block.schedulerId);
-            }
-            if (!block.pinnedVersion.empty()) {
-                kind += std::format(", version {} pinned", block.pinnedVersion);
-            }
-            rows.push_back({block.name, block.type, kind, block.uniqueName, parameters, block.metaInformation});
+            rows.push_back({nameCell(block), typeCell(block), parameters, block.metaInformation});
         }
-        const std::array<std::string_view, 6> headers{"Name", "Type", "Kind", "Unique name", "Parameters", "Meta information"};
+        const std::array<std::string_view, 4> headers{"Name", "Type", "Parameters", "Meta information"};
         writer.table(headers, rows);
     }
 

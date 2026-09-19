@@ -121,6 +121,31 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         }
     };
 
+    "the block table has four columns, the unique name and the kind folded into two of them"_test = [] {
+        const std::string markdown = graphdoc::render(readFixture(), Format::Markdown, "Nested graph fixture");
+        expect(markdown.find("| Name | Type | Parameters | Meta information |") != std::string::npos) << "the table names four columns";
+        expect(markdown.find("| Kind |") == std::string::npos) << "the kind has a column no longer";
+        expect(markdown.find("| Unique name |") == std::string::npos) << "and neither has the unique name";
+        expect(markdown.find("| source<br>(source_1) |") != std::string::npos) << "the unique name sits under the name";
+        expect(markdown.find("SUBGRAPH<br>(subgraph)") != std::string::npos) << "a subgraph's kind sits under its type";
+        expect(markdown.find("SUBGRAPH<br>(subgraph, scheduler gr::scheduler::Simple)") != std::string::npos) << "and names the scheduler that manages it";
+        expect(markdown.find("| qa::RampSource |") != std::string::npos) << "a plain block's type cell carries the type alone";
+
+        const std::string html = graphdoc::render(readFixture(), Format::Html, "Nested graph fixture");
+        expect(html.find("<th>Name</th><th>Type</th><th>Parameters</th><th>Meta information</th>") != std::string::npos) << html;
+        expect(html.find("<td>source<br>(source_1)</td>") != std::string::npos) << "the cell breaks its line in the page too";
+    };
+
+    "a templated type splits at its first angle bracket"_test = [] {
+        const auto level = graphdoc::read("blocks:\n  - id: qa::Convert<float32, complex<float32>>\n    version: 2\n    parameters:\n      name: widen\n");
+        expect(level.has_value());
+        const std::string markdown = graphdoc::render(*level, Format::Markdown, "t");
+        expect(markdown.find("qa::Convert<br><float32, complex<float32>><br>(version 2 pinned)") != std::string::npos) << markdown;
+
+        const std::string html = graphdoc::render(*level, Format::Html, "t");
+        expect(html.find("qa::Convert<br>&lt;float32, complex&lt;float32&gt;&gt;<br>(version 2 pinned)") != std::string::npos) << html;
+    };
+
     "a block's uninterpreted keys are documented with the block"_test = [] {
         const graphdoc::Level level = readFixture();
         expect(eq(level.blocks[2].uninterpretedKeys.size(), 1UZ)) << "layout_hint is not a key the reader interprets";

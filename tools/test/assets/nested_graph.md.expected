@@ -30,11 +30,11 @@ flowchart LR
 
 ## Blocks
 
-| Name | Type | Kind | Unique name | Parameters | Meta information |
-| --- | --- | --- | --- | --- | --- |
-| source | qa::RampSource | block | source_1 | n_samples: 4096<br>name: "source" |  |
-| front_end | SUBGRAPH | subgraph |  |  |  |
-| sink | qa::RecordingSink | block |  | name: "sink"<br>[context fast @ 0] buffer_size: 512 | role: "terminal" |
+| Name | Type | Parameters | Meta information |
+| --- | --- | --- | --- |
+| source<br>(source_1) | qa::RampSource | n_samples: 4096<br>name: "source" |  |
+| front_end | SUBGRAPH<br>(subgraph) |  |  |
+| sink | qa::RecordingSink | name: "sink"<br>[context fast @ 0] buffer_size: 512 | role: "terminal" |
 
 ## Connections
 
@@ -89,10 +89,10 @@ flowchart LR
 
 ### Blocks
 
-| Name | Type | Kind | Unique name | Parameters | Meta information |
-| --- | --- | --- | --- | --- | --- |
-| pre_gain | qa::Scale | block |  | enabled: true<br>gain: 2.000000<br>label: "front"<br>name: "pre_gain" |  |
-| inner_chain | SUBGRAPH | subgraph, scheduler gr::scheduler::Simple |  | name: "inner_chain" |  |
+| Name | Type | Parameters | Meta information |
+| --- | --- | --- | --- |
+| pre_gain | qa::Scale | enabled: true<br>gain: 2.000000<br>label: "front"<br>name: "pre_gain" |  |
+| inner_chain | SUBGRAPH<br>(subgraph, scheduler gr::scheduler::Simple) | name: "inner_chain" |  |
 
 ### Connections
 
@@ -127,10 +127,10 @@ flowchart LR
 
 #### Blocks
 
-| Name | Type | Kind | Unique name | Parameters | Meta information |
-| --- | --- | --- | --- | --- | --- |
-| fine_gain | qa::Scale | block |  | gain: 0.500000<br>name: "fine_gain" |  |
-| combiner | qa::SumInputs | block |  | n_inputs: 2<br>name: "combiner" |  |
+| Name | Type | Parameters | Meta information |
+| --- | --- | --- | --- |
+| fine_gain | qa::Scale | gain: 0.500000<br>name: "fine_gain" |  |
+| combiner | qa::SumInputs | n_inputs: 2<br>name: "combiner" |  |
 
 #### Connections
 
