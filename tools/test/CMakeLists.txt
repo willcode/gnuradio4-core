@@ -11,20 +11,26 @@ endif()
 # The pinned documents are what a reader would review, so they are compared as files rather than asserted piecewise: a
 # formatting change shows up as a diff of the document itself. They carry the `.expected` extension because the document
 # formatters that run over this repository would rewrite a file named `.md`, and a rewritten expectation pins nothing.
-function(add_pinned_document_test TEST_NAME FORMAT)
+function(
+  add_pinned_document_test
+  TEST_NAME
+  FORMAT
+  READ_FROM)
   add_test(
     NAME ${TEST_NAME}
     COMMAND
       ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:graphdoc> -DINPUT=${GR_TOOLS_TEST_ASSETS}/nested_graph.yaml
-      -DFORMAT=${FORMAT} "-DTITLE=Nested graph fixture"
-      -DACTUAL=${CMAKE_CURRENT_BINARY_DIR}/nested_graph.${FORMAT}.actual
+      -DFORMAT=${FORMAT} "-DTITLE=Nested graph fixture" -DREAD_FROM=${READ_FROM}
+      -DACTUAL=${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}.actual
       -DEXPECTED=${GR_TOOLS_TEST_ASSETS}/nested_graph.${FORMAT}.expected -P
       ${CMAKE_CURRENT_SOURCE_DIR}/compare_generated.cmake)
   set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 60)
 endfunction()
 
-add_pinned_document_test(qa_GraphDocPinnedMarkdown md)
-add_pinned_document_test(qa_GraphDocPinnedHtml html)
+add_pinned_document_test(qa_GraphDocPinnedMarkdown md file)
+add_pinned_document_test(qa_GraphDocPinnedHtml html file)
+# a lone `-` names standard input, and the same graph read from there yields the same document
+add_pinned_document_test(qa_GraphDocStandardInput md stdin)
 
 # a tool asked for help says so and succeeds; a tool given an option it does not know refuses
 function(add_option_handling_tests TOOL_TARGET)

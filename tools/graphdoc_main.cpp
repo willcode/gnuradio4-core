@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <print>
 #include <sstream>
 #include <string>
@@ -26,6 +27,9 @@ Usage: graphdoc [options] <graph.yaml>
   --title <text>     document title (default: the name of the input file)
   --plugin-dir <dir> a directory of plugins and block libraries; repeatable
   --help, -h         this text
+
+A lone - as the input reads the graph from standard input; the document is then
+titled "standard input" unless --title names a title.
 
 Reads the GRC YAML dialect the framework's own importer reads: blocks with their
 parameters, connections, and SUBGRAPH entries with their nested graphs and
@@ -119,13 +123,18 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    std::ifstream input(inputPath, std::ios::binary);
-    if (!input) {
-        std::println(stderr, "graphdoc: cannot read '{}'", inputPath);
-        return 2;
-    }
+    const bool         fromStandardInput = inputPath == "-";
     std::ostringstream contents;
-    contents << input.rdbuf();
+    if (fromStandardInput) {
+        contents << std::cin.rdbuf();
+    } else {
+        std::ifstream input(inputPath, std::ios::binary);
+        if (!input) {
+            std::println(stderr, "graphdoc: cannot read '{}'", inputPath);
+            return 2;
+        }
+        contents << input.rdbuf();
+    }
 
     auto level = graphdoc::read(contents.str());
     if (!level.has_value()) {
@@ -140,7 +149,7 @@ int main(int argc, char** argv) {
 #endif
 
     if (options.title.empty()) {
-        options.title = std::filesystem::path(inputPath).filename().string();
+        options.title = fromStandardInput ? std::string("standard input") : std::filesystem::path(inputPath).filename().string();
     }
 
     const auto written = writeDocument(options.output, graphdoc::render(*level, options.format, options.title));
