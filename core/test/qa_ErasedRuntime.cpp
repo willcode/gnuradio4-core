@@ -69,8 +69,8 @@ inline Collected takeCollected(const std::string& sinkName) {
 struct RampSource : Block<RampSource> {
     PortOut<float> out;
 
-    Annotated<gr::Size_t, "n_samples", Doc<"samples to emit before finishing">>   n_samples = 4096U;
-    Annotated<gr::Size_t, "tag_every", Doc<"tag period in samples, 0 = no tags">> tag_every = 512U;
+    Annotated<gr::Size_t, "n_samples", Doc<"samples to emit before finishing">>            n_samples = 4096U;
+    Annotated<gr::Size_t, "tag_every", Doc<"tag period in samples, 0 to disable tagging">> tag_every = 512U;
 
     GR_MAKE_REFLECTABLE(RampSource, out, n_samples, tag_every);
 
@@ -305,8 +305,8 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(graph.portTypeName(*scale, true, "in").find("float") != std::string::npos) << graph.portTypeName(*scale, true, "in");
     };
 
-    // a block the caller built is indistinguishable from an emplaced one, which is what lets a
-    // factory keep its own typed pointer and hand the graph the erased one
+    // a block the caller built is indistinguishable from an emplaced one. A factory therefore keeps
+    // its own typed pointer and hands the graph the erased one
     "an added block behaves exactly as an emplaced one"_test = [] {
         registerTestBlocks();
         runTyped(typedChain("add-reference", 4096U, 3.0f));
