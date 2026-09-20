@@ -650,8 +650,8 @@ inline std::expected<void, gr::Error> evaluateRecipeExpressions(Tensor<pmt::Valu
                         continue;
                     }
                     // `=name` naming a string, boolean or vector parameter hands that value through unchanged. Those
-                    // types carry no arithmetic, so there is no grammar over them: the whole of what a recipe
-                    // can do with one is substitute it, and anything else stays the numeric expression path.
+                    // types carry no arithmetic and have no grammar over them: a recipe substitutes such a value
+                    // and does nothing else with it. Every other expression takes the numeric path.
                     const std::string_view     reference = textView.substr(1);
                     std::optional<std::size_t> substituted;
                     for (std::size_t declared = 0UZ; declared < declarations.size(); ++declared) {

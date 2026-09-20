@@ -125,7 +125,7 @@ inline constexpr std::size_t kMaxEdgeBufferSize        = 1UZ << 22;
  * spins. A ring of exactly one chunk runs but has to drain completely between calls; two chunks is the
  * first depth that lets one be written while the other is read. kMinEdgeBufferSize is therefore two of
  * any chunk up to 2048, and it is also Port.hpp's kDefaultBufferSize, so a rate-derived edge is never
- * shallower than a port nobody sized. Going much below it buys nothing anyway: CircularBuffer rounds a
+ * shallower than a port nobody sized. A smaller size has little effect in any case: CircularBuffer rounds a
  * double-mapped ring up to a whole page's worth of elements, 1024 float or 512 complex<float> on a
  * 4 kiB page.
  *
@@ -612,7 +612,7 @@ public:
      *
      * `std::nullopt` takes the newest registered version, as the throwing form above does. A pin that cannot
      * be honored is reported and nothing is added, never rounded to a neighboring version. Every failure is
-     * returned rather than thrown, which is what a message handler needs.
+     * returned rather than thrown. A message handler needs the failure as a value.
      */
     [[nodiscard]] std::expected<std::shared_ptr<BlockModel>, Error> emplaceBlock(std::string_view type, std::optional<block::Version> pinnedVersion, property_map initialSettings);
 

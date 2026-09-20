@@ -515,9 +515,9 @@ public:
     }
 
     /// Instantiates and keeps the reason a definition refused: a null value is an ordinary miss --
-    /// nothing of that name is registered, as a block, a plugin or a YAML definition -- while an
-    /// unexpected carries what the definition said, which for a recipe names the parameter it
-    /// wanted. instantiate() is this with the reason printed and dropped.
+    /// no block, plugin or YAML definition carries that name -- while an unexpected carries the
+    /// definition's own reason, which for a recipe names the parameter the recipe requires.
+    /// instantiate() calls this, prints the reason and drops it.
     std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateOrError(std::string_view name, const property_map& params = property_map{}) {
         // Try to create a node from the global registry
         if (auto result = _registry->create(name, params)) {

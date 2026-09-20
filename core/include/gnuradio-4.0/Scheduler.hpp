@@ -1273,9 +1273,9 @@ protected:
      *
      * The message either carries `yaml`, one serialized block definition, or names the block directly with
      * `type` and an optional `properties` map. Either form may carry a `version`, the version of the block the
-     * sender pins; without it the newest registered version is taken, which is what a message written before
-     * versions existed says. A pin that cannot be honored is answered with the loader's reason and nothing is
-     * added, never rounded to a neighboring version.
+     * sender pins. A message that carries none takes the newest registered version. A pin that cannot be
+     * honored is answered with the loader's reason and nothing is added, never rounded to a neighboring
+     * version.
      */
     std::optional<Message> propertyCallbackEmplaceBlock([[maybe_unused]] std::string_view propertyName, Message message) {
         using enum lifecycle::State;

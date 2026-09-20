@@ -654,7 +654,7 @@ struct Status {
 };
 
 /**
- * @brief Which revision of a block a registration is.
+ * @brief A block's revision number, carried by its registration.
  *
  * A block declares it as `static constexpr gr::block::Version version = 2U;`. A block that declares none is
  * version 1, so a second revision is spelled `2U` and is newer by the ordinary comparison.

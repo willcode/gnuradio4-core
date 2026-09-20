@@ -58,8 +58,8 @@ namespace detail {
 /// A vector type word is a scalar one with `[]` after it: `float64[]`, `int32[]`, `string[]`.
 [[nodiscard]] constexpr bool vectorTypeWord(std::string_view type) noexcept { return type.ends_with("[]") && (numericTypeWord(type.substr(0UZ, type.size() - 2UZ)) || type.substr(0UZ, type.size() - 2UZ) == "bool" || type.substr(0UZ, type.size() - 2UZ) == "string"); }
 
-/// Whether a declared type is handed through rather than computed. Strings, booleans and vectors are: a recipe
-/// exports one so a caller can set it, and the whole of what the recipe does with it is put it where it goes.
+/// True for a declared type that is handed through rather than computed. Strings, booleans and vectors are handed
+/// through: a recipe exports one for a caller to set, and then places the value unchanged.
 /// A boolean belongs here rather than with the numbers because the arithmetic that would make it an operand —
 /// adding two toggles, scaling one — has no meaning a recipe should be able to write.
 [[nodiscard]] constexpr bool substitutedTypeWord(std::string_view type) noexcept { return type == "string" || type == "bool" || vectorTypeWord(type); }
@@ -683,7 +683,7 @@ struct Binding {
     return evaluate(binding.expression, values);
 }
 
-/// Whether two derived values are the same value. `pmt::Value` compares a Tensor by identity,
+/// True when two derived values are equal. `pmt::Value` compares a Tensor by identity,
 /// so a sequence — rebuilt whole on every evaluation — is compared element by element here;
 /// every other alternative defers to the value's own equality. Where equality cannot tell, the
 /// answer is "differs", so the engine restages a key it need not have rather than skipping one
