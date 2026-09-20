@@ -138,8 +138,9 @@ struct ExportedPort {
 };
 
 /// One entry of a composite's `exported_parameters` list, spelled as `gr::recipe::ParameterDeclaration`
-/// carries it: a name, a dialect type word, an optional default and an optional `doc` line. A
-/// declaration that states no default is required at instantiation, which is what `required` says.
+/// carries it: a name, a dialect type word, an optional default and an optional `doc` line. An
+/// instantiation must supply a value for a declaration that states no default, and `required`
+/// reports that.
 struct ExportedParameter {
     std::string name;
     std::string type;
@@ -1100,7 +1101,7 @@ inline void writeSubgraphs(DocWriter& writer, const Level& level, std::size_t de
         facts.push_back(writer.labeled("Connections", std::to_string(block.interior->connections.size())));
         writer.rawBullets(facts);
 
-        // the declarations come before the ports because they are what an instantiation must supply:
+        // the declarations come before the ports because an instantiation must supply them:
         // a composite's interior is derived from them before it exists
         if (!block.exportedParameters.empty()) {
             writer.heading(depth + 3UZ, "Exported parameters");

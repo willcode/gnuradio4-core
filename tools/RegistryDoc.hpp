@@ -396,10 +396,10 @@ inline void writeSchedulers(DocWriter& writer, gr::PluginLoader& loader) {
 /**
  * @brief The whole document.
  *
- * The key set is the union of the registry's own keys with the names the loaded plugins answer
- * to, which is what `PluginLoader::availableBlocks()` reports. A plugin that registers into the
- * `gr::plugin<>` instance its own header declares contributes nothing to `BlockRegistry::keys()`,
- * and would otherwise be missing from a document whose subject is what the build offers.
+ * `PluginLoader::availableBlocks()` reports the key set: the union of the registry's own keys with
+ * the names the loaded plugins answer to. A plugin that registers into the `gr::plugin<>` instance
+ * its own header declares contributes nothing to `BlockRegistry::keys()`. The registry's keys alone
+ * would leave such a plugin's blocks out of a document that reports what the build offers.
  */
 [[nodiscard]] inline std::string render(const Inputs& inputs, Format format, std::string title) {
     DocWriter writer(format, std::move(title));
