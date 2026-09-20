@@ -221,8 +221,8 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
     };
 
-    // a graph file may pin the version of a block it wants; a graph edited at runtime says the same thing
-    // through the message that emplaces or replaces one, and a pinned instance is what the next save writes
+    // a graph file may pin the version of a block; a graph edited at runtime pins the same version
+    // through the message that emplaces or replaces one, and the next save writes the pinned instance
     "a block emplaced by message takes the version it pins"_test = [] {
         qa_edit::registerTestBlocks();
 

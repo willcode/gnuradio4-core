@@ -784,8 +784,8 @@ connections:
         }
     };
 
-    // the reader instantiated a block and only then handed it its parameters, so a recipe -- whose
-    // exported parameters are what its interior is derived from -- could not be named in a file
+    // a recipe derives its interior from the exported parameters. The reader therefore supplies them
+    // at instantiation rather than staging them after the block exists
     "a graph file names a recipe and supplies its required parameter"_test = [] {
         const RecipeAssetRoot assets;
         auto                  loader = recipeLoader({assets.path.string()});
