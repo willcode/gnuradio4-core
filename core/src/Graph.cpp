@@ -19,7 +19,7 @@ Graph::Graph(property_map settings) : gr::Block<Graph>(std::move(settings)), _pl
     if (!emplaced.has_value()) {
         throw gr::exception(emplaced.error().message);
     }
-    return _blocks.back(); // addBlock() appended it, and the graph's own entry is what a caller binds to
+    return _blocks.back(); // addBlock() appended it; a caller binds to the graph's own entry
 }
 
 std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::string_view type, std::optional<block::Version> pinnedVersion, property_map initialSettings) {
@@ -44,9 +44,9 @@ std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::strin
     // a block built from a YAML definition consumes only the parameters that definition exports --
     // its interior is derived from them, so their values have to be known before the interior
     // exists -- and refuses everything else by name, including the `name` a caller supplies. Those
-    // parameters therefore travel with the instantiation and the rest is staged afterwards, which
-    // is what the reader does with the same block written in a file. A registered or plugin-
-    // provided type declares nothing and takes its whole map at construction, exactly as before.
+    // parameters therefore travel with the instantiation and the rest is staged afterwards. The
+    // reader treats the same block written in a file the same way. A registered or plugin-provided
+    // type declares nothing and takes its whole map at construction.
     detail::RecipeParameterSplit split = detail::splitRecipeParameters(*_pluginLoader, type, std::move(initialSettings));
     if (split.fromDefinition) {
         const auto nameIt       = split.remaining.find("name");

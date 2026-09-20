@@ -627,7 +627,7 @@ public:
      *
      * `std::nullopt` takes the newest registered version, as the throwing form above does. A pin that cannot
      * be honored is reported and nothing is added, never rounded to a neighboring version. Every failure is
-     * returned rather than thrown, which is what a message handler needs.
+     * returned rather than thrown. A message handler needs the failure as a value.
      */
     [[nodiscard]] std::expected<std::shared_ptr<BlockModel>, Error> emplaceBlock(std::string_view type, std::optional<block::Version> pinnedVersion, property_map initialSettings);
 

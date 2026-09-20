@@ -227,7 +227,7 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplace(std::string_view 
     std::shared_ptr<BlockModel> model = loader.instantiate(type, parameters);
     if (!model) {
         // the scheduler registry is the second half of the same lookup Graph::emplaceBlock performs,
-        // and it is what nests a scheduler as a block
+        // and it nests a scheduler as a block
         std::ignore = gr::registerBuiltinSchedulers();
         if (std::shared_ptr<SchedulerModel> scheduler = loader.instantiateScheduler(type, parameters); scheduler) {
             model = SchedulerModel::asBlockModelPtr(std::move(scheduler));
