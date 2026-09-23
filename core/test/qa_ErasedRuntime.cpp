@@ -22,6 +22,7 @@
 #include <ranges>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 /**
@@ -171,6 +172,41 @@ struct RecordingSink : Block<RecordingSink> {
         std::ignore = inSpan.consume(n);
         return work::Status::OK;
     }
+};
+
+/// an ordinary output beside an optional one
+struct DualSource : Block<DualSource> {
+    PortOut<float>           out;
+    PortOut<float, Optional> monitor;
+
+    GR_MAKE_REFLECTABLE(DualSource, out, monitor);
+
+    work::Status processBulk(OutputSpanLike auto& outSpan, OutputSpanLike auto& monitorSpan) {
+        outSpan.publish(0UZ);
+        monitorSpan.publish(0UZ);
+        return work::Status::DONE;
+    }
+};
+
+/// an asynchronous input beside a synchronous output
+struct AsyncInput : Block<AsyncInput> {
+    PortIn<float, Async> in;
+    PortOut<float>       out;
+
+    GR_MAKE_REFLECTABLE(AsyncInput, in, out);
+
+    work::Status processBulk(InputSpanLike auto&, OutputSpanLike auto&) { return work::Status::OK; }
+};
+
+/// a message input beside a stream input that declares its sample counts
+struct ControlledChunks : Block<ControlledChunks> {
+    MsgPortIn                                  control;
+    PortIn<float, RequiredSamples<64U, 1024U>> in;
+    PortOut<float>                             out;
+
+    GR_MAKE_REFLECTABLE(ControlledChunks, control, in, out);
+
+    work::Status processBulk(InputSpanLike auto&, OutputSpanLike auto&) { return work::Status::OK; }
 };
 
 inline void registerTestBlocks() {
@@ -1004,6 +1040,103 @@ connections:
         const std::vector<RuntimeEdge> remaining = running.edges();
         expect(eq(remaining.size(), 2UZ));
         expect(std::ranges::none_of(remaining, [](const RuntimeEdge& edge) { return edge.destinationPort == "in#1"; })) << "a disconnected edge is not listed";
+    };
+
+    "a block's ports are described one by one, as the name lists give them"_test = [] {
+        registerTestBlocks();
+        RuntimeGraph graph;
+        auto         scale        = graph.emplace("qa::Scale", "scale");
+        auto         sum          = graph.emplace("qa::SumInputs", "sum");
+        auto         dual         = graph.add(std::make_shared<BlockWrapper<DualSource>>(), "dual");
+        auto         async        = graph.add(std::make_shared<BlockWrapper<AsyncInput>>(), "async");
+        auto         chunkedModel = std::make_shared<BlockWrapper<ControlledChunks>>();
+        auto         chunked      = graph.add(chunkedModel, "chunked");
+        expect(fatal(scale.has_value() && sum.has_value() && dual.has_value() && async.has_value() && chunked.has_value()));
+
+        const auto describedAsListed = [&graph](const BlockHandle& block, bool isInput) {
+            const std::vector<std::string> names = isInput ? graph.inputPortNames(block) : graph.outputPortNames(block);
+            const std::vector<RuntimePort> ports = isInput ? graph.inputPorts(block) : graph.outputPorts(block);
+            expect(fatal(eq(ports.size(), names.size()))) << block.name();
+            for (std::size_t i = 0UZ; i < ports.size(); ++i) {
+                expect(eq(ports[i].name, names[i])) << block.name();
+                expect(eq(ports[i].typeName, graph.portTypeName(block, isInput, names[i]))) << names[i];
+                expect(ports[i].isInput == isInput) << names[i];
+            }
+            return ports;
+        };
+        for (const BlockHandle& block : graph.blocks()) {
+            std::ignore = describedAsListed(block, true);
+            std::ignore = describedAsListed(block, false);
+        }
+
+        const std::vector<RuntimePort> elements = describedAsListed(*sum, true);
+        expect(fatal(!elements.empty()));
+        for (std::size_t i = 0UZ; i < elements.size(); ++i) {
+            expect(eq(elements[i].collection, std::string("in"))) << elements[i].name;
+            expect(eq(elements[i].index, i)) << elements[i].name;
+        }
+        const std::vector<RuntimePort> scaleInputs = describedAsListed(*scale, true);
+        expect(fatal(eq(scaleInputs.size(), 1UZ)));
+        expect(scaleInputs.front().collection.empty()) << "a port outside a collection names none";
+        expect(scaleInputs.front().isSynchronous && !scaleInputs.front().isOptional);
+
+        const auto flagOf = [](const std::vector<RuntimePort>& ports, std::string_view name, bool RuntimePort::*flag) -> std::optional<bool> {
+            const auto found = std::ranges::find_if(ports, [name](const RuntimePort& port) { return port.name == name; });
+            return found == ports.end() ? std::nullopt : std::optional<bool>((*found).*flag);
+        };
+        const std::vector<RuntimePort> dualOutputs = describedAsListed(*dual, false);
+        expect(flagOf(dualOutputs, "monitor", &RuntimePort::isOptional) == std::optional<bool>(true)) << "a port declared Optional reports so";
+        expect(flagOf(dualOutputs, "out", &RuntimePort::isOptional) == std::optional<bool>(false));
+        expect(flagOf(describedAsListed(*async, true), "in", &RuntimePort::isSynchronous) == std::optional<bool>(false)) << "a port declared Async reports so";
+        expect(flagOf(describedAsListed(*async, false), "out", &RuntimePort::isSynchronous) == std::optional<bool>(true));
+
+        const std::vector<RuntimePort> chunkedInputs = describedAsListed(*chunked, true);
+        expect(flagOf(chunkedInputs, "control", &RuntimePort::isMessage) == std::optional<bool>(true)) << "a message port reports so";
+        expect(flagOf(chunkedInputs, "in", &RuntimePort::isMessage) == std::optional<bool>(false));
+        const auto chunkedIn = std::ranges::find_if(chunkedInputs, [](const RuntimePort& port) { return port.name == "in"; });
+        expect(fatal(chunkedIn != chunkedInputs.end()));
+        const ControlledChunks& chunkedBlock = chunkedModel->blockRef();
+        expect(eq(chunkedIn->minSamples, chunkedBlock.in.min_samples)) << "the minimum the port declares";
+        expect(eq(chunkedIn->maxSamples, chunkedBlock.in.max_samples)) << "the maximum the port declares";
+        expect(eq(chunkedIn->domain, std::string(chunkedBlock.in.domain()))) << "the port's compute domain";
+    };
+
+    "a port reads connected only while a running scheduler holds it"_test = [] {
+        registerTestBlocks();
+        const auto connectedOf  = [](const std::vector<RuntimePort>& ports) { return !ports.empty() && ports.front().isConnected; };
+        const auto sourceToSink = [](gr::Size_t nSamples, std::string_view sinkName) {
+            RuntimeGraph graph;
+            auto         source = graph.emplace("qa::RampSource", "source", {{"n_samples", nSamples}, {"tag_every", gr::Size_t{0U}}});
+            auto         sink   = graph.emplace("qa::RecordingSink", sinkName);
+            expect(fatal(source.has_value() && sink.has_value()));
+            expect(graph.connect(*source, "out", *sink, "in").has_value());
+            return std::tuple{std::move(graph), *source, *sink};
+        };
+
+        auto [running, source, sink] = sourceToSink(gr::Size_t{1U << 24U}, "e11-running");
+        expect(!connectedOf(running.outputPorts(source))) << "an output reads connected before create()";
+        expect(!connectedOf(running.inputPorts(sink))) << "an input reads connected before create()";
+        auto runtime = Runtime::create(std::move(running));
+        expect(fatal(runtime.has_value()));
+        runtime->start();
+        const auto started = std::chrono::steady_clock::now();
+        while (collectedSize("e11-running") == 0UZ && std::chrono::steady_clock::now() - started < std::chrono::seconds(3)) {
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+        expect(fatal(gt(collectedSize("e11-running"), 0UZ))) << "no sample reached the sink";
+        const RuntimeGraph view = runtime->graph();
+        expect(connectedOf(view.outputPorts(source))) << "a running scheduler holds the output connected";
+        expect(connectedOf(view.inputPorts(sink))) << "a running scheduler holds the input connected";
+        runtime->stop();
+        std::ignore = takeCollected("e11-running");
+
+        auto [finite, finiteSource, finiteSink] = sourceToSink(gr::Size_t{4096U}, "e11-finished");
+        auto finished                           = Runtime::create(std::move(finite));
+        expect(fatal(finished.has_value()));
+        expect(finished->runAndWait().has_value());
+        std::ignore = takeCollected("e11-finished");
+        expect(!connectedOf(finished->graph().outputPorts(finiteSource))) << "an output reads connected after its blocks stopped";
+        expect(!connectedOf(finished->graph().inputPorts(finiteSink))) << "an input reads connected after its block stopped";
     };
 };
 
