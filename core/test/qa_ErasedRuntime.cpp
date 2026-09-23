@@ -846,6 +846,51 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(fromUnknownType->error().message.contains("qa::NoSuchBlock")) << fromUnknownType->error().message;
         expect(eq(fromUnknownType->error().where, std::string("RuntimeGraph::fromYaml")));
     };
+
+    "the scheduler's own settings are read and staged through a block handle"_test = [] {
+        registerTestBlocks();
+        const auto sourceToSink = [](std::string_view sinkName) {
+            RuntimeGraph graph;
+            auto         source = graph.emplace("qa::RampSource", "source", {{"n_samples", gr::Size_t{64U}}});
+            auto         sink   = graph.emplace("qa::RecordingSink", sinkName);
+            expect(source.has_value() && sink.has_value());
+            expect(graph.connect(*source, "out", *sink, "in").has_value());
+            return graph;
+        };
+        const auto timeoutOf = [](const BlockHandle& scheduler) {
+            const std::optional<pmt::Value> value = scheduler.get(std::string("timeout_ms"));
+            return value.has_value() && value->get_if<gr::Size_t>() != nullptr ? std::optional<gr::Size_t>(*value->get_if<gr::Size_t>()) : std::nullopt;
+        };
+
+        auto withDefaults = Runtime::create(sourceToSink("e8-default"));
+        expect(fatal(withDefaults.has_value()));
+        const std::optional<gr::Size_t> defaultTimeout = timeoutOf(withDefaults->scheduler());
+        expect(fatal(defaultTimeout.has_value())) << "the scheduler handle reports no timeout_ms";
+
+        const gr::Size_t chosenTimeout = *defaultTimeout + 23U;
+        auto             runtime       = Runtime::create(sourceToSink("e8-chosen"), Runtime::kDefaultScheduler, {{"timeout_ms", chosenTimeout}});
+        expect(fatal(runtime.has_value()));
+        BlockHandle scheduler = runtime->scheduler();
+        expect(fatal(scheduler.valid()));
+        expect(timeoutOf(scheduler) == chosenTimeout) << "the handle reports the timeout the scheduler was created with";
+
+        const property_map rejected = scheduler.setStaged({{"qa_undeclared", 1.0f}});
+        expect(rejected.contains(convert_string_domain(std::string("qa_undeclared")))) << "a key the scheduler does not declare comes back";
+        expect(scheduler.setStaged({{"timeout_ms", chosenTimeout + 1U}}).empty()) << "a key the scheduler declares is staged";
+
+        BlockHandle               outliving;
+        std::optional<gr::Size_t> timeoutWhileOwned;
+        {
+            Runtime moved = std::move(*runtime);
+            expect(!runtime->scheduler().valid()) << "an empty Runtime has no scheduler";
+            outliving = moved.scheduler();
+            expect(fatal(outliving.valid()));
+            timeoutWhileOwned = timeoutOf(outliving);
+            expect(fatal(timeoutWhileOwned.has_value()));
+        }
+        expect(outliving.valid()) << "a scheduler handle outlives its Runtime";
+        expect(timeoutOf(outliving) == timeoutWhileOwned) << "a scheduler handle reads the same settings after its Runtime is destroyed";
+    };
 };
 
 int main() { /* tests are statically registered */ }

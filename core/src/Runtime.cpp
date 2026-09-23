@@ -639,4 +639,6 @@ RuntimeGraph Runtime::graph() const {
     return RuntimeGraph(std::move(impl));
 }
 
+BlockHandle Runtime::scheduler() const { return _impl ? BlockHandle(std::shared_ptr<void>(_impl->schedulerBlock)) : BlockHandle{}; }
+
 } // namespace gr
