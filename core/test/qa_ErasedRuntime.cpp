@@ -891,6 +891,120 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(outliving.valid()) << "a scheduler handle outlives its Runtime";
         expect(timeoutOf(outliving) == timeoutWhileOwned) << "a scheduler handle reads the same settings after its Runtime is destroyed";
     };
+
+    "a graph lists its edges by the port names connect() accepts"_test = [] {
+        registerTestBlocks();
+        const auto edgeInto = [](const std::vector<RuntimeEdge>& edges, std::string_view block, std::string_view port) {
+            const auto found = std::ranges::find_if(edges, [&](const RuntimeEdge& edge) { return edge.destinationBlock.uniqueName() == block && edge.destinationPort == port; });
+            return found == edges.end() ? std::optional<RuntimeEdge>{} : std::optional<RuntimeEdge>(*found);
+        };
+
+        const auto           disconnectListed = [](RuntimeGraph& graph, const RuntimeEdge& edge) { return graph.disconnect(edge.sourceBlock, edge.sourcePort, edge.destinationBlock, edge.destinationPort); };
+        constexpr gr::Size_t kSamples         = 4096U;
+
+        RuntimeGraph graph;
+        auto         source = graph.emplace("qa::RampSource", "source", {{"n_samples", kSamples}, {"tag_every", gr::Size_t{0U}}});
+        auto         sum    = graph.emplace("qa::SumInputs", "sum", {{"n_inputs", gr::Size_t{2U}}});
+        auto         sink   = graph.emplace("qa::RecordingSink", "e9-edges");
+        auto         tap    = graph.emplace("qa::RecordingSink", "e9-tap");
+        expect(fatal(source.has_value() && sum.has_value() && sink.has_value() && tap.has_value()));
+
+        const EdgeSpec explicitSpec{.minBufferSize = 8192UZ, .weight = 7, .name = "explicit"};
+        expect(graph.connect(*source, "out", *sum, "in#1", explicitSpec).has_value());
+        expect(graph.connect(*source, "out", *sum, "in#0").has_value());
+        expect(graph.connect(*sum, "out", *sink, "in").has_value());
+        expect(graph.connect(*source, "out", *tap, "in").has_value());
+
+        const std::vector<RuntimeEdge> edges = graph.edges();
+        expect(eq(edges.size(), 4UZ));
+        const std::optional<RuntimeEdge> withSpec = edgeInto(edges, sum->uniqueName(), "in#1");
+        expect(fatal(withSpec.has_value())) << "a collection element's edge is listed by the element's name";
+        expect(eq(withSpec->sourceBlock.uniqueName(), source->uniqueName()));
+        expect(eq(withSpec->sourcePort, std::string("out")));
+        expect(eq(withSpec->edge.minBufferSize, explicitSpec.minBufferSize));
+        expect(eq(withSpec->edge.weight, explicitSpec.weight));
+        expect(eq(withSpec->edge.name, explicitSpec.name));
+
+        const std::optional<RuntimeEdge> withoutSpec = edgeInto(edges, sum->uniqueName(), "in#0");
+        expect(fatal(withoutSpec.has_value()));
+        expect(gt(withoutSpec->edge.minBufferSize, 0UZ)) << "an edge given no size reports the size the framework chose";
+
+        // Before create(), by the listed names. A block whose input no edge feeds never finishes, and the
+        // tap leaves the graph before the run.
+        const std::optional<RuntimeEdge> toTap = edgeInto(edges, tap->uniqueName(), "in");
+        expect(fatal(toTap.has_value()));
+        const auto beforeRun = disconnectListed(graph, *toTap);
+        expect(fatal(beforeRun.has_value())) << (beforeRun ? std::string{} : beforeRun.error().message);
+        expect(!edgeInto(graph.edges(), tap->uniqueName(), "in").has_value()) << "a disconnected edge is not listed";
+        expect(eq(graph.edges().size(), 3UZ));
+        expect(fatal(graph.remove(*tap).has_value()));
+
+        const std::string sumName(sum->uniqueName());
+        auto              runtime = Runtime::create(std::move(graph));
+        expect(fatal(runtime.has_value()));
+        expect(runtime->runAndWait().has_value());
+        expect(eq(takeCollected("e9-edges").samples.size(), std::size_t{kSamples}));
+
+        // after the run to completion, through the view of the scheduler's graph
+        RuntimeGraph                     running = runtime->graph();
+        const std::optional<RuntimeEdge> toFirst = edgeInto(running.edges(), sumName, "in#0");
+        expect(fatal(toFirst.has_value()));
+        const auto afterRun = disconnectListed(running, *toFirst);
+        expect(afterRun.has_value()) << (afterRun ? std::string{} : afterRun.error().message);
+        const std::vector<RuntimeEdge> remaining = running.edges();
+        expect(eq(remaining.size(), 2UZ));
+        expect(!edgeInto(remaining, sumName, "in#0").has_value()) << "a disconnected edge is not listed";
+        expect(edgeInto(remaining, sumName, "in#1").has_value());
+    };
+
+    "a loaded document's edges by index are listed by port name"_test = [] {
+        registerTestBlocks();
+        constexpr std::string_view document = R"yaml(blocks:
+  - id: qa::RampSource
+    parameters:
+      name: source
+  - id: qa::SumInputs
+    parameters:
+      name: sum
+  - id: qa::RecordingSink
+    parameters:
+      name: sink
+connections:
+  - [source, 0, sum, [0, 0]]
+  - [source, 0, sum, [0, 1]]
+  - [sum, 0, sink, 0]
+)yaml";
+        auto                       loaded   = RuntimeGraph::fromYaml(document);
+        expect(fatal(loaded.has_value())) << (loaded ? std::string{} : loaded.error().message);
+
+        std::vector<std::string> spelled;
+        for (const RuntimeEdge& edge : loaded->edges()) {
+            spelled.push_back(std::format("{}.{} -> {}.{}", edge.sourceBlock.name(), edge.sourcePort, edge.destinationBlock.name(), edge.destinationPort));
+            const std::vector<std::string> outputs = loaded->outputPortNames(edge.sourceBlock);
+            const std::vector<std::string> inputs  = loaded->inputPortNames(edge.destinationBlock);
+            expect(std::ranges::find(outputs, edge.sourcePort) != outputs.end()) << edge.sourcePort;
+            expect(std::ranges::find(inputs, edge.destinationPort) != inputs.end()) << edge.destinationPort;
+            expect(gt(edge.edge.minBufferSize, 0UZ));
+        }
+        std::ranges::sort(spelled);
+        expect(spelled == std::vector<std::string>{"source.out -> sum.in#0", "source.out -> sum.in#1", "sum.out -> sink.in"}) << std::format("{}", spelled);
+
+        // the listed names select an edge made by index, here after a run to completion
+        auto runtime = Runtime::create(std::move(*loaded));
+        expect(fatal(runtime.has_value())) << (runtime ? std::string{} : runtime.error().message);
+        expect(runtime->runAndWait().has_value());
+        std::ignore = takeCollected("sink");
+
+        RuntimeGraph                   running = runtime->graph();
+        const std::vector<RuntimeEdge> listed  = running.edges();
+        const auto                     byIndex = std::ranges::find_if(listed, [](const RuntimeEdge& edge) { return edge.destinationPort == "in#1"; });
+        expect(fatal(byIndex != listed.end()));
+        const auto disconnected = running.disconnect(byIndex->sourceBlock, byIndex->sourcePort, byIndex->destinationBlock, byIndex->destinationPort);
+        expect(disconnected.has_value()) << (disconnected ? std::string{} : disconnected.error().message);
+        const std::vector<RuntimeEdge> remaining = running.edges();
+        expect(eq(remaining.size(), 2UZ));
+        expect(std::ranges::none_of(remaining, [](const RuntimeEdge& edge) { return edge.destinationPort == "in#1"; })) << "a disconnected edge is not listed";
+    };
 };
 
 int main() { /* tests are statically registered */ }

@@ -104,12 +104,26 @@ private:
     std::shared_ptr<void> _model; // aliases the graph's shared_ptr<BlockModel>
 };
 
+/// One edge of a graph. Each port carries the name `connect()` accepts, also for an edge made by index.
+/// `edge.minBufferSize` is the minimum the edge records, with the framework's default in place of 0.
+/// `edge.name` is "unnamed edge" when none was given.
+struct GNURADIO_EXPORT RuntimeEdge {
+    BlockHandle sourceBlock;
+    std::string sourcePort;
+    BlockHandle destinationBlock;
+    std::string destinationPort;
+    EdgeSpec    edge;
+};
+
 /**
  * @brief A flow graph built by name.
  *
  * A RuntimeGraph either owns its graph or views one owned by a subgraph block or a scheduler.
  * `interior()` and `Runtime::graph()` return views; a view does not destroy what it names, and
  * `clear()` on a view clears the viewed graph.
+ *
+ * From another thread, call edges() on a running graph only while no edit is in flight, whether made
+ * through a view or by the scheduler's edit messages (quiesce() does not hold those back).
  */
 class GNURADIO_EXPORT RuntimeGraph {
 public:
@@ -146,6 +160,9 @@ public:
 
     [[nodiscard]] std::expected<void, RuntimeError> disconnect(const BlockHandle& sourceBlock, std::string_view sourcePort, //
         const BlockHandle& destinationBlock, std::string_view destinationPort);
+
+    /// The edges of this level of the graph; a subgraph's own edges are read through `interior()`.
+    [[nodiscard]] std::vector<RuntimeEdge> edges() const;
 
     [[nodiscard]] std::vector<std::string> inputPortNames(const BlockHandle& block) const;
     [[nodiscard]] std::vector<std::string> outputPortNames(const BlockHandle& block) const;
