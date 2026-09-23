@@ -161,6 +161,16 @@ public:
     [[nodiscard]] property_map exportedInputPorts() const;
     [[nodiscard]] property_map exportedOutputPorts() const;
 
+    /// Loads a graph document through `gr::loadGrc` and the global plugin loader into a graph this
+    /// RuntimeGraph owns. A document the reader refuses is an error carrying the reader's message. For a
+    /// document that does not parse, the message is the reader's sentence headed by the line and column.
+    [[nodiscard]] static std::expected<RuntimeGraph, RuntimeError> fromYaml(std::string_view document);
+
+    /// Writes the graph as a graph document through `gr::saveGrc`, on an owning graph or a view. Call it
+    /// only on a graph no scheduler is running. For a running graph, the reply to a `Get` on the
+    /// scheduler's "GraphGRC" endpoint holds the document under `value`.
+    [[nodiscard]] std::expected<std::string, RuntimeError> toYaml() const;
+
     [[nodiscard]] static std::vector<std::string> availableBlockTypes();
     [[nodiscard]] static std::vector<std::string> availableSchedulerTypes();
 

@@ -2,6 +2,7 @@
 
 #include <gnuradio-4.0/BlockModel.hpp>
 #include <gnuradio-4.0/Graph.hpp>
+#include <gnuradio-4.0/Graph_yaml_importer.hpp>
 #include <gnuradio-4.0/Message.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
 #include <gnuradio-4.0/Port.hpp>
@@ -50,6 +51,15 @@ std::uint64_t toNanoseconds(std::chrono::system_clock::time_point when) { //
 RuntimeError toRuntimeError(const Error& error) { return RuntimeError{.message = error.message, .where = error.srcLoc(), .time = toNanoseconds(error.errorTime)}; }
 
 RuntimeError localError(std::string message, std::string_view where) { return RuntimeError{.message = std::move(message), .where = std::string(where), .time = 0ULL}; }
+
+// loadGrc ends its message for a document that does not parse with a newline and the document itself
+std::string_view withoutDocument(std::string_view message, std::string_view document) {
+    const std::size_t appended = document.size() + 1UZ;
+    if (message.size() < appended || !message.ends_with(document) || message[message.size() - appended] != '\n') {
+        return message;
+    }
+    return message.substr(0UZ, message.size() - appended);
+}
 
 PluginLoader& loaderFor(const Graph& graph) { return graph._pluginLoader != nullptr ? *graph._pluginLoader : gr::globalPluginLoader(); }
 
@@ -424,6 +434,47 @@ std::string RuntimeGraph::portTypeName(const BlockHandle& block, bool isInput, s
     const PortDefinition definition{std::string(portName)};
     const auto           port = isInput ? model.dynamicInputPort(definition) : model.dynamicOutputPort(definition);
     return port.has_value() ? port.value()->typeName() : std::string{};
+}
+
+std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document) {
+    constexpr std::string_view where = "RuntimeGraph::fromYaml";
+    try {
+        gr::meta::indirect<Graph> loaded = gr::loadGrc(gr::globalPluginLoader(), document);
+
+        auto impl   = std::make_unique<Impl>();
+        impl->owned = std::make_unique<Graph>(std::move(*loaded));
+        impl->view  = impl->owned.get();
+        return RuntimeGraph(std::move(impl));
+    } catch (const gr::exception& error) {
+        // loadGrc's message gives the line of a document that does not parse. The parser's own error gives
+        // the column. The same parse returned normally inside loadGrc, and here only an allocation can fail.
+        const auto parsed = pmt::yaml::deserialize(document);
+        return std::unexpected(localError(parsed.has_value() ? error.message : std::format("line {}, column {}: {}", parsed.error().line, parsed.error().column, withoutDocument(error.message, document)), where));
+    } catch (const gr::Error& error) {
+        return std::unexpected(localError(error.message, where));
+    } catch (const std::exception& error) {
+        return std::unexpected(localError(error.what(), where));
+    } catch (...) {
+        return std::unexpected(localError("the graph-file reader threw an exception of unknown type", where));
+    }
+}
+
+std::expected<std::string, RuntimeError> RuntimeGraph::toYaml() const {
+    constexpr std::string_view where = "RuntimeGraph::toYaml";
+    if (!_impl || _impl->view == nullptr) {
+        return std::unexpected(localError("graph handle is empty", where));
+    }
+    try {
+        return gr::saveGrc(loaderFor(*_impl->view), *_impl->view);
+    } catch (const gr::exception& error) {
+        return std::unexpected(localError(error.message, where));
+    } catch (const gr::Error& error) {
+        return std::unexpected(localError(error.message, where));
+    } catch (const std::exception& error) {
+        return std::unexpected(localError(error.what(), where));
+    } catch (...) {
+        return std::unexpected(localError("the graph-file writer threw an exception of unknown type", where));
+    }
 }
 
 std::vector<std::string> RuntimeGraph::availableBlockTypes() { return gr::globalPluginLoader().availableBlocks(); }
