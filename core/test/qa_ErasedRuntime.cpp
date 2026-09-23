@@ -8,6 +8,7 @@
 #include <gnuradio-4.0/Scheduler.hpp>
 #include <gnuradio-4.0/SchedulerModel.hpp>
 #include <gnuradio-4.0/SchedulerRegistration.hpp>
+#include <gnuradio-4.0/YamlPmt.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -252,6 +253,17 @@ inline std::optional<float> floatAt(const property_map& map, const std::string& 
         return std::nullopt;
     }
     return *entry->second.get_if<float>();
+}
+
+/// each block's settings by its name, less the process-unique name no loaded copy can share
+inline std::map<std::string, property_map> settingsByName(const RuntimeGraph& graph) {
+    std::map<std::string, property_map> settings;
+    for (const BlockHandle& block : graph.blocks()) {
+        property_map values = block.get();
+        values.erase(convert_string_domain(std::string("unique_name")));
+        settings.emplace(std::string(block.name()), std::move(values));
+    }
+    return settings;
 }
 
 } // namespace qa_runtime
@@ -771,6 +783,68 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         const auto refused = std::ranges::find_if(events, [](const RuntimeEvent& event) { return event.isError && event.clientRequestID == "remove-3"; });
         expect(fatal(refused != events.end())) << "an error reply carries the id of its request";
         expect(refused->command == RuntimeCommand::Final) << "an error reply is a Final";
+    };
+
+    // a saved document loads into a graph that runs to the same stream with the same settings
+    "a graph document saved and loaded again runs the same"_test = [] {
+        registerTestBlocks();
+        RuntimeGraph original;
+        auto         source = original.emplace("qa::RampSource", "source", {{"n_samples", gr::Size_t{4096U}}});
+        auto         scale  = original.emplace("qa::Scale", "scale", {{"gain", 3.0f}, {"label", std::string("saved")}, {"taps", std::vector<float>{0.5f, 0.25f}}});
+        auto         sink   = original.emplace("qa::RecordingSink", "e7-document");
+        expect(fatal(source.has_value() && scale.has_value() && sink.has_value()));
+        expect(original.connect(*source, "out", *scale, "in").has_value());
+        expect(original.connect(*scale, "out", *sink, "in").has_value());
+
+        const auto saved = original.toYaml();
+        expect(fatal(saved.has_value())) << (saved ? std::string{} : saved.error().message);
+        auto loaded = RuntimeGraph::fromYaml(*saved);
+        expect(fatal(loaded.has_value())) << (loaded ? std::string{} : loaded.error().message);
+        const bool sameSettings = settingsByName(*loaded) == settingsByName(original);
+        expect(sameSettings) << "a loaded block holds other settings than the one saved";
+
+        auto originalRuntime = Runtime::create(std::move(original));
+        expect(fatal(originalRuntime.has_value()));
+        expect(originalRuntime->runAndWait().has_value());
+        const Collected fromOriginal = takeCollected("e7-document");
+
+        const auto resaved = originalRuntime->graph().toYaml();
+        expect(fatal(resaved.has_value())) << (resaved ? std::string{} : resaved.error().message);
+        expect(*resaved == *saved) << std::format("saved before the run:\n{}\nsaved after it:\n{}", *saved, *resaved);
+
+        auto loadedRuntime = Runtime::create(std::move(*loaded));
+        expect(fatal(loadedRuntime.has_value())) << (loadedRuntime ? std::string{} : loadedRuntime.error().message);
+        expect(loadedRuntime->runAndWait().has_value());
+        const Collected fromLoaded = takeCollected("e7-document");
+
+        expect(eq(fromOriginal.samples.size(), 4096UZ));
+        expect(fromOriginal.samples == fromLoaded.samples) << "the loaded graph changed the stream";
+        expect(sameTags(fromOriginal.tags, fromLoaded.tags)) << "the loaded graph changed the tag sequence";
+    };
+
+    "a document the reader refuses is an error, never an exception"_test = [] {
+        registerTestBlocks();
+        using Loaded = std::expected<RuntimeGraph, RuntimeError>;
+
+        // the quote on the fourth line never closes
+        constexpr std::string_view malformed = "blocks:\n  - id: qa::Scale\n    parameters:\n      name: \"scale\n";
+        std::optional<Loaded>      fromMalformed;
+        expect(nothrow([&] { fromMalformed.emplace(RuntimeGraph::fromYaml(malformed)); }));
+        expect(fatal(fromMalformed.has_value() && !fromMalformed->has_value()));
+        const auto parsed = pmt::yaml::deserialize(malformed);
+        expect(fatal(!parsed.has_value()));
+        const RuntimeError& parseError = fromMalformed->error();
+        expect(parseError.message.starts_with(std::format("line {}, column {}: ", parsed.error().line, parsed.error().column))) << parseError.message;
+        expect(parseError.message.contains(parsed.error().message)) << parseError.message;
+        expect(!parseError.message.contains(malformed)) << "the message carries the document text: " << parseError.message;
+        expect(eq(parseError.where, std::string("RuntimeGraph::fromYaml")));
+
+        constexpr std::string_view unknownType = "blocks:\n  - id: qa::NoSuchBlock\n    parameters:\n      name: nope\n";
+        std::optional<Loaded>      fromUnknownType;
+        expect(nothrow([&] { fromUnknownType.emplace(RuntimeGraph::fromYaml(unknownType)); }));
+        expect(fatal(fromUnknownType.has_value() && !fromUnknownType->has_value()));
+        expect(fromUnknownType->error().message.contains("qa::NoSuchBlock")) << fromUnknownType->error().message;
+        expect(eq(fromUnknownType->error().where, std::string("RuntimeGraph::fromYaml")));
     };
 };
 
