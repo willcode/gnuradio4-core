@@ -13,8 +13,10 @@
 #include <chrono>
 #include <format>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <ranges>
 #include <string>
@@ -242,6 +244,14 @@ inline std::string typeOf(std::string_view uniqueName) {
 
 inline bool sameTags(const std::vector<TagRecord>& lhs, const std::vector<TagRecord>& rhs) {
     return std::ranges::equal(lhs, rhs, [](const TagRecord& a, const TagRecord& b) { return a.index == b.index && a.map == b.map; });
+}
+
+inline std::optional<float> floatAt(const property_map& map, const std::string& key) {
+    const auto entry = map.find(convert_string_domain(key));
+    if (entry == map.end() || entry->second.get_if<float>() == nullptr) {
+        return std::nullopt;
+    }
+    return *entry->second.get_if<float>();
 }
 
 } // namespace qa_runtime
@@ -708,6 +718,59 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
                 expect(text.find("qa::Scale") != std::string_view::npos) << text;
             }
         }
+    };
+
+    // a reply is told from a notification by its command and matched to its request by its id
+    "an event carries its message's command and request id"_test = [] {
+        registerTestBlocks();
+        constexpr float kInitialGain = 2.0f;
+        constexpr float kStagedGain  = 5.0f;
+
+        RuntimeGraph graph;
+        auto         source = graph.emplace("qa::RampSource", "source", {{"n_samples", gr::Size_t{1U << 20U}}, {"tag_every", gr::Size_t{0U}}});
+        auto         scale  = graph.emplace("qa::Scale", "scale", {{"gain", kInitialGain}});
+        auto         sink   = graph.emplace("qa::RecordingSink", "e6-events");
+        expect(fatal(source.has_value() && scale.has_value() && sink.has_value()));
+        expect(graph.connect(*source, "out", *scale, "in").has_value());
+        expect(graph.connect(*scale, "out", *sink, "in").has_value());
+        const std::string scaleName(scale->uniqueName());
+
+        auto runtime = Runtime::create(std::move(graph));
+        expect(fatal(runtime.has_value()));
+
+        // queued before the run, handled by its first sweeps: the staged gain is applied while the graph runs
+        const std::string settings(gr::block::property::kSetting);
+        expect(runtime->send(Runtime::Command::Get, scaleName, settings, {}, "get-1").has_value());
+        expect(runtime->send(Runtime::Command::Subscribe, scaleName, settings, {}, "subscribe-2").has_value());
+        expect(runtime->send(Runtime::Command::Set, scaleName, settings, {{"gain", kStagedGain}}).has_value());
+        expect(runtime->send(Runtime::Command::Get, scaleName, settings).has_value());
+        const property_map absentEdge{{std::pmr::string(serialization_fields::EDGE_SOURCE_BLOCK), std::string("qa_no_such_block")}, {std::pmr::string(serialization_fields::EDGE_SOURCE_PORT), std::string("out")}};
+        expect(runtime->send(Runtime::Command::Set, "", gr::scheduler::property::kRemoveEdge, absentEdge, "remove-3").has_value());
+        expect(runtime->runAndWait().has_value());
+        std::ignore = takeCollected("e6-events");
+
+        const std::vector<RuntimeEvent> events    = runtime->pollEvents(1024UZ);
+        const auto                      fromScale = [&events, &scaleName, &settings](RuntimeCommand command, std::string_view id) {
+            std::vector<RuntimeEvent> matching;
+            std::ranges::copy_if(events, std::back_inserter(matching), [&](const RuntimeEvent& event) { return event.source == scaleName && event.endpoint == settings && event.command == command && event.clientRequestID == id; });
+            return matching;
+        };
+
+        const std::vector<RuntimeEvent> replies = fromScale(RuntimeCommand::Final, "get-1");
+        expect(fatal(eq(replies.size(), 1UZ))) << "a Get with an id is answered exactly once, by a Final carrying that id";
+        expect(!replies.front().isError) << replies.front().text;
+        expect(floatAt(replies.front().data, "gain") == kInitialGain) << "the reply holds the settings the block had when it answered";
+        for (const auto& setting : scale->get()) {
+            expect(replies.front().data.contains(setting.first)) << std::format("the reply lacks setting '{}'", std::string_view(setting.first));
+        }
+
+        const std::vector<RuntimeEvent> notifications = fromScale(RuntimeCommand::Notify, "subscribe-2");
+        expect(std::ranges::any_of(notifications, [](const RuntimeEvent& event) { return floatAt(event.data, "gain").value_or(0.0f) == kStagedGain; })) << "a Notify carries the subscription's id and the staged value";
+        expect(eq(fromScale(RuntimeCommand::Final, "").size(), 1UZ)) << "the reply to a Get sent without an id carries an empty id";
+
+        const auto refused = std::ranges::find_if(events, [](const RuntimeEvent& event) { return event.isError && event.clientRequestID == "remove-3"; });
+        expect(fatal(refused != events.end())) << "an error reply carries the id of its request";
+        expect(refused->command == RuntimeCommand::Final) << "an error reply is a Final";
     };
 };
 

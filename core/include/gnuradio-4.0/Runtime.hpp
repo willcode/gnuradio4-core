@@ -172,14 +172,19 @@ private:
     std::unique_ptr<Impl> _impl;
 };
 
+/// A message-plane command: the enumerators and values of the framework's `message::Command`.
+enum class RuntimeCommand : std::uint8_t { Invalid, Get, Set, Partial, Final, Ready, Disconnect, Subscribe, Unsubscribe, Notify, Heartbeat };
+
 /// One report the running graph made on the message plane.
 struct GNURADIO_EXPORT RuntimeEvent {
-    std::string   source;   // the reporting block's unique name
-    std::string   endpoint; // the property endpoint it reported on
-    bool          isError = false;
-    std::string   text;     // the rendered error text when isError
-    property_map  data;     // the message payload when not an error
-    std::uint64_t time = 0; // ns since epoch when the error was raised, 0 otherwise
+    std::string    source;   // the reporting block's unique name
+    std::string    endpoint; // the property endpoint it reported on
+    bool           isError = false;
+    std::string    text;                              // the rendered error text when isError
+    property_map   data;                              // the message payload when not an error
+    std::uint64_t  time    = 0;                       // ns since epoch when the error was raised, 0 otherwise
+    RuntimeCommand command = RuntimeCommand::Invalid; // Final for the reply to a request, Notify for a notification
+    std::string    clientRequestID;                   // the id of the request or subscription it answers, empty for none
 };
 
 /**
@@ -193,7 +198,7 @@ class GNURADIO_EXPORT Runtime {
 public:
     enum class State : std::uint8_t { Idle, Initialized, Running, RequestedPause, Paused, RequestedStop, Stopped, Error };
 
-    enum class Command : std::uint8_t { Invalid, Get, Set, Partial, Final, Ready, Disconnect, Subscribe, Unsubscribe, Notify, Heartbeat };
+    using Command = RuntimeCommand;
 
     static constexpr std::string_view kDefaultScheduler = "gr::scheduler::Simple<singleThreaded>";
 

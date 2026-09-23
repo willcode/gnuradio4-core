@@ -124,7 +124,7 @@ struct Runtime::Impl {
     void drainLocked() {
         ReaderSpanLike auto messages = events.streamReader().get();
         for (const Message& message : messages) {
-            RuntimeEvent event{.source = message.serviceName, .endpoint = message.endpoint, .isError = !message.data.has_value(), .text = {}, .data = {}, .time = 0ULL};
+            RuntimeEvent event{.source = message.serviceName, .endpoint = message.endpoint, .isError = !message.data.has_value(), .text = {}, .data = {}, .time = 0ULL, .command = static_cast<RuntimeCommand>(message.cmd), .clientRequestID = message.clientRequestID};
             if (message.data.has_value()) {
                 event.data = message.data.value();
             } else {
