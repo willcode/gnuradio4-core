@@ -103,6 +103,40 @@ std::string portNameOf(BlockModel& model, bool isInput, const PortDefinition& de
     return byIndex->subIndex == meta::invalid_index ? BlockModel::portName(entry) : std::string{};
 }
 
+RuntimePort describePort(DynamicPort& port, bool isInput, std::string name, std::string_view collection, std::size_t index) {
+    return RuntimePort{.name = std::move(name), //
+        .typeName            = port.typeName(),
+        .isInput             = isInput,
+        .isMessage           = port::decodePortType(port.portMaskInfo()) == PortType::MESSAGE,
+        .isOptional          = port.isOptional(),
+        .isSynchronous       = port.isSynchronous(),
+        .isConnected         = port.isConnected(),
+        .domain              = std::string(port.domain()),
+        .collection          = std::string(collection),
+        .index               = index,
+        .minSamples          = port.min_samples,
+        .maxSamples          = port.max_samples};
+}
+
+// the ports portNamesOf lists, in its order, each described by its own DynamicPort
+std::vector<RuntimePort> portsOf(BlockModel& model, bool isInput) {
+    model.initDynamicPorts();
+    BlockModel::DynamicPorts& ports = isInput ? model.dynamicInputPorts() : model.dynamicOutputPorts();
+
+    std::vector<RuntimePort> described;
+    described.reserve(ports.size());
+    for (BlockModel::DynamicPortOrCollection& entry : ports) {
+        if (auto* collection = std::get_if<BlockModel::NamedPortCollection>(&entry); collection != nullptr) {
+            for (std::size_t index = 0UZ; index < collection->ports.size(); ++index) {
+                described.push_back(describePort(collection->ports[index], isInput, std::format("{}#{}", collection->name, index), collection->name, index));
+            }
+        } else {
+            described.push_back(describePort(std::get<DynamicPort>(entry), isInput, BlockModel::portName(entry), {}, 0UZ));
+        }
+    }
+    return described;
+}
+
 std::string commaSeparated(const std::vector<std::string>& names) {
     std::string joined;
     for (const std::string& name : names) {
@@ -462,6 +496,10 @@ std::vector<RuntimeEdge> RuntimeGraph::edges() const {
 std::vector<std::string> RuntimeGraph::inputPortNames(const BlockHandle& block) const { return block.valid() ? portNamesOf(*modelOf(block._model), true) : std::vector<std::string>{}; }
 
 std::vector<std::string> RuntimeGraph::outputPortNames(const BlockHandle& block) const { return block.valid() ? portNamesOf(*modelOf(block._model), false) : std::vector<std::string>{}; }
+
+std::vector<RuntimePort> RuntimeGraph::inputPorts(const BlockHandle& block) const { return block.valid() ? portsOf(*modelOf(block._model), true) : std::vector<RuntimePort>{}; }
+
+std::vector<RuntimePort> RuntimeGraph::outputPorts(const BlockHandle& block) const { return block.valid() ? portsOf(*modelOf(block._model), false) : std::vector<RuntimePort>{}; }
 
 std::string RuntimeGraph::portTypeName(const BlockHandle& block, bool isInput, std::string_view portName) const {
     if (!block.valid()) {

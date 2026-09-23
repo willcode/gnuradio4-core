@@ -115,6 +115,25 @@ struct GNURADIO_EXPORT RuntimeEdge {
     EdgeSpec    edge;
 };
 
+/// One port of a block, as `RuntimeGraph::inputPorts()` and `outputPorts()` describe it. A block lists its
+/// ports once, when they are first read, and a port collection must not change size after that.
+/// `minSamples` and `maxSamples` are the requirement the port declared when its block's ports were first
+/// listed.
+struct GNURADIO_EXPORT RuntimePort {
+    std::string name;     // the name connect() accepts: "out", or "in#1" for element 1 of a collection
+    std::string typeName; // the value type, spelled as portTypeName() spells it
+    bool        isInput       = false;
+    bool        isMessage     = false;
+    bool        isOptional    = false;
+    bool        isSynchronous = false;
+    bool        isConnected   = false; // true while a running scheduler holds the port connected; false before a run and after its blocks stop
+    std::string domain;
+    std::string collection;     // the collection's name for one of its elements, empty otherwise
+    std::size_t index      = 0; // the element's position in its collection, 0 otherwise
+    std::size_t minSamples = 0;
+    std::size_t maxSamples = 0;
+};
+
 /**
  * @brief A flow graph built by name.
  *
@@ -122,8 +141,10 @@ struct GNURADIO_EXPORT RuntimeEdge {
  * `interior()` and `Runtime::graph()` return views; a view does not destroy what it names, and
  * `clear()` on a view clears the viewed graph.
  *
- * From another thread, call edges() on a running graph only while no edit is in flight, whether made
- * through a view or by the scheduler's edit messages (quiesce() does not hold those back).
+ * From another thread, call edges(), inputPorts() and outputPorts() on a running graph only while no
+ * edit is in flight, whether made through a view or by the scheduler's edit messages (quiesce() does
+ * not hold those back), and call the port lists only while the scheduler is neither starting nor
+ * stopping.
  */
 class GNURADIO_EXPORT RuntimeGraph {
 public:
@@ -167,6 +188,10 @@ public:
     [[nodiscard]] std::vector<std::string> inputPortNames(const BlockHandle& block) const;
     [[nodiscard]] std::vector<std::string> outputPortNames(const BlockHandle& block) const;
     [[nodiscard]] std::string              portTypeName(const BlockHandle& block, bool isInput, std::string_view portName) const;
+
+    /// Describes each port `inputPortNames()` and `outputPortNames()` list, in the same order.
+    [[nodiscard]] std::vector<RuntimePort> inputPorts(const BlockHandle& block) const;
+    [[nodiscard]] std::vector<RuntimePort> outputPorts(const BlockHandle& block) const;
 
     /// Exports `innerBlock`'s port under `exportedName`. Call on the view of a subgraph's interior;
     /// the exported port then appears on the subgraph's own handle in the parent.
