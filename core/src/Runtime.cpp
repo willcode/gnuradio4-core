@@ -83,6 +83,26 @@ std::vector<std::string> portNamesOf(BlockModel& model, bool isInput) {
     return names;
 }
 
+// An edge's port by the name connect() accepts. A string-based definition keeps its own name. An
+// index-based one is spelled as portNamesOf lists the port it resolves to, and an index that resolves
+// to no port gives an empty name.
+std::string portNameOf(BlockModel& model, bool isInput, const PortDefinition& definition) {
+    const auto* byIndex = std::get_if<PortDefinition::IndexBased>(&definition.definition);
+    if (byIndex == nullptr) {
+        return std::get<PortDefinition::StringBased>(definition.definition).name;
+    }
+    model.initDynamicPorts();
+    const BlockModel::DynamicPorts& ports = isInput ? model.dynamicInputPorts() : model.dynamicOutputPorts();
+    if (byIndex->topLevel >= ports.size()) {
+        return {};
+    }
+    const BlockModel::DynamicPortOrCollection& entry = ports[byIndex->topLevel];
+    if (const auto* collection = std::get_if<BlockModel::NamedPortCollection>(&entry); collection != nullptr) {
+        return byIndex->subIndex < collection->ports.size() ? std::format("{}#{}", collection->name, byIndex->subIndex) : std::string{};
+    }
+    return byIndex->subIndex == meta::invalid_index ? BlockModel::portName(entry) : std::string{};
+}
+
 std::string commaSeparated(const std::vector<std::string>& names) {
     std::string joined;
     for (const std::string& name : names) {
@@ -418,6 +438,25 @@ std::expected<void, RuntimeError> RuntimeGraph::disconnect(const BlockHandle& so
         return std::unexpected(toRuntimeError(removed.error()));
     }
     return {};
+}
+
+std::vector<RuntimeEdge> RuntimeGraph::edges() const {
+    std::vector<RuntimeEdge> listed;
+    if (!_impl || _impl->view == nullptr) {
+        return listed;
+    }
+
+    listed.reserve(_impl->view->edges().size());
+    for (const Edge& edge : _impl->view->edges()) {
+        listed.push_back(RuntimeEdge{
+            .sourceBlock      = BlockHandle(std::shared_ptr<void>(edge.sourceBlock())),
+            .sourcePort       = portNameOf(*edge.sourceBlock(), false, edge.sourcePortDefinition()),
+            .destinationBlock = BlockHandle(std::shared_ptr<void>(edge.destinationBlock())),
+            .destinationPort  = portNameOf(*edge.destinationBlock(), true, edge.destinationPortDefinition()),
+            .edge             = EdgeSpec{.minBufferSize = edge.minBufferSize(), .weight = edge.weight(), .name = std::string(edge.name())},
+        });
+    }
+    return listed;
 }
 
 std::vector<std::string> RuntimeGraph::inputPortNames(const BlockHandle& block) const { return block.valid() ? portNamesOf(*modelOf(block._model), true) : std::vector<std::string>{}; }
