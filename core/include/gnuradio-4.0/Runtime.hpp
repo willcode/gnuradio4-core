@@ -239,6 +239,11 @@ public:
     /// A non-owning view of the running graph; `create()` moved it into the scheduler.
     [[nodiscard]] RuntimeGraph graph() const;
 
+    /// Returns the scheduler as a block handle. Its own settings (`timeout_ms`, `poolName` and the rest)
+    /// are read, staged and described like any block's. The handle keeps the scheduler alive after the
+    /// Runtime is destroyed, and it is invalid on an empty Runtime.
+    [[nodiscard]] BlockHandle scheduler() const;
+
     /// Everything the graph has reported since the last call, oldest first.
     [[nodiscard]] std::vector<RuntimeEvent> pollEvents(std::size_t maxEvents = 64);
 
