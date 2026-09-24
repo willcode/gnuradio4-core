@@ -335,20 +335,36 @@ public:
     [[nodiscard]] gr::property_map exportedInputPorts() final { return exportedPortsFor(_exportedInputPortsForBlock); }
     [[nodiscard]] gr::property_map exportedOutputPorts() final { return exportedPortsFor(_exportedOutputPortsForBlock); }
 
-    /// Attaches a recipe's live parameter machinery: the composite's exported parameters
-    /// become stageable settings whose changes re-evaluate the recipe's expressions and stage
-    /// the derived values onto the interior blocks. Every binding target must resolve now, so
-    /// a broken recipe refuses at attach rather than at its first live change.
+    /// Attaches a recipe's live parameter machinery: the composite's exported parameters join
+    /// the composite's own settings, so every caller that lists, reads, sets or stages a block's
+    /// settings reaches them, and a change re-evaluates the recipe's expressions and stages the
+    /// derived values onto the interior blocks. Every binding target must resolve now, so a
+    /// broken recipe refuses at attach rather than at its first live change.
     [[nodiscard]] std::expected<void, Error> attachRecipeBindings(recipe::AttachedBindings bindings) {
         for (const auto& binding : bindings.bindings) {
             if (auto target = resolveRecipeTarget(binding.namePath); !target.has_value()) {
                 return std::unexpected(target.error());
             }
         }
-        _recipeBindings                                                 = std::make_unique<recipe::AttachedBindings>(std::move(bindings));
-        this->_block._recipeParameterHandler                            = &GraphWrapper::recipeParameterHandler;
-        this->_block._recipeParameterContext                            = this;
-        this->_block.propertyCallbacks[block::property::kStagedSetting] = &BlockBase::propertyCallbackRecipeStagedSettings;
+        _recipeBindings = std::make_unique<recipe::AttachedBindings>(std::move(bindings));
+
+        settings::DeclaredParameters declared;
+        for (const recipe::ParameterDeclaration& declaration : _recipeBindings->declarations) {
+            declared.names.insert(declaration.name);
+        }
+        declared.apply = [this](const property_map& changed) -> std::optional<std::string> {
+            if (auto applied = applyRecipeParameters(changed); !applied.has_value()) {
+                return applied.error().message;
+            }
+            return std::nullopt;
+        };
+        declared.read = [this](property_map& parameters) {
+            const recipe::AttachedBindings& attached = *_recipeBindings;
+            for (std::size_t index = 0UZ; index < attached.declarations.size(); ++index) {
+                parameters.insert_or_assign(convert_string_domain(attached.declarations[index].name), attached.values[index]);
+            }
+        };
+        this->blockRef()._settings.declareParameters(std::move(declared));
         return {};
     }
 
@@ -459,34 +475,6 @@ private:
         return found;
     }
 
-    static std::optional<Message> recipeParameterHandler(void* context, Message message) {
-        auto* wrapper = static_cast<GraphWrapper*>(context);
-        if (message.cmd != message::Command::Set || !message.data.has_value() || wrapper->_recipeBindings == nullptr) {
-            return wrapper->_block.propertyCallbackStagedSettings(block::property::kStagedSetting, std::move(message));
-        }
-        property_map recipeKeys;
-        property_map remaining;
-        for (const auto& [key, value] : *message.data) {
-            const bool declared                      = std::ranges::any_of(wrapper->_recipeBindings->declarations, [&](const auto& declaration) { return std::string_view(declaration.name) == std::string_view(key); });
-            (declared ? recipeKeys : remaining)[key] = value;
-        }
-        if (!recipeKeys.empty()) {
-            if (auto applied = wrapper->applyRecipeParameters(recipeKeys); !applied.has_value()) {
-                message.data = std::unexpected(applied.error());
-                return message;
-            }
-        }
-        if (!remaining.empty() || recipeKeys.empty()) {
-            message.data = std::move(remaining);
-            return wrapper->_block.propertyCallbackStagedSettings(block::property::kStagedSetting, std::move(message));
-        }
-        if (!message.clientRequestID.empty()) {
-            message.cmd  = message::Command::Final;
-            message.data = std::move(recipeKeys);
-            return message;
-        }
-        return std::nullopt;
-    }
     std::expected<DynamicPort*, Error> findPortInBlock(std::string_view uniqueBlockName, PortDirection portDirection, std::string_view portName, std::source_location location = std::source_location::current()) {
         const auto& asGraph = [this] -> const auto& {
             if constexpr (requires { this->blockRef().graph(); }) {

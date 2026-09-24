@@ -814,6 +814,48 @@ connections:
         expect(eq(gain->value_or(float{}), 3.5f)) << "the supplied parameter did not reach the interior setting";
     };
 
+    // a caller that loads a graph file and then sets a block's settings by name reaches a recipe's parameter as the
+    // composite's setting
+    "a recipe's parameter from a graph file reads back as a setting, and a setting loaded after it re-derives the interior"_test = [] {
+        const RecipeAssetRoot assets;
+        auto                  loader = recipeLoader({assets.path.string()});
+
+        const std::string document = R"yaml(blocks:
+  - id: qa::GainRecipe
+    parameters:
+      name: demod
+      gain_factor: !!float32 3.5
+)yaml";
+
+        auto loaded = gr::loadGrc(loader, document);
+        expect(eq(loaded->blocks().size(), 1UZ));
+        const std::shared_ptr<BlockModel>& composite = loaded->blocks().front();
+        if (composite->graph() == nullptr || composite->graph()->blocks().empty()) {
+            expect(false) << "the composite carries no interior block";
+            return;
+        }
+        const std::shared_ptr<BlockModel>& inner = composite->graph()->blocks().front();
+
+        expect(composite->settings().writableMembers().contains("gain_factor")) << "the exported parameter is a setting of the composite";
+        const auto factor = composite->settings().get("gain_factor");
+        expect(factor.has_value()) << "the file's value reads back from the composite";
+        if (factor.has_value()) {
+            expect(eq(factor->value_or(float{}), 3.5f));
+        }
+
+        composite->settings().loadParametersFromPropertyMap({{"gain_factor", 5.0f}});
+        expect(composite->settings().activateContext().has_value());
+        expect(!composite->metaInformation().contains("gain_factor")) << "the loaded parameter is not filed as meta_information";
+        const gr::property_map staged = inner->settings().stagedParameters();
+        const auto             gain   = staged.find(std::pmr::string("gain"));
+        expect(gain != staged.end()) << "the new value re-derived the interior gain";
+        if (gain != staged.end()) {
+            expect(eq(gain->second.value_or(float{}), 5.0f));
+        }
+        const auto changed = composite->settings().get("gain_factor");
+        expect(changed.has_value() && changed->value_or(float{}) == 5.0f) << "the composite reads back the value now in force";
+    };
+
     "a graph file that omits a recipe's required parameter names the block and the parameter"_test = [] {
         const RecipeAssetRoot assets;
         auto                  loader = recipeLoader({assets.path.string()});

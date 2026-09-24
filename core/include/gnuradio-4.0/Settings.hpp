@@ -5,10 +5,13 @@
 #include <chrono>
 #include <concepts>
 #include <format>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <span>
+#include <string>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -473,6 +476,22 @@ struct BlockDescriptor {
     std::vector<const MemberDescriptor*>                          readableMembers{};
 };
 
+/**
+ * @brief Settings one block instance declares at run time beside its type's reflected members.
+ *
+ * Such parameters belong to no block type: their names are known once the instance exists, as when a document declares
+ * them. The owner names them, applies a change to them and reads the values in force. `apply` receives the declared
+ * keys of one change together and returns the reason it refuses them, or nothing when the whole change is in force.
+ */
+struct DeclaredParameters {
+    using Applier = std::function<std::optional<std::string>(const property_map& changed)>;
+    using Reader  = std::function<void(property_map& parameters)>;
+
+    std::set<std::string> names;
+    Applier               apply;
+    Reader                read;
+};
+
 } // namespace settings
 
 namespace detail {
@@ -764,11 +783,11 @@ struct SettingsBase {
     [[nodiscard]] virtual property_map stagedParameters() const = 0;
 
     /**
-     * @brief the member names set() and loadParametersFromPropertyMap() accept
+     * @brief the member names set() and loadParametersFromPropertyMap() accept, and the parameters the instance declares
      *
-     * A block's readable members are a superset of these: input_chunk_size, output_chunk_size and stride
-     * are const unless the block is declared Resampling<>/Stride<>, and unique_name is immutable. A
-     * consumer writing parameters out for someone else to read back needs to know which is which.
+     * A block's readable members are a superset of the members named here: input_chunk_size, output_chunk_size and
+     * stride are const unless the block is declared Resampling<>/Stride<>, and unique_name is immutable. A consumer
+     * writing parameters out for someone else to read back needs to know which is which.
      */
     [[nodiscard]] virtual const std::set<std::string>& writableMembers() const = 0;
 
@@ -845,6 +864,12 @@ protected:
 
     const std::size_t _timePrecisionTolerance = 100; // ns, now used for emscripten
 
+    struct DeclaredState {
+        settings::DeclaredParameters parameters;
+        std::set<std::string>        writableMembers; // the type's writable members and the declared names
+    };
+    std::unique_ptr<DeclaredState> _declared; // null for a block that declares nothing beyond its members
+
     CtxSettingsBase(void* block, const settings::BlockDescriptor& descriptor) noexcept;
 
 public:
@@ -901,10 +926,23 @@ public:
     void assignFrom(const CtxSettingsBase& other);
     void assignFrom(CtxSettingsBase&& other) noexcept;
 
+    /**
+     * @brief takes parameters this instance declares beside its type's reflected members
+     *
+     * A declared parameter is listed by writableMembers(), read by get() and accepted by set(), setStaged() and
+     * loadParametersFromPropertyMap() like a writable member. A staged change to one applies when it is staged, through
+     * `apply`, and never waits for a work() call. A change `apply` refuses throws with its reason, and the value in
+     * force stands. The values in force at the call become the defaults. Declare before the block runs:
+     * writableMembers() is read without the lock.
+     */
+    void declareParameters(settings::DeclaredParameters parameters);
+
 protected:
     // *Impl bodies run without taking _mutex, for callers that already hold it
     [[nodiscard]] property_map setImpl(const property_map& parameters, SettingsCtx ctx);
     [[nodiscard]] property_map setStagedImpl(const property_map& parameters);
+    [[nodiscard]] bool         isDeclaredImpl(std::string_view key) const;
+    void                       applyDeclaredImpl(const property_map& changed);
     void                       resetDefaultsImpl();
     // reentrantLock is null when a caller already holds _mutex and cannot have it released underneath it
     [[nodiscard]] ApplyStagedParametersResult          applyStagedParametersImpl(std::unique_lock<std::mutex>* reentrantLock = nullptr);

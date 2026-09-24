@@ -3,6 +3,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -623,6 +624,34 @@ blocks:
     return composite->graph()->blocks().front();
 }
 
+/// the parameterized fixture at sample_rate 48000 and deviation 2500; the loader outlives the composite,
+/// which keeps a pointer to it
+[[nodiscard]] std::shared_ptr<gr::BlockModel> parameterizedComposite(gr::PluginLoader& loader) {
+    registerRecipeTestBlock();
+    gr::property_map parameters;
+    parameters["sample_rate"] = 48000.0f;
+    parameters["deviation"]   = 2500.0f;
+    const auto composite      = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kParameterizedRecipe), parameters);
+    expect(composite.has_value()) << (composite.has_value() ? "" : composite.error().message);
+    return composite.has_value() ? *composite : nullptr;
+}
+
+/// the fixture's discriminator gain at one parameter point, in the interior member's own type
+[[nodiscard]] float derivedGain(double sampleRate, double deviation) { return static_cast<float>(sampleRate / (2.0 * std::numbers::pi * deviation)); }
+
+/// a numeric value staged on `block` under `key`, NaN when none is staged, so a missing key fails every comparison
+[[nodiscard]] float stagedNumber(const std::shared_ptr<gr::BlockModel>& block, std::string_view key) {
+    const gr::property_map staged = block->settings().stagedParameters();
+    const auto             it     = staged.find(std::pmr::string(key));
+    return it == staged.end() ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(gr::recipe::detail::doubleOf(it->second).value_or(std::numeric_limits<double>::quiet_NaN()));
+}
+
+/// a numeric value of `settings` under `key`, NaN when there is none
+[[nodiscard]] float readNumber(const gr::property_map& settings, std::string_view key) {
+    const auto it = settings.find(std::pmr::string(key));
+    return it == settings.end() ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(gr::recipe::detail::doubleOf(it->second).value_or(std::numeric_limits<double>::quiet_NaN()));
+}
+
 } // namespace qa_recipe_definitions
 
 using namespace qa_recipe_definitions;
@@ -944,6 +973,172 @@ const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
         const auto refusal        = gr::detail::instantiateBlockFromYamlDefinition(loader, def, parameters);
         expect(!refusal.has_value());
         expect(refusal.error().message.contains("recipe_unknown_parameter")) << refusal.error().message;
+    };
+};
+
+// A composite's exported parameters are its settings: every consumer that lists, reads or writes a block's settings
+// reaches them through the one settings object, and none reaches the interior.
+const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
+    "a composite lists its exported parameters beside the framework's settings, and nothing of its interior"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        if (composite == nullptr) {
+            return;
+        }
+        const std::set<std::string>& writable = composite->settings().writableMembers();
+        for (const std::string_view parameter : {"sample_rate", "deviation", "tau"}) {
+            expect(writable.contains(std::string(parameter))) << parameter << " is exported and must be a writable setting";
+        }
+        expect(writable.contains("name")) << "the framework's own settings stay beside them";
+        for (const std::string_view interior : {"gain", "rate", "label"}) {
+            expect(!writable.contains(std::string(interior))) << interior << " belongs to the interior and stays private";
+        }
+    };
+
+    "reading an exported parameter returns the value in force"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        if (composite == nullptr) {
+            return;
+        }
+        expect(eq(readNumber(composite->settings().get(), "sample_rate"), 48000.0f)) << "a supplied value reads back";
+        expect(eq(readNumber(composite->settings().get(), "deviation"), 2500.0f));
+        const auto tau = composite->settings().get("tau");
+        expect(tau.has_value()) << "a defaulted parameter reads back its default";
+        if (tau.has_value()) {
+            expect(eq(tau->value_or(0.0), 7.5e-05));
+        }
+    };
+
+    "an exported parameter set and activated re-derives the interior"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        const auto inner     = composite == nullptr ? nullptr : interiorBlock(composite);
+        if (inner == nullptr) {
+            return;
+        }
+        gr::SettingsBase& settings = composite->settings();
+        expect(settings.set({{"deviation", 5000.0f}}).empty()) << "the composite takes its exported parameter";
+        expect(!composite->metaInformation().contains("deviation")) << "an accepted parameter is not filed as meta information";
+        expect(settings.activateContext().has_value());
+        expect(eq(stagedNumber(inner, "gain"), derivedGain(48000.0, 5000.0))) << "activating the stored value re-derived the interior gain";
+        expect(eq(readNumber(settings.get(), "deviation"), 5000.0f)) << "the new value is in force";
+        expect(!settings.stagedParameters().contains("deviation")) << "the composite holds nothing back for a later apply";
+    };
+
+    "an exported parameter staged on the composite applies at once and reads back"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        const auto inner     = composite == nullptr ? nullptr : interiorBlock(composite);
+        if (inner == nullptr) {
+            return;
+        }
+        gr::SettingsBase& settings = composite->settings();
+        expect(settings.setStaged({{"deviation", 5000.0f}}).empty()) << "the composite stages its exported parameter";
+        expect(eq(stagedNumber(inner, "gain"), derivedGain(48000.0, 5000.0))) << "the derived gain waits on the interior block for its next work call";
+        expect(eq(readNumber(settings.get(), "deviation"), 5000.0f));
+        expect(!settings.stagedParameters().contains("deviation")) << "nothing waits on the composite, which has no work call of its own";
+
+        expect(settings.setStaged({{"sample_rate", 96000.0f}, {"name", std::string("renamed")}}).empty()) << "an exported parameter and a framework setting in one call";
+        expect(eq(stagedNumber(inner, "gain"), derivedGain(96000.0, 5000.0))) << "the second change re-derived against the first";
+        expect(settings.stagedParameters().contains("name")) << "the framework's setting takes its ordinary staged path";
+    };
+
+    "one change through the settings stages each moved derived value once"_test = [] {
+        registerRecipeTestBlock();
+        auto             loader = recipeTestLoader();
+        gr::property_map parameters;
+        parameters["sample_rate"] = 48000.0f;
+        parameters["level"]       = 1.0f;
+        const auto composite      = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kTwoBoundBlocksRecipe), parameters);
+        expect(composite.has_value()) << (composite.has_value() ? "" : composite.error().message);
+        if (!composite.has_value()) {
+            return;
+        }
+        const auto first  = interiorBlockNamed(*composite, "first");
+        const auto second = interiorBlockNamed(*composite, "second");
+        if (first == nullptr || second == nullptr) {
+            return;
+        }
+        const auto applyInterior = [&] {
+            std::ignore = first->settings().applyStagedParameters();
+            std::ignore = second->settings().applyStagedParameters();
+        };
+        gr::SettingsBase& settings = (*composite)->settings();
+
+        // the first application after a load stages every bound key, so it is settled before anything is counted
+        std::ignore = settings.setStaged({{"level", 1.0f}});
+        applyInterior();
+        recipeWatches().clear();
+
+        expect(settings.set({{"level", 2.0f}}).empty());
+        std::ignore = settings.activateContext();
+        std::ignore = settings.applyStagedParameters(); // the composite's own apply, as its init runs it
+        applyInterior();
+        expect(eq(recipeWatches()["first"].calls, 1UZ)) << "the block whose derived value moved sees one change";
+        expect(recipeWatches()["first"].keys == std::vector<std::string>{"gain"}) << "and it names the moved key alone";
+        expect(eq(recipeWatches()["second"].calls, 0UZ)) << "the block whose derived values held sees none";
+    };
+
+    "a settings message reaches an exported parameter, and a settings Get lists it"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        const auto inner     = composite == nullptr ? nullptr : interiorBlock(composite);
+        if (inner == nullptr) {
+            return;
+        }
+        gr::Graph&     graph = *composite->graph();
+        gr::MsgPortOut toComposite;
+        gr::MsgPortIn  fromComposite;
+        expect(graph.msgOut.connect(fromComposite).has_value());
+        expect(toComposite.connect(graph.msgIn).has_value());
+
+        gr::sendMessage<gr::message::Command::Set>(toComposite, "", gr::block::property::kSetting, {{"deviation", 5000.0f}});
+        composite->processScheduledMessages();
+        expect(eq(stagedNumber(inner, "gain"), derivedGain(48000.0, 5000.0))) << "a Set on the settings property re-derives the interior";
+
+        gr::sendMessage<gr::message::Command::Set>(toComposite, "", gr::block::property::kStagedSetting, {{"sample_rate", 96000.0f}});
+        composite->processScheduledMessages();
+        expect(eq(stagedNumber(inner, "gain"), derivedGain(96000.0, 5000.0))) << "a Set on the staged-settings property re-derives the interior";
+        expect(eq(fromComposite.streamReader().available(), 0UZ)) << "neither Set was answered with an error";
+
+        gr::sendMessage<gr::message::Command::Get>(toComposite, "", gr::block::property::kSetting, gr::property_map{});
+        composite->processScheduledMessages();
+        expect(eq(fromComposite.streamReader().available(), 1UZ)) << "a Get is answered";
+        if (fromComposite.streamReader().available() != 1UZ) {
+            return;
+        }
+        gr::ReaderSpanLike auto replies = fromComposite.streamReader().get<gr::SpanReleasePolicy::ProcessAll>(1UZ);
+        const gr::Message       reply   = replies[0];
+        expect(replies.consume(replies.size()));
+        expect(reply.data.has_value()) << "the Get is answered with the settings";
+        if (reply.data.has_value()) {
+            expect(eq(readNumber(*reply.data, "deviation"), 5000.0f)) << "the reply lists each exported parameter at its value in force";
+            expect(eq(readNumber(*reply.data, "sample_rate"), 96000.0f));
+        }
+    };
+
+    "a name the recipe does not export is refused, and a refused derivation leaves the value standing"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        const auto inner     = composite == nullptr ? nullptr : interiorBlock(composite);
+        if (inner == nullptr) {
+            return;
+        }
+        gr::SettingsBase& settings = composite->settings();
+        expect(settings.setStaged({{"bandwidth", 1.0f}}).contains("bandwidth")) << "a name nothing declares comes back unset";
+        expect(settings.setStaged({{"gain", 3.0f}}).contains("gain")) << "an interior block's setting is not reachable through the composite";
+        expect(settings.set({{"gain", 3.0f}}).contains("gain")) << "nor through the stored path";
+
+        std::string reported;
+        try {
+            std::ignore = settings.setStaged({{"deviation", 0.0f}});
+        } catch (const gr::exception& e) {
+            reported = e.message;
+        }
+        expect(reported.contains("recipe_expression_conversion")) << "a non-finite derivation refuses the change by name: " << reported;
+        expect(eq(readNumber(settings.get(), "deviation"), 2500.0f)) << "the value in force stands";
+        expect(!inner->settings().stagedParameters().contains("gain")) << "nothing reached the interior";
     };
 };
 
