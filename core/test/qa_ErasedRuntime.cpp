@@ -352,6 +352,18 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(typo.error().message.find("out") != std::string::npos) << typo.error().message;
     };
 
+    "a setting the block does not declare is emplace()'s error, and nothing throws"_test = [] {
+        registerTestBlocks();
+        using Emplaced = std::expected<BlockHandle, RuntimeError>;
+        RuntimeGraph graph;
+
+        std::optional<Emplaced> misspelled;
+        expect(nothrow([&] { misspelled.emplace(graph.emplace("qa::Scale", "scale", {{"gian", 2.0f}})); })) << "the refusal left emplace() as an exception";
+        expect(fatal(misspelled.has_value() && !misspelled->has_value())) << "emplace() accepted a key the block does not declare";
+        expect(misspelled->error().message.contains("gian")) << misspelled->error().message;
+        expect(eq(misspelled->error().where, std::string("RuntimeGraph::emplace")));
+    };
+
     "port introspection lists the names and value types"_test = [] {
         registerTestBlocks();
         RuntimeGraph graph;
