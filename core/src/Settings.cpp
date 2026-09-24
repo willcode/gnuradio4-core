@@ -204,6 +204,19 @@ void CtxSettingsBase::applyDeclaredImpl(const property_map& changed) {
         throw gr::exception(*refusal);
     }
     _declared->parameters.read(_activeParameters);
+    for (const auto& [key, value] : changed) {
+        if (const auto inForce = _activeParameters.find(key); inForce != _activeParameters.end()) {
+            _declared->applied.insert_or_assign(key, inForce->second);
+        }
+    }
+}
+
+property_map CtxSettingsBase::takeDeclaredChanges() {
+    if (_declared == nullptr) { // fixed before the block runs, as writableMembers() is
+        return {};
+    }
+    std::lock_guard lg(_mutex);
+    return std::exchange(_declared->applied, {});
 }
 
 // re-applying a value the block already holds must cost nothing, so it is never staged

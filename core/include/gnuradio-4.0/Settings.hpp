@@ -879,6 +879,7 @@ protected:
     struct DeclaredState {
         settings::DeclaredParameters parameters;
         std::set<std::string>        writableMembers; // the type's writable members and the declared names
+        property_map                 applied;         // the declared parameters applied since takeDeclaredChanges()
     };
     std::unique_ptr<DeclaredState> _declared; // null for a block that declares nothing beyond its members
 
@@ -952,6 +953,13 @@ public:
      * Declare before the block runs: writableMembers() is read without the lock.
      */
     void declareParameters(settings::DeclaredParameters parameters);
+
+    /**
+     * @brief returns and clears the declared parameters applied since the last call, each at its value in force
+     *
+     * A declared change applies outside any work() call. The block's owner announces it from this record.
+     */
+    [[nodiscard]] property_map takeDeclaredChanges();
 
 protected:
     // *Impl bodies run without taking _mutex, for callers that already hold it

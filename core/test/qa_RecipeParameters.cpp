@@ -1412,6 +1412,58 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         expect(eq(readNumber(settings.get(), "sample_rate"), 96000.0f)) << "an activation in the same context applies what set() named";
         expect(eq(readNumber(settings.get(), "deviation"), 3000.0f)) << "and leaves a parameter set() never named at its value in force, as it leaves a member";
     };
+
+    "a subscriber hears of a change to an exported parameter, whichever path made it"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        if (composite == nullptr) {
+            return;
+        }
+        gr::Graph&     graph = *composite->graph();
+        gr::MsgPortOut toComposite;
+        gr::MsgPortIn  fromComposite;
+        expect(graph.msgOut.connect(fromComposite).has_value());
+        expect(toComposite.connect(graph.msgIn).has_value());
+        const auto takeMessages = [&fromComposite] {
+            std::vector<gr::Message> taken;
+            const std::size_t        available = fromComposite.streamReader().available();
+            if (available == 0UZ) {
+                return taken;
+            }
+            gr::ReaderSpanLike auto messages = fromComposite.streamReader().get<gr::SpanReleasePolicy::ProcessAll>(available);
+            taken.assign(messages.begin(), messages.end());
+            expect(messages.consume(messages.size()));
+            return taken;
+        };
+        const auto notified = [](const std::vector<gr::Message>& messages, std::string_view endpoint) {
+            for (const gr::Message& message : messages) {
+                if (message.endpoint == endpoint && message.clientRequestID == "watcher" && message.data.has_value()) {
+                    return *message.data;
+                }
+            }
+            return gr::property_map{};
+        };
+
+        gr::sendMessage<gr::message::Command::Subscribe>(toComposite, "", gr::block::property::kSetting, gr::property_map{}, "watcher");
+        gr::sendMessage<gr::message::Command::Subscribe>(toComposite, "", gr::block::property::kStagedSetting, gr::property_map{}, "watcher");
+        composite->processScheduledMessages();
+        expect(takeMessages().empty()) << "a subscription is not answered";
+
+        gr::sendMessage<gr::message::Command::Set>(toComposite, "", gr::block::property::kSetting, {{"deviation", 5000.0f}});
+        composite->processScheduledMessages();
+        const std::vector<gr::Message> afterMessage = takeMessages();
+        expect(eq(afterMessage.size(), 2UZ)) << "one notification for each subscribed property";
+        expect(eq(readNumber(notified(afterMessage, gr::block::property::kStagedSetting), "deviation"), 5000.0f)) << "the staged-settings subscriber hears the applied parameter";
+        expect(eq(readNumber(notified(afterMessage, gr::block::property::kSetting), "deviation"), 5000.0f)) << "the settings subscriber hears the settings in force";
+        expect(eq(readNumber(notified(afterMessage, gr::block::property::kSetting), "sample_rate"), 48000.0f));
+
+        expect(composite->settings().setStaged({{"sample_rate", 96000.0f}}).empty());
+        composite->processScheduledMessages();
+        expect(eq(readNumber(notified(takeMessages(), gr::block::property::kSetting), "sample_rate"), 96000.0f)) << "a change staged by a direct call is announced at the composite's next message pass";
+
+        composite->processScheduledMessages();
+        expect(takeMessages().empty()) << "each change is announced once";
+    };
 };
 
 int main() { /* not needed for ut */ }

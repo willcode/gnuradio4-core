@@ -398,6 +398,23 @@ public:
 
     [[nodiscard]] const recipe::AttachedBindings* recipeBindings() const noexcept { return _recipeBindings.get(); }
 
+    /// Processes the composite's messages and announces the exported parameters applied since the last pass. A change
+    /// to an exported parameter applies when it is staged, and a composite makes no work() call of its own. Each pass
+    /// tells the `StagedSettings` subscribers the applied parameters and the `Settings` subscribers the settings in
+    /// force, as a block's work() call tells them of its members.
+    void processScheduledMessages() override {
+        BlockWrapper<TSelf>::processScheduledMessages();
+        if (_recipeBindings == nullptr) {
+            return;
+        }
+        const property_map applied = this->blockRef()._settings.takeDeclaredChanges();
+        if (applied.empty()) {
+            return;
+        }
+        this->blockRef().notifyListeners(block::property::kStagedSetting, applied);
+        this->blockRef().notifyListeners(block::property::kSetting, this->blockRef().settings().get());
+    }
+
 private:
     std::unique_ptr<recipe::AttachedBindings> _recipeBindings;
 
