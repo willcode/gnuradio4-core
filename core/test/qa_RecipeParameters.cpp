@@ -1,10 +1,12 @@
 #include <boost/ut.hpp>
 
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <numbers>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gnuradio-4.0/Block.hpp>
@@ -361,8 +363,9 @@ struct RecipeScale : gr::Block<RecipeScale> {
     gr::Annotated<float, "rate">              rate  = 0.0f;
     gr::Annotated<std::string, "label">       label = "";
     gr::Annotated<std::vector<float>, "taps"> taps{};
+    gr::Annotated<std::uint32_t, "count">     count = 0U;
 
-    GR_MAKE_REFLECTABLE(RecipeScale, in, out, gain, rate, label, taps);
+    GR_MAKE_REFLECTABLE(RecipeScale, in, out, gain, rate, label, taps, count);
 
     explicit RecipeScale(gr::property_map init = {}) : gr::Block<RecipeScale>(std::move(init)) {}
 
@@ -593,6 +596,29 @@ blocks:
         - [second, OUTPUT, out, out]
 )yaml";
 
+constexpr std::string_view kTwoTargetsRecipe = R"yaml(
+blocks:
+  - id: SUBGRAPH
+    parameters:
+      name: counting
+    exported_parameters:
+      - name: level
+        type: int32
+    graph:
+      blocks:
+        - id: "qa::RecipeScale"
+          parameters:
+            name: first
+            gain: "=level"
+        - id: "qa::RecipeScale"
+          parameters:
+            name: second
+            count: "=level"
+      exported_ports:
+        - [first, INPUT, in, in]
+        - [second, OUTPUT, out, out]
+)yaml";
+
 [[nodiscard]] std::size_t interiorEdgeBufferSize(const std::shared_ptr<gr::BlockModel>& composite) {
     if (composite == nullptr || composite->graph() == nullptr || composite->graph()->edges().empty()) {
         expect(false) << "the definition must produce a composite with an interior edge";
@@ -650,6 +676,17 @@ blocks:
 [[nodiscard]] float readNumber(const gr::property_map& settings, std::string_view key) {
     const auto it = settings.find(std::pmr::string(key));
     return it == settings.end() ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(gr::recipe::detail::doubleOf(it->second).value_or(std::numeric_limits<double>::quiet_NaN()));
+}
+
+/// the message of the gr::exception `call` throws, empty when it throws none
+template<typename TCall>
+[[nodiscard]] std::string refusalOf(TCall&& call) {
+    try {
+        std::forward<TCall>(call)();
+    } catch (const gr::exception& e) {
+        return e.message;
+    }
+    return {};
 }
 
 } // namespace qa_recipe_definitions
@@ -1139,6 +1176,38 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         expect(reported.contains("recipe_expression_conversion")) << "a non-finite derivation refuses the change by name: " << reported;
         expect(eq(readNumber(settings.get(), "deviation"), 2500.0f)) << "the value in force stands";
         expect(!inner->settings().stagedParameters().contains("gain")) << "nothing reached the interior";
+    };
+
+    "an exported parameter is held and read back in its declared type"_test = [] {
+        registerRecipeTestBlock();
+        auto       loader    = recipeTestLoader();
+        const auto composite = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kParameterizedRecipe), {{"sample_rate", 48000.0}, {"deviation", std::int64_t{2500}}});
+        expect(composite.has_value()) << (composite.has_value() ? "" : composite.error().message);
+        if (!composite.has_value()) {
+            return;
+        }
+        gr::SettingsBase& settings = (*composite)->settings();
+        const auto        rate     = settings.get("sample_rate");
+        expect(rate.has_value() && rate->get_if<float>() != nullptr) << "a float32 parameter supplied as a float64 is held as a float32";
+        const auto deviation = settings.get("deviation");
+        expect(deviation.has_value() && deviation->get_if<float>() != nullptr) << "and one supplied as an integer";
+
+        expect(settings.setStaged({{"tau", 5.0e-05f}}).empty());
+        const auto tau = settings.get("tau");
+        expect(tau.has_value() && tau->get_if<double>() != nullptr) << "a float64 parameter staged as a float32 is held as a float64";
+
+        const std::string refused = refusalOf([&] { std::ignore = settings.setStaged({{"sample_rate", std::string("fast")}}); });
+        expect(refused.contains("sample_rate")) << "a value the settings conversion refuses is refused by name: " << refused;
+        expect(eq(readNumber(settings.get(), "sample_rate"), 48000.0f)) << "and the value in force stands";
+
+        const auto counting = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kTwoTargetsRecipe), {{"level", 4.0}});
+        expect(counting.has_value()) << "a whole float64 converts to an int32 parameter: " << (counting.has_value() ? "" : counting.error().message);
+        if (counting.has_value()) {
+            const auto level = (*counting)->settings().get("level");
+            expect(level.has_value() && level->get_if<std::int32_t>() != nullptr) << "and is held as an int32";
+        }
+        const auto fractional = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kTwoTargetsRecipe), {{"level", 4.5}});
+        expect(!fractional.has_value()) << "a fraction for an int32 parameter is refused, as the literal path refuses it";
     };
 };
 
