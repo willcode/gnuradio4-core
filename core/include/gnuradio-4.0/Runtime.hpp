@@ -246,6 +246,10 @@ struct GNURADIO_EXPORT RuntimeEvent {
  * A Runtime holds one run of its graph at a time, by `runAndWait()` on the calling thread or by
  * `start()` on a thread of its own, and keeps the last run's result. The destructor stops the run in
  * progress and waits for it to end.
+ *
+ * A stop is requested on another thread the Runtime owns. A run ends once the scheduler has returned
+ * from it and the stop requested of it has returned. A block whose stop() is slow delays the end of
+ * the run, and `stopFor()` still returns at its timeout.
  */
 class GNURADIO_EXPORT Runtime {
 public:
@@ -278,6 +282,11 @@ public:
     /// Requests the stop of the run in progress, by start() or by runAndWait() on another thread, and
     /// returns once the run has ended. Without a run in progress it does nothing.
     void stop();
+
+    /// Requests the stop as stop() does and returns once the run has ended or `timeout` has passed, and whether the
+    /// run has ended, true without a run in progress. The request stands after a return at the timeout, and a later
+    /// call waits for the same stop.
+    [[nodiscard]] bool stopFor(std::chrono::nanoseconds timeout);
 
     /// True from the start of a run, by start() or runAndWait(), until the run has ended.
     [[nodiscard]] bool busy() const;

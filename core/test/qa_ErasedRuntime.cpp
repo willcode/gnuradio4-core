@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <format>
 #include <functional>
 #include <iterator>
@@ -264,6 +265,41 @@ struct FailingStartSource : Block<FailingStartSource> {
     }
 };
 
+/// holds each GatedStopSink's stop() until a case opens it, for at most ten seconds, and counts the stops it held
+struct StopGate {
+    std::mutex              mutex;
+    std::condition_variable changed;
+    bool                    isOpen = false;
+    std::size_t             nStops = 0UZ;
+};
+
+inline StopGate& stopGate() {
+    static StopGate gate;
+    return gate;
+}
+
+/// consumes and keeps nothing, and its stop() returns only once stopGate() opens
+struct GatedStopSink : Block<GatedStopSink> {
+    PortIn<float> in;
+
+    GR_MAKE_REFLECTABLE(GatedStopSink, in);
+
+    explicit GatedStopSink(property_map init = {}) : Block<GatedStopSink>(std::move(init)) {}
+
+    void stop() {
+        StopGate&        gate = stopGate();
+        std::unique_lock lock(gate.mutex);
+        ++gate.nStops;
+        gate.changed.notify_all();
+        std::ignore = gate.changed.wait_for(lock, std::chrono::seconds(10), [&gate] { return gate.isOpen; });
+    }
+
+    work::Status processBulk(InputSpanLike auto& inSpan) {
+        std::ignore = inSpan.consume(inSpan.size());
+        return work::Status::OK;
+    }
+};
+
 inline void registerTestBlocks() {
     static const bool registered = [] {
         BlockRegistry& registry = globalBlockRegistry();
@@ -353,6 +389,29 @@ inline std::size_t awaitCountAbove(const std::string& sinkName, std::size_t nBef
         std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
     return countedSize(sinkName);
+}
+
+/// closes the gate and clears its count
+inline void closeStopGate() {
+    StopGate&       gate = stopGate();
+    std::lock_guard lock(gate.mutex);
+    gate.isOpen = false;
+    gate.nStops = 0UZ;
+}
+
+inline void openStopGate() {
+    StopGate&       gate = stopGate();
+    std::lock_guard lock(gate.mutex);
+    gate.isOpen = true;
+    gate.changed.notify_all();
+}
+
+/// waits until the gate has held `nStops` stops, for at most three seconds, and returns how many it held
+inline std::size_t awaitHeldStops(std::size_t nStops) {
+    StopGate&        gate = stopGate();
+    std::unique_lock lock(gate.mutex);
+    std::ignore = gate.changed.wait_for(lock, std::chrono::seconds(3), [&gate, nStops] { return gate.nStops >= nStops; });
+    return gate.nStops;
 }
 
 /// "gr::Foo#17" -> "gr::Foo": the id is process-unique, so two arms never share one
@@ -1234,7 +1293,8 @@ connections:
     };
 };
 
-// start() runs the graph on the Runtime's own thread; wait(), waitFor() and result() report that run
+// start() runs the graph on the Runtime's own thread; stop() and stopFor() end that run, and wait(), waitFor() and
+// result() report it
 const boost::ut::suite<"background run"> backgroundRunTests = [] {
     using namespace boost::ut;
     using namespace gr;
@@ -1398,6 +1458,73 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         expect(fatal(!runtime->start().has_value()));
         expect(gt(awaitCountAbove("r8-destroyed", 0UZ), 0UZ)) << "the run delivered nothing";
         runtime.reset(); // a joinable thread destroyed unjoined terminates the process, and an unstopped run never ends
+    };
+
+    "a timed stop of an endless graph ends it and returns true"_test = [] {
+        registerTestBlocks();
+        auto runtime = endlessChain("r10-timed-stop");
+        expect(fatal(runtime.has_value()));
+        expect(fatal(!runtime->start().has_value()));
+        expect(gt(awaitCountAbove("r10-timed-stop", 0UZ), 0UZ)) << "the endless run delivered nothing";
+        expect(runtime->stopFor(10s)) << "a timed stop did not end an endless run";
+        expect(!runtime->busy()) << "stopFor() returned true before the run ended";
+        expect(runtime->state() == Runtime::State::Stopped);
+        expect(runtime->result().has_value()) << "a stopped run is a successful run";
+    };
+
+    "a zero timeout during a run returns false, and a later timed stop ends the run"_test = [] {
+        registerTestBlocks();
+        auto runtime = endlessChain("r11-zero-timeout");
+        expect(fatal(runtime.has_value()));
+        expect(fatal(!runtime->start().has_value()));
+        expect(gt(awaitCountAbove("r11-zero-timeout", 0UZ), 0UZ)) << "the endless run delivered nothing";
+        expect(!runtime->stopFor(0ns)) << "a zero timeout read an endless run as ended";
+        expect(runtime->stopFor(10s)) << "the later timed stop did not end the run";
+        expect(!runtime->busy()) << "stopFor() returned true before the run ended";
+        expect(runtime->state() == Runtime::State::Stopped);
+        expect(runtime->result().has_value()) << "a stopped run is a successful run";
+    };
+
+    "a timed stop without a run returns true and changes nothing"_test = [] {
+        registerTestBlocks();
+        auto runtime = erasedChain("r12-no-run", 1024U, 1.0f);
+        expect(fatal(runtime.has_value()));
+        expect(runtime->stopFor(0ns)) << "a timed stop before any run returned false";
+        expect(runtime->stopFor(20ms)) << "a timed stop before any run returned false";
+        expect(runtime->state() == Runtime::State::Idle) << "a timed stop without a run changed the state";
+        expect(runtime->runAndWait().has_value());
+        expect(eq(takeCollected("r12-no-run").samples.size(), 1024UZ)) << "the run after a timed stop without a run delivered less than the stream";
+        expect(runtime->stopFor(0ns)) << "a timed stop after the run ended returned false";
+        expect(runtime->state() == Runtime::State::Stopped) << "a timed stop after the run ended changed the state";
+        expect(runtime->result().has_value()) << "a timed stop after the run ended changed its result";
+    };
+
+    "a stop held in a block's stop() past the timeout returns false, and a later call waits for the same stop"_test = [] {
+        registerTestBlocks();
+        closeStopGate();
+        RuntimeGraph graph;
+        auto         source = graph.emplace("qa::EndlessSource", "source");
+        auto         sink   = graph.add(std::make_shared<BlockWrapper<GatedStopSink>>(), "gated");
+        expect(fatal(source.has_value() && sink.has_value()));
+        expect(graph.connect(*source, "out", *sink, "in").has_value());
+        auto runtime = Runtime::create(std::move(graph));
+        expect(fatal(runtime.has_value()));
+        expect(fatal(!runtime->start().has_value()));
+
+        constexpr std::chrono::milliseconds kTimeout{20};
+        expect(!runtime->stopFor(kTimeout)) << "a stop held in a block's stop() read as ended";
+        expect(eq(awaitHeldStops(1UZ), 1UZ)) << "the stop did not reach the block";
+        const auto beforeLaterCall = std::chrono::steady_clock::now();
+        expect(!runtime->stopFor(kTimeout)) << "a later call read the held stop as ended";
+        expect(std::chrono::steady_clock::now() - beforeLaterCall < 5s) << "a later call waited for the held stop() past its own timeout";
+        expect(runtime->busy()) << "the run ended while its block was inside stop()";
+
+        openStopGate();
+        expect(runtime->stopFor(10s)) << "the run did not end once the block's stop() returned";
+        expect(!runtime->busy()) << "stopFor() returned true before the run ended";
+        expect(eq(awaitHeldStops(1UZ), 1UZ)) << "the block's stop() ran more than once";
+        expect(runtime->state() == Runtime::State::Stopped);
+        expect(runtime->result().has_value()) << "a stopped run is a successful run";
     };
 };
 
