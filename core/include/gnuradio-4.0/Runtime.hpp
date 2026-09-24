@@ -9,14 +9,9 @@
  * declares is compiled once into `libgnuradio-core`. The typed API is unchanged and remains the
  * choice where compile-time port checking matters; this is the choice for application wiring.
  *
- * Two constraints follow from linking the compiled library:
- *
- * - a consumer must be built with the same compiler family as the installed `libgnuradio-core`,
- *   because constrained-template explicit instantiations mangle differently between GCC and clang;
- * - a graph is built entirely through this entry or entirely typed. Fanning one output port out
- *   through both a typed `connect<"out", "in">` and a by-name `connect` starves the typed consumer,
- *   because the two record index-based and string-based port definitions that edge resolution does
- *   not reconcile.
+ * One constraint follows from linking the compiled library: a consumer must be built with the same
+ * compiler family as the installed `libgnuradio-core`, because constrained-template explicit
+ * instantiations mangle differently between GCC and clang.
  */
 
 #include <gnuradio-4.0/Export.hpp>
