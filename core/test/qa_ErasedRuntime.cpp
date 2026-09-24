@@ -58,6 +58,11 @@ inline std::map<std::string, Collected>& collector() {
     return collected;
 }
 
+inline std::map<std::string, std::size_t>& counted() {
+    static std::map<std::string, std::size_t> nCounted;
+    return nCounted;
+}
+
 inline Collected takeCollected(const std::string& sinkName) {
     std::lock_guard guard(collectorMutex());
     auto            entry = collector().find(sinkName);
@@ -209,11 +214,63 @@ struct ControlledChunks : Block<ControlledChunks> {
     work::Status processBulk(InputSpanLike auto&, OutputSpanLike auto&) { return work::Status::OK; }
 };
 
+/// publishes zeros until the run is stopped
+struct EndlessSource : Block<EndlessSource> {
+    PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(EndlessSource, out);
+
+    explicit EndlessSource(property_map init = {}) : Block<EndlessSource>(std::move(init)) {}
+
+    work::Status processBulk(OutputSpanLike auto& outSpan) {
+        std::fill(outSpan.begin(), outSpan.end(), 0.0f);
+        outSpan.publish(outSpan.size());
+        return work::Status::OK;
+    }
+};
+
+/// counts the samples it consumes and keeps none, so an endless source can feed it for a whole case
+struct CountingSink : Block<CountingSink> {
+    PortIn<float> in;
+
+    GR_MAKE_REFLECTABLE(CountingSink, in);
+
+    explicit CountingSink(property_map init = {}) : Block<CountingSink>(std::move(init)) {}
+
+    work::Status processBulk(InputSpanLike auto& inSpan) {
+        const std::size_t n = inSpan.size();
+        {
+            std::lock_guard guard(collectorMutex());
+            counted()[std::string(this->name)] += n;
+        }
+        std::ignore = inSpan.consume(n);
+        return work::Status::OK;
+    }
+};
+
+/// a source whose start() throws, so every run of its graph fails
+struct FailingStartSource : Block<FailingStartSource> {
+    PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(FailingStartSource, out);
+
+    explicit FailingStartSource(property_map init = {}) : Block<FailingStartSource>(std::move(init)) {}
+
+    void start() { throw gr::exception("the source refused to start"); }
+
+    work::Status processBulk(OutputSpanLike auto& outSpan) {
+        outSpan.publish(0UZ);
+        return work::Status::DONE;
+    }
+};
+
 inline void registerTestBlocks() {
     static const bool registered = [] {
         BlockRegistry& registry = globalBlockRegistry();
-        return registry.insert<RampSource>("=qa::RampSource") && registry.insert<Scale>("=qa::Scale") //
-               && registry.insert<RecordingSink>("=qa::RecordingSink") && registry.insert<SumInputs>("=qa::SumInputs");
+        return registry.insert<RampSource>("=qa::RampSource") && registry.insert<Scale>("=qa::Scale")                        //
+               && registry.insert<RecordingSink>("=qa::RecordingSink") && registry.insert<SumInputs>("=qa::SumInputs")       //
+               && registry.insert<EndlessSource>("=qa::EndlessSource") && registry.insert<CountingSink>("=qa::CountingSink") //
+               && registry.insert<FailingStartSource>("=qa::FailingStartSource");
     }();
     expect(registered) << "the test blocks must reach the global registry";
 }
@@ -271,6 +328,31 @@ inline std::chrono::microseconds runUntilCollected(gr::Runtime& runtime, const s
     const auto elapsed = std::chrono::steady_clock::now() - started;
     runtime.stop();
     return std::chrono::duration_cast<std::chrono::microseconds>(elapsed);
+}
+
+/// an endless source feeding a sink that counts and keeps nothing
+inline std::expected<gr::Runtime, gr::RuntimeError> endlessChain(std::string_view sinkName) {
+    RuntimeGraph graph;
+    auto         source = graph.emplace("qa::EndlessSource", "source");
+    auto         sink   = graph.emplace("qa::CountingSink", sinkName);
+    expect(source.has_value() && sink.has_value());
+    expect(graph.connect(*source, "out", *sink, "in").has_value());
+    return Runtime::create(std::move(graph));
+}
+
+inline std::size_t countedSize(const std::string& sinkName) {
+    std::lock_guard guard(collectorMutex());
+    const auto      entry = counted().find(sinkName);
+    return entry == counted().end() ? 0UZ : entry->second;
+}
+
+/// waits until the sink has counted more than `nBefore` samples, for at most three seconds, and returns its count
+inline std::size_t awaitCountAbove(const std::string& sinkName, std::size_t nBefore) {
+    const auto started = std::chrono::steady_clock::now();
+    while (countedSize(sinkName) <= nBefore && std::chrono::steady_clock::now() - started < std::chrono::seconds(3)) {
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    return countedSize(sinkName);
 }
 
 /// "gr::Foo#17" -> "gr::Foo": the id is process-unique, so two arms never share one
@@ -1149,6 +1231,173 @@ connections:
         std::ignore = takeCollected("e11-finished");
         expect(!connectedOf(finished->graph().outputPorts(finiteSource))) << "an output reads connected after its blocks stopped";
         expect(!connectedOf(finished->graph().inputPorts(finiteSink))) << "an input reads connected after its block stopped";
+    };
+};
+
+// start() runs the graph on the Runtime's own thread; wait(), waitFor() and result() report that run
+const boost::ut::suite<"background run"> backgroundRunTests = [] {
+    using namespace boost::ut;
+    using namespace gr;
+    using namespace qa_runtime;
+    using namespace std::chrono_literals;
+
+    "a finite graph started in the background ends by itself, and its result is success"_test = [] {
+        registerTestBlocks();
+        auto runtime = erasedChain("r1-finite", 1024U, 2.0f);
+        expect(fatal(runtime.has_value()));
+        const std::optional<RuntimeError> refused = runtime->start();
+        expect(fatal(!refused.has_value())) << (refused ? refused->message : std::string{});
+        runtime->wait();
+        expect(!runtime->busy()) << "wait() returned while the run was in progress";
+        const std::expected<void, RuntimeError> result = runtime->result();
+        expect(result.has_value()) << (result ? std::string{} : result.error().message);
+        expect(runtime->state() == Runtime::State::Stopped) << "a run that ended by itself settles stopped";
+        expect(eq(takeCollected("r1-finite").samples.size(), 1024UZ));
+    };
+
+    "a failed run's result carries the block's error"_test = [] {
+        registerTestBlocks();
+        RuntimeGraph graph;
+        auto         source = graph.emplace("qa::FailingStartSource", "failing");
+        auto         sink   = graph.emplace("qa::RecordingSink", "r2-failed");
+        expect(fatal(source.has_value() && sink.has_value()));
+        expect(graph.connect(*source, "out", *sink, "in").has_value());
+        const std::string sourceName(source->uniqueName());
+        auto              runtime = Runtime::create(std::move(graph));
+        expect(fatal(runtime.has_value()));
+
+        expect(fatal(!runtime->start().has_value()));
+        runtime->wait();
+        const std::expected<void, RuntimeError> result = runtime->result();
+        expect(fatal(!result.has_value())) << "a run whose block could not start reported success";
+        expect(result.error().message.contains("the source refused to start")) << result.error().message;
+        expect(result.error().message.contains(sourceName)) << result.error().message;
+        expect(runtime->state() == Runtime::State::Error);
+        runtime->stop();
+        expect(runtime->state() == Runtime::State::Error) << "a stop after the failed run changed the state";
+        expect(eq(takeCollected("r2-failed").samples.size(), 0UZ));
+    };
+
+    "a stop before any run leaves the next run whole"_test = [] {
+        registerTestBlocks();
+        auto runtime = erasedChain("r3-stopped-first", 1024U, 1.0f);
+        expect(fatal(runtime.has_value()));
+        runtime->stop();
+        expect(runtime->state() == Runtime::State::Idle) << "a stop without a run changed the state";
+        expect(runtime->runAndWait().has_value());
+        expect(eq(takeCollected("r3-stopped-first").samples.size(), 1024UZ)) << "the run after a stop without a run delivered less than the stream";
+    };
+
+    "a second stop and a stop after the run ended leave the scheduler stopped"_test = [] {
+        registerTestBlocks();
+        auto endless = endlessChain("r4-endless");
+        expect(fatal(endless.has_value()));
+        expect(fatal(!endless->start().has_value()));
+        expect(gt(awaitCountAbove("r4-endless", 0UZ), 0UZ)) << "the endless run delivered nothing";
+        endless->stop();
+        expect(!endless->busy()) << "stop() returned before the run ended";
+        expect(endless->state() == Runtime::State::Stopped);
+        endless->stop();
+        expect(endless->state() == Runtime::State::Stopped) << "a second stop changed the state";
+        expect(endless->result().has_value()) << "a stopped run is a successful run";
+
+        auto background = erasedChain("r4-background", 256U, 1.0f);
+        expect(fatal(background.has_value()));
+        expect(fatal(!background->start().has_value()));
+        background->wait();
+        background->stop();
+        expect(background->state() == Runtime::State::Stopped) << "a stop after the background run ended changed the state";
+        std::ignore = takeCollected("r4-background");
+
+        auto foreground = erasedChain("r4-foreground", 256U, 1.0f);
+        expect(fatal(foreground.has_value()));
+        expect(foreground->runAndWait().has_value());
+        foreground->stop();
+        expect(foreground->state() == Runtime::State::Stopped) << "a stop after runAndWait() returned changed the state";
+        std::ignore = takeCollected("r4-foreground");
+    };
+
+    "a run after a stop runs the graph again"_test = [] {
+        registerTestBlocks();
+        auto runtime = endlessChain("r5-again");
+        expect(fatal(runtime.has_value()));
+        expect(fatal(!runtime->start().has_value()));
+        expect(gt(awaitCountAbove("r5-again", 0UZ), 0UZ)) << "the first run delivered nothing";
+        runtime->stop();
+        const std::size_t nFirst = countedSize("r5-again");
+        expect(fatal(!runtime->start().has_value())) << "a start after a stop was refused";
+        expect(gt(awaitCountAbove("r5-again", nFirst), nFirst)) << "the second run delivered nothing";
+        runtime->stop();
+        expect(runtime->state() == Runtime::State::Stopped);
+        expect(runtime->result().has_value());
+    };
+
+    "a stop right after a start ends the run, on a fresh scheduler and on a stopped one"_test = [] {
+        registerTestBlocks();
+        auto runtime = endlessChain("r9-immediate");
+        expect(fatal(runtime.has_value()));
+        for (std::size_t run = 0UZ; run < 3UZ; ++run) {
+            expect(fatal(!runtime->start().has_value()));
+            runtime->stop();
+            expect(!runtime->busy()) << std::format("run {}: stop() returned before the run ended", run);
+            expect(runtime->state() == Runtime::State::Stopped) << std::format("run {}", run);
+            expect(runtime->result().has_value()) << std::format("run {}", run);
+        }
+    };
+
+    "a start while a run is in progress is refused"_test = [] {
+        registerTestBlocks();
+        auto runtime = endlessChain("r6-refused");
+        expect(fatal(runtime.has_value()));
+        expect(fatal(!runtime->start().has_value()));
+        expect(gt(awaitCountAbove("r6-refused", 0UZ), 0UZ)) << "the run delivered nothing";
+
+        const std::optional<RuntimeError> second = runtime->start();
+        expect(fatal(second.has_value())) << "a second start() during the run was accepted";
+        expect(second->message.contains("a run is in progress")) << second->message;
+        const std::expected<void, RuntimeError> foreground = runtime->runAndWait();
+        expect(fatal(!foreground.has_value())) << "runAndWait() during the run was accepted";
+        expect(foreground.error().message.contains("a run is in progress")) << foreground.error().message;
+        expect(runtime->busy()) << "a refused start ended the run in progress";
+        expect(!runtime->result().has_value()) << "result() reported a run in progress as ended";
+
+        runtime->stop();
+        expect(runtime->result().has_value()) << "the refusals changed the result of the run they did not start";
+    };
+
+    "a timed wait returns false while the run goes on and true once it is stopped"_test = [] {
+        registerTestBlocks();
+        auto runtime = endlessChain("r7-timed");
+        expect(fatal(runtime.has_value()));
+        expect(fatal(!runtime->start().has_value()));
+
+        constexpr std::chrono::milliseconds kShortWait{20};
+        const auto                          beforeShortWait = std::chrono::steady_clock::now();
+        expect(!runtime->waitFor(kShortWait)) << "an endless run read as ended";
+        expect(std::chrono::steady_clock::now() - beforeShortWait >= kShortWait) << "the timed wait returned before its timeout";
+
+        constexpr std::chrono::seconds kLongWait{10};
+        std::thread                    stopper([&runtime] { runtime->stop(); });
+        const auto                     beforeLongWait = std::chrono::steady_clock::now();
+        const bool                     ended          = runtime->waitFor(kLongWait);
+        const auto                     waited         = std::chrono::steady_clock::now() - beforeLongWait;
+        stopper.join();
+        expect(ended) << "the wait timed out although another thread stopped the run";
+        expect(waited < kLongWait) << "the wait did not return when the run ended";
+        expect(runtime->waitFor(0ms)) << "a wait after the run ended returned false";
+    };
+
+    "a runtime destroyed during a run stops the run and joins its thread"_test = [] {
+        registerTestBlocks();
+        std::optional<Runtime> runtime;
+        {
+            auto created = endlessChain("r8-destroyed");
+            expect(fatal(created.has_value()));
+            runtime.emplace(std::move(*created));
+        }
+        expect(fatal(!runtime->start().has_value()));
+        expect(gt(awaitCountAbove("r8-destroyed", 0UZ), 0UZ)) << "the run delivered nothing";
+        runtime.reset(); // a joinable thread destroyed unjoined terminates the process, and an unstopped run never ends
     };
 };
 
