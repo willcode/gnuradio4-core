@@ -620,6 +620,7 @@ property_map CtxSettingsBase::setImpl(const property_map& parameters, SettingsCt
         property_map newParameters = getBestMatchStoredParameters(ctx).value_or(_defaultParameters);
         // the context keeps its keys that follow tags until every value of the map is taken
         std::set<std::string> currentAutoUpdateParameters = _autoUpdateParameters.contains(ctx) ? _autoUpdateParameters.at(ctx) : getBestMatchAutoUpdateParameters(ctx).value_or(_descriptor->writableMembers);
+        property_map          declared;
 
         for (const auto& [key, value] : parameters) {
             if (value.is_monostate()) {
@@ -639,9 +640,18 @@ property_map CtxSettingsBase::setImpl(const property_map& parameters, SettingsCt
                     currentAutoUpdateParameters.erase(autoIt);
                 }
             } else if (isDeclaredImpl(key)) {
-                newParameters.insert_or_assign(key, value); // never in the auto-update set, so the activation stages it
+                declared.insert_or_assign(key, value);
             } else {
                 ret.insert_or_assign(key, value);
+            }
+        }
+        if (!declared.empty()) {
+            std::expected<property_map, std::string> held = _declared->parameters.check(declared);
+            if (!held.has_value()) {
+                throw gr::exception(held.error());
+            }
+            for (auto& [key, value] : *held) {
+                newParameters.insert_or_assign(key, std::move(value));
             }
         }
         _autoUpdateParameters[ctx] = std::move(currentAutoUpdateParameters);
@@ -659,16 +669,14 @@ property_map CtxSettingsBase::setImpl(const property_map& parameters, SettingsCt
 
 property_map CtxSettingsBase::setStagedImpl(const property_map& parameters) {
     property_map ret;
+    property_map members;
     property_map declared;
     if (_descriptor->hooks.reflectable) {
         for (const auto& [key, value] : parameters) {
             auto it = _descriptor->writableByName.find(key);
             if (it != _descriptor->writableByName.end()) {
-                if (auto error = it->second->setParameter(key, value, _stagedParameters)) {
+                if (auto error = it->second->setParameter(key, value, members)) {
                     throw gr::exception(*error);
-                }
-                if (const auto tagged = _taggedKeys.find(std::string_view(key)); tagged != _taggedKeys.end()) {
-                    _taggedKeys.erase(tagged);
                 }
             } else if (isDeclaredImpl(key)) {
                 declared.insert_or_assign(key, value);
@@ -677,11 +685,44 @@ property_map CtxSettingsBase::setStagedImpl(const property_map& parameters) {
             }
         }
     }
+    // a refusal stages nothing: every value converts, and the declared change applies, before any member is staged
     applyDeclaredImpl(declared);
+    for (auto& [key, value] : members) {
+        if (const auto tagged = _taggedKeys.find(std::string_view(key)); tagged != _taggedKeys.end()) {
+            _taggedKeys.erase(tagged);
+        }
+        _stagedParameters.insert_or_assign(key, std::move(value));
+    }
     if (!_stagedParameters.empty()) {
         setChanged(true);
     }
     return ret;
+}
+
+std::optional<std::string> CtxSettingsBase::checkStaged(const property_map& parameters) const {
+    std::lock_guard lg(_mutex);
+    if (!_descriptor->hooks.reflectable) {
+        return std::nullopt;
+    }
+    property_map converted;
+    property_map declared;
+    for (const auto& [key, value] : parameters) {
+        if (const auto it = _descriptor->writableByName.find(key); it != _descriptor->writableByName.end()) {
+            if (std::optional<std::string> error = it->second->setParameter(key, value, converted)) {
+                return error;
+            }
+        } else if (isDeclaredImpl(key)) {
+            declared.insert_or_assign(key, value);
+        } else {
+            return std::format("no setting is named '{}'", key);
+        }
+    }
+    if (!declared.empty()) {
+        if (std::expected<property_map, std::string> held = _declared->parameters.check(declared); !held.has_value()) {
+            return held.error();
+        }
+    }
+    return std::nullopt;
 }
 
 void CtxSettingsBase::storeDefaults() { storeCurrentParameters(_defaultParameters); }

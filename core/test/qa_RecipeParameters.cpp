@@ -1310,6 +1310,81 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         expect(eq(stagedNumber(innermost, "gain"), 0.5f)) << "and the inner recipe re-derived its interior from it";
         expect(eq(stagedNumber(first, "gain"), 3000.0f)) << "beside the outer's own interior block";
     };
+
+    "a value the recipe refuses is refused whole by set() and by setStaged(), and a later change is taken"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        const auto inner     = composite == nullptr ? nullptr : interiorBlock(composite);
+        if (inner == nullptr) {
+            return;
+        }
+        gr::SettingsBase&                   settings        = composite->settings();
+        const std::optional<gr::pmt::Value> storedDeviation = settings.getStored("deviation");
+        const std::optional<gr::pmt::Value> storedName      = settings.getStored("name");
+
+        const std::string bySet = refusalOf([&] { std::ignore = settings.set({{"deviation", 0.0f}, {"name", std::string("renamed")}}); });
+        expect(bySet.contains("recipe_expression_conversion")) << "set() refuses a value the recipe cannot derive from, as it refuses a member's bad value: " << bySet;
+        expect(settings.getStored("deviation") == storedDeviation) << "the refused value is not stored";
+        expect(settings.getStored("name") == storedName) << "nor is the framework setting named beside it";
+
+        const std::string later = refusalOf([&] {
+            std::ignore = settings.set({{"sample_rate", 96000.0f}});
+            std::ignore = settings.activateContext();
+        });
+        expect(later.empty()) << "a later change of another parameter is taken: " << later;
+        expect(eq(readNumber(settings.get(), "sample_rate"), 96000.0f));
+        expect(eq(readNumber(settings.get(), "deviation"), 2500.0f)) << "the refused value never came into force";
+
+        const std::string byStaged = refusalOf([&] { std::ignore = settings.setStaged({{"deviation", 0.0f}, {"name", std::string("staged")}}); });
+        expect(byStaged.contains("recipe_expression_conversion")) << byStaged;
+        expect(!settings.stagedParameters().contains("name")) << "the framework setting of the refused call is not staged";
+        expect(eq(stagedNumber(inner, "gain"), derivedGain(96000.0, 2500.0))) << "the interior holds the last derivation the recipe accepted";
+    };
+
+    "a derived value an interior block refuses is refused before any interior block takes one"_test = [] {
+        registerRecipeTestBlock();
+        auto       loader    = recipeTestLoader();
+        const auto composite = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kTwoTargetsRecipe), {{"level", std::int32_t{4}}});
+        expect(composite.has_value()) << (composite.has_value() ? "" : composite.error().message);
+        if (!composite.has_value()) {
+            return;
+        }
+        const auto first  = interiorBlockNamed(*composite, "first");
+        const auto second = interiorBlockNamed(*composite, "second");
+        if (first == nullptr || second == nullptr) {
+            return;
+        }
+        gr::SettingsBase& settings = (*composite)->settings();
+
+        const std::string staged = refusalOf([&] { std::ignore = settings.setStaged({{"level", std::int32_t{-1}}}); });
+        expect(staged.contains("recipe_expression_conversion")) << "the refusal names the recipe's reason: " << staged;
+        expect(staged.contains("second")) << "and the interior block that refused the derived value: " << staged;
+        expect(!first->settings().stagedParameters().contains("gain")) << "the interior block that would take its value took nothing";
+        expect(eq(readNumber(settings.get(), "level"), 4.0f)) << "the value in force stands";
+
+        const std::string stored = refusalOf([&] { std::ignore = settings.set({{"level", std::int32_t{-1}}}); });
+        expect(stored.contains("recipe_expression_conversion")) << "set() refuses the same value: " << stored;
+
+        expect(settings.setStaged({{"level", std::int32_t{6}}}).empty()) << "a value both interior blocks take";
+        expect(eq(stagedNumber(first, "gain"), 6.0f));
+        expect(eq(stagedNumber(second, "count"), 6.0f));
+    };
+
+    "a refusal inside a nested recipe refuses the outer change whole"_test = [] {
+        const HalvingRecipeRoot root;
+        auto                    loader    = nestingLoader(root);
+        const auto              composite = nestingComposite(loader, 2000.0f);
+        const auto              first     = composite == nullptr ? nullptr : interiorBlockNamed(composite, "first");
+        const auto              stage     = composite == nullptr ? nullptr : interiorBlockNamed(composite, "stage");
+        if (first == nullptr || stage == nullptr) {
+            return;
+        }
+        const std::string refused = refusalOf([&] { std::ignore = composite->settings().setStaged({{"rate", 1000.0f}}); });
+        expect(refused.contains("recipe_expression_conversion")) << "a rate of 1000 derives a level of zero, where 1000 / level has no finite value: " << refused;
+        expect(!first->settings().stagedParameters().contains("gain")) << "the outer's plain interior block took nothing";
+        expect(eq(readNumber(stage->settings().get(), "level"), 1000.0f)) << "the inner recipe's value in force stands";
+        expect(eq(readNumber(composite->settings().get(), "rate"), 2000.0f)) << "and the outer's";
+    };
 };
 
 int main() { /* not needed for ut */ }
