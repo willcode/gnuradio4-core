@@ -1,0 +1,7 @@
+# The graph the recipe cases run: one composite built from the recipe in recipes/, stating the recipe's one parameter.
+# The run ends on its own when the composite's source reaches twice that count.
+blocks:
+  - id: qa::CountedChain
+    parameters:
+      name: counted
+      count: 100

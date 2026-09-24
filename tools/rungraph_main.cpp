@@ -339,6 +339,10 @@ struct StagedSettings {
 // Applies each block's settings by the call the graph file's own parameters take, so a value set here is in force for
 // the first sample and is the value --show reports at the end. The block and the key are both looked up first: an
 // unknown key would otherwise be filed as meta information and the run would proceed as if nothing had been asked.
+//
+// A recipe composite's exported parameters are among its settings. Activating one re-derives the composite's interior
+// blocks, which take the derived values before their first sample, and a derivation the recipe refuses is reported as
+// a value that could not be applied.
 [[nodiscard]] bool applyBlockSettings(gr::Graph& graph, const std::vector<std::pair<std::string, gr::property_map>>& blocks) {
     for (const auto& [name, settings] : blocks) {
         std::shared_ptr<gr::BlockModel> found;
@@ -360,12 +364,12 @@ struct StagedSettings {
         }
         try {
             found->settings().loadParametersFromPropertyMap(settings);
+            if (found->settings().activateContext() == std::nullopt) {
+                std::println(stderr, "{}: the settings of block {} could not be activated", kProgram, name);
+                return false;
+            }
         } catch (const std::exception& error) {
             std::println(stderr, "{}: the settings of block {} could not be applied: {}", kProgram, name, error.what());
-            return false;
-        }
-        if (found->settings().activateContext() == std::nullopt) {
-            std::println(stderr, "{}: the settings of block {} could not be activated", kProgram, name);
             return false;
         }
     }
