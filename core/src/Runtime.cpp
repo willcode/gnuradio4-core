@@ -302,7 +302,13 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplace(std::string_view 
     }
 
     model->setName(std::string(name)); // before addBlock, so that init() sees the final name
-    _impl->view->addBlock(model);
+    try {
+        _impl->view->addBlock(model);
+    } catch (const gr::exception& error) { // init() throws the parameters the block refuses
+        return std::unexpected(localError(error.message, "RuntimeGraph::emplace"));
+    } catch (const std::exception& error) {
+        return std::unexpected(localError(error.what(), "RuntimeGraph::emplace"));
+    }
     return BlockHandle(std::shared_ptr<void>(std::move(model)));
 }
 

@@ -154,6 +154,7 @@ public:
     RuntimeGraph& operator=(const RuntimeGraph&) = delete;
 
     /// Instantiates `type` from the registry, the loaded plugins or the YAML assets, names it and adds it.
+    /// A parameter the block does not declare or refuses is an error carrying the block's refusal.
     [[nodiscard]] std::expected<BlockHandle, RuntimeError> emplace(std::string_view type, std::string_view name, property_map parameters = {});
 
     /// Adds a block the caller built, so that a factory can keep its own typed pointer and hand the
