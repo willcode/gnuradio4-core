@@ -11,9 +11,12 @@
 #include <gnuradio-4.0/Settings.hpp>
 
 #include <algorithm>
+#include <condition_variable>
 #include <deque>
 #include <format>
 #include <mutex>
+#include <system_error>
+#include <thread>
 
 namespace gr {
 
@@ -178,7 +181,74 @@ struct Runtime::Impl {
     std::shared_ptr<SchedulerModel> scheduler;
     std::shared_ptr<BlockModel>     schedulerBlock;
 
+    std::mutex                        runMutex; // guards the members below
+    std::condition_variable           runEnded;
+    std::thread                       runThread; // start()'s run; joined by the next start() and the destructor
+    std::uint64_t                     nRunsStarted = 0ULL;
+    std::uint64_t                     nRunsEnded   = 0ULL;
+    std::expected<void, RuntimeError> lastResult; // of the last run that ended, success before the first
+
     static constexpr std::size_t kMaxPendingEvents = 1024UZ;
+
+    static constexpr std::chrono::milliseconds kStopPollInterval{10}; // stopRun() reads the scheduler's state this often
+
+    Impl()                       = default;
+    Impl(const Impl&)            = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    ~Impl() {
+        stopRun();
+        if (runThread.joinable()) {
+            runThread.join();
+        }
+    }
+
+    [[nodiscard]] bool runInProgress() const noexcept { return nRunsEnded != nRunsStarted; } // runMutex held
+
+    // Runs the graph to its end on the calling thread. A failed run returns the scheduler's error, and an exception
+    // the run throws becomes a RuntimeError.
+    std::expected<void, RuntimeError> runToEnd(std::string_view where) {
+        std::expected<void, RuntimeError> result;
+        try {
+            if (std::expected<void, Error> ran = scheduler->runAndWait(); !ran) {
+                result = std::unexpected(toRuntimeError(ran.error()));
+            }
+        } catch (const gr::exception& error) {
+            result = std::unexpected(localError(error.message, where));
+        } catch (const std::exception& error) {
+            result = std::unexpected(localError(error.what(), where));
+        } catch (...) {
+            result = std::unexpected(localError("the run threw an exception of unknown type", where));
+        }
+        drain();
+        return result;
+    }
+
+    void endRun(std::expected<void, RuntimeError> result) {
+        std::lock_guard lock(runMutex);
+        lastResult = std::move(result);
+        ++nRunsEnded;
+        runEnded.notify_all();
+    }
+
+    // Requests the stop of the run in progress and returns once that run has ended. The stop is requested once the
+    // scheduler is active. Until then it reads the state the run before it left, or a state runAndWait() passes on
+    // its way to RUNNING. A transition to REQUESTED_STOP from STOPPED has no effect, and from a state before RUNNING
+    // it can collide with the run's own transition. The request is the transition alone: the scheduler's stop()
+    // moves a scheduler that refuses it to ERROR.
+    void stopRun() {
+        std::unique_lock    lock(runMutex);
+        const std::uint64_t run   = nRunsStarted;
+        const auto          ended = [this, run] { return nRunsEnded >= run; };
+        while (!ended()) {
+            if (lifecycle::isActive(schedulerBlock->state())) {
+                lock.unlock();
+                std::ignore = schedulerBlock->changeStateTo(lifecycle::State::REQUESTED_STOP);
+                lock.lock();
+            }
+            std::ignore = runEnded.wait_for(lock, kStopPollInterval, ended);
+        }
+    }
 
     void drain() {
         std::lock_guard guard(mutex);
@@ -573,12 +643,7 @@ Runtime::Runtime(Runtime&&) noexcept = default;
 
 Runtime& Runtime::operator=(Runtime&&) noexcept = default;
 
-Runtime::~Runtime() {
-    if (_impl && _impl->scheduler) {
-        _impl->scheduler->stop();
-        _impl->drain();
-    }
-}
+Runtime::~Runtime() = default;
 
 std::expected<Runtime, RuntimeError> Runtime::create(RuntimeGraph&& graph, std::string_view type, property_map schedulerParameters) {
     if (!graph._impl || !graph._impl->owned) {
@@ -618,28 +683,85 @@ std::expected<Runtime, RuntimeError> Runtime::create(gr::Graph&& graph, std::str
 }
 
 std::expected<void, RuntimeError> Runtime::runAndWait() {
+    constexpr std::string_view where = "Runtime::runAndWait";
     if (!_impl) {
-        return std::unexpected(localError("runtime handle is empty", "Runtime::runAndWait"));
+        return std::unexpected(localError("runtime handle is empty", where));
     }
-    const std::expected<void, Error> result = _impl->scheduler->runAndWait();
-    _impl->drain();
-    if (!result) {
-        return std::unexpected(toRuntimeError(result.error()));
+    {
+        std::lock_guard lock(_impl->runMutex);
+        if (_impl->runInProgress()) {
+            return std::unexpected(localError("a run is in progress", where));
+        }
+        ++_impl->nRunsStarted;
     }
-    return {};
+    std::expected<void, RuntimeError> result = _impl->runToEnd(where);
+    _impl->endRun(result);
+    return result;
 }
 
-void Runtime::start() {
-    if (_impl) {
-        _impl->scheduler->start();
+std::optional<RuntimeError> Runtime::start() {
+    constexpr std::string_view where = "Runtime::start";
+    if (!_impl) {
+        return localError("runtime handle is empty", where);
     }
+    Impl&           impl = *_impl;
+    std::lock_guard lock(impl.runMutex);
+    if (impl.runInProgress()) {
+        return localError("a run is in progress", where);
+    }
+    if (impl.runThread.joinable()) { // the thread of an ended run, which takes runMutex no more
+        impl.runThread.join();
+    }
+    ++impl.nRunsStarted;
+    try {
+        impl.runThread = std::thread([&impl] { impl.endRun(impl.runToEnd("Runtime::start")); });
+    } catch (const std::system_error& error) {
+        impl.lastResult = std::unexpected(localError(std::format("the run's thread did not start: {}", error.what()), where));
+        ++impl.nRunsEnded;
+        return impl.lastResult.error();
+    }
+    return std::nullopt;
 }
 
 void Runtime::stop() {
     if (_impl) {
-        _impl->scheduler->stop();
-        _impl->drain();
+        _impl->stopRun();
     }
+}
+
+bool Runtime::busy() const {
+    if (!_impl) {
+        return false;
+    }
+    std::lock_guard lock(_impl->runMutex);
+    return _impl->runInProgress();
+}
+
+void Runtime::wait() const {
+    if (!_impl) {
+        return;
+    }
+    std::unique_lock lock(_impl->runMutex);
+    _impl->runEnded.wait(lock, [this] { return !_impl->runInProgress(); });
+}
+
+bool Runtime::waitFor(std::chrono::nanoseconds timeout) const {
+    if (!_impl) {
+        return true;
+    }
+    std::unique_lock lock(_impl->runMutex);
+    return _impl->runEnded.wait_for(lock, timeout, [this] { return !_impl->runInProgress(); });
+}
+
+std::expected<void, RuntimeError> Runtime::result() const {
+    if (!_impl) {
+        return std::unexpected(localError("runtime handle is empty", "Runtime::result"));
+    }
+    std::lock_guard lock(_impl->runMutex);
+    if (_impl->runInProgress()) {
+        return std::unexpected(localError("the run has not ended", "Runtime::result"));
+    }
+    return _impl->lastResult;
 }
 
 Runtime::State Runtime::state() const noexcept { return _impl ? static_cast<State>(_impl->schedulerBlock->state()) : State::Idle; }

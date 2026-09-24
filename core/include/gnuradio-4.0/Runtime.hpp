@@ -19,6 +19,7 @@
 #include <gnuradio-4.0/Tag.hpp>
 #include <gnuradio-4.0/Value.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -241,6 +242,10 @@ struct GNURADIO_EXPORT RuntimeEvent {
  * The subscriber exists from `create()` until destruction whether or not the caller polls: a
  * scheduler whose msgOut has no reader turns a child block's error into an exception thrown on its
  * own worker thread, and the reason the block gave is lost with it.
+ *
+ * A Runtime holds one run of its graph at a time, by `runAndWait()` on the calling thread or by
+ * `start()` on a thread of its own, and keeps the last run's result. The destructor stops the run in
+ * progress and waits for it to end.
  */
 class GNURADIO_EXPORT Runtime {
 public:
@@ -263,13 +268,29 @@ public:
     Runtime(const Runtime&)            = delete;
     Runtime& operator=(const Runtime&) = delete;
 
-    /// Runs to completion on the calling thread.
+    /// Runs to completion on the calling thread and returns the run's result. Refused while a run is in progress.
     [[nodiscard]] std::expected<void, RuntimeError> runAndWait();
 
-    /// Starts on a scheduler-owned thread and returns.
-    void start();
-    /// Requests a stop and joins.
+    /// Runs the graph as runAndWait() does, on a thread the Runtime owns, and returns at once. Returns why
+    /// no run started, a run in progress among the reasons, and nothing once the run started.
+    std::optional<RuntimeError> start();
+
+    /// Requests the stop of the run in progress, by start() or by runAndWait() on another thread, and
+    /// returns once the run has ended. Without a run in progress it does nothing.
     void stop();
+
+    /// True from the start of a run, by start() or runAndWait(), until the run has ended.
+    [[nodiscard]] bool busy() const;
+
+    /// Returns once no run is in progress.
+    void wait() const;
+
+    /// Returns once no run is in progress or `timeout` has passed, and whether no run is in progress.
+    [[nodiscard]] bool waitFor(std::chrono::nanoseconds timeout) const;
+
+    /// The last run's result, as runAndWait() returns it. Success before the first run, and an error while a
+    /// run is in progress.
+    [[nodiscard]] std::expected<void, RuntimeError> result() const;
 
     [[nodiscard]] State                             state() const noexcept;
     [[nodiscard]] std::expected<void, RuntimeError> requestState(State newState);
