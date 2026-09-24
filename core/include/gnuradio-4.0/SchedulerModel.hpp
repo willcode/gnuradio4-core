@@ -53,6 +53,9 @@ public:
     // lifecycle transitions, because the scheduler's pending-stop latch is private to it
     virtual std::expected<void, Error> runAndWait() = 0;
 
+    // why the latest start could not complete; the next start clears it
+    [[nodiscard]] virtual std::optional<Error> startError() const = 0;
+
     virtual void requestWorkQuiescence() = 0;
     virtual void releaseWorkQuiescence() = 0;
 };
@@ -84,6 +87,8 @@ public:
     [[nodiscard]] bool workerStarted() override { return this->blockRef().workerStarted(); }
 
     std::expected<void, Error> runAndWait() override { return this->blockRef().runAndWait(); }
+
+    [[nodiscard]] std::optional<Error> startError() const override { return this->blockRef().startError(); }
 
     void requestWorkQuiescence() override { this->blockRef().requestWorkQuiescence(); }
     void releaseWorkQuiescence() override { this->blockRef().releaseWorkQuiescence(); }
