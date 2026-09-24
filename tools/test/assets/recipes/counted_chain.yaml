@@ -1,0 +1,28 @@
+# A source feeding a sink, both counts derived from the one exported parameter. The sink reports the value of its
+# `count`-th sample, and the source stops the run at twice that count.
+definition_metadata:
+  block_type: qa::CountedChain
+  plugin_name: RunGraphTestRecipes
+  plugin_author: The GNU Radio Authors
+  plugin_license: MIT
+  plugin_version: "1"
+blocks:
+  - id: SUBGRAPH
+    parameters:
+      name: counted_chain
+    exported_parameters:
+      - name: count
+        type: uint32
+        doc: "samples the sink counts before it reports"
+    graph:
+      blocks:
+        - id: good::fixed_source<float32>
+          parameters:
+            name: source
+            event_count: "=count * 2"
+        - id: good::cout_sink<float32>
+          parameters:
+            name: sink
+            total_count: "=count"
+      connections:
+        - [source, out, sink, in]

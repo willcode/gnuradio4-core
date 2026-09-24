@@ -1,0 +1,6 @@
+# The recipe the rungraph cases load. A loader reads it when this directory is named as a plugin directory.
+assets:
+  - file: counted_chain.yaml
+    created: "2026-09-23-00:00:00"
+    modified: "2026-09-23-00:00:00"
+    block_type: qa::CountedChain

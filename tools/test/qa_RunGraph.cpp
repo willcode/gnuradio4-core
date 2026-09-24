@@ -20,6 +20,7 @@
  * - the settings --show prints when the run is over
  * - a scheduler setting and a block setting, each taken and each refused
  * - a refused setting's reason, printed without the source file and line of the library
+ * - a recipe composite's exported parameter taken and its interior's setting refused
  * - the program's own scheduler, a plugin's and a shared object's, each chosen by its registry key
  * - a shared object's scheduler refused at an earlier plugin ABI version
  * - a command line that cannot be used
@@ -105,6 +106,13 @@ constexpr std::string_view kUnnamedResourceFile{GR_TOOLS_TEST_ASSETS "/unnamed_r
     const std::size_t end   = output.find('\n', found);
     return output.substr(first, end == std::string_view::npos ? std::string_view::npos : end - first);
 }
+
+constexpr std::string_view kRecipeChainFile{GR_TOOLS_TEST_ASSETS "/recipe_chain.yaml"};
+constexpr std::string_view kRecipeDirectory{GR_TOOLS_TEST_ASSETS "/recipes"};
+
+// the graph of one recipe composite, the plugins its interior blocks come from and the directory its recipe is read
+// from; the graph ends by itself, and the bound only guards a run whose derived count never arrived
+[[nodiscard]] std::vector<std::string> recipeChainRun() { return {"--graph", std::string(kRecipeChainFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--plugin-dir", std::string(kRecipeDirectory), "--seconds", "5"}; }
 #endif
 
 // the schedulers rungraph registers itself, one per execution policy of core's Simple scheduler
@@ -362,6 +370,54 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         expect(eq(refused.exitCode, 2)) << refused.output;
         expect(refused.output.contains("no scheduler is registered as test::library_scheduler_v1")) << refused.output;
         expect(refused.output.contains("rungraph:   test::library_scheduler\n")) << "the list of keys includes the kept library's" << refused.output;
+    };
+
+    // the composite's one parameter derives a pair of interior counts: the sink reports the value of its count-th
+    // sample, and the source ends the run at twice the count
+    "--set reaches a recipe composite's exported parameter, the derived pair follows it, and --show reads it back"_test = [] {
+        std::vector<std::string> asFiled = recipeChainRun();
+        asFiled.emplace_back("--show");
+        asFiled.emplace_back("counted");
+
+        const Result filed = run(asFiled);
+        expect(eq(filed.exitCode, 0)) << filed.output;
+        expect(filed.output.contains("counted: count = 100\n")) << "the file's value is in force" << filed.output;
+        expect(filed.output.contains("last value was: 100\n")) << "the sink counts to the file's value" << filed.output;
+        expect(filed.output.contains("the graph ended on its own")) << filed.output;
+
+        std::vector<std::string> changed = recipeChainRun();
+        changed.emplace_back("--set");
+        changed.emplace_back("counted.count=1000");
+        changed.emplace_back("--show");
+        changed.emplace_back("counted");
+
+        const Result set = run(changed);
+        expect(eq(set.exitCode, 0)) << set.output;
+        expect(set.output.contains("counted: count = 1000\n")) << "--show reads back the value --set put in force" << set.output;
+        expect(set.output.contains("last value was: 1000\n")) << "the sink's derived count followed the parameter" << set.output;
+        expect(!set.output.contains("last value was: 100\n")) << "the file's value did not reach the sink" << set.output;
+        expect(set.output.contains("the graph ended on its own")) << "the source's derived count followed it too" << set.output;
+    };
+
+    "a recipe composite refuses a name its recipe does not export, and a value its recipe cannot derive from"_test = [] {
+        for (const std::string_view key : {"no_such_key", "event_count"}) {
+            std::vector<std::string> arguments = recipeChainRun();
+            arguments.emplace_back("-s");
+            arguments.emplace_back(std::format("counted.{}=1", key));
+
+            const Result refused = run(arguments);
+            expect(eq(refused.exitCode, 1)) << refused.output;
+            expect(refused.output.contains(std::format("block 'counted' of type 'qa::CountedChain' declares no setting named '{}'", key))) << "an interior block's setting is not the composite's" << refused.output;
+        }
+
+        std::vector<std::string> text = recipeChainRun();
+        text.emplace_back("-s");
+        text.emplace_back("counted.count=many");
+
+        const Result underived = run(text);
+        expect(eq(underived.exitCode, 1)) << underived.output;
+        expect(underived.output.contains("Unable to create block 'counted' of type 'qa::CountedChain'")) << underived.output;
+        expect(underived.output.contains("recipe_expression_conversion")) << "the refusal names the recipe's reason" << underived.output;
     };
 
     "a block name the graph does not hold is refused"_test = [] {
