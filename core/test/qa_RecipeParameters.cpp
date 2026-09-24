@@ -1385,6 +1385,33 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         expect(eq(readNumber(stage->settings().get(), "level"), 1000.0f)) << "the inner recipe's value in force stands";
         expect(eq(readNumber(composite->settings().get(), "rate"), 2000.0f)) << "and the outer's";
     };
+
+    "returning to a context restores its exported parameters, and an activation in the same context re-applies only what set() named"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        const auto inner     = composite == nullptr ? nullptr : interiorBlock(composite);
+        if (inner == nullptr) {
+            return;
+        }
+        gr::SettingsBase& settings = composite->settings();
+        expect(eq(readNumber(settings.getStored().value_or(gr::property_map{}), "deviation"), 2500.0f)) << "the default context stores the exported parameters beside the members";
+
+        const gr::SettingsCtx wide{.time = 0ULL, .context = std::string("wide")};
+        expect(settings.set({{"deviation", 5000.0f}}, wide).empty());
+        expect(settings.activateContext(wide).has_value());
+        expect(eq(readNumber(settings.get(), "deviation"), 5000.0f)) << "the context 'wide' is in force";
+        std::ignore = inner->settings().applyStagedParameters();
+
+        expect(settings.activateContext().has_value());
+        expect(eq(readNumber(settings.get(), "deviation"), 2500.0f)) << "the default context's deviation is in force again";
+        expect(eq(stagedNumber(inner, "gain"), derivedGain(48000.0, 2500.0))) << "and the interior re-derived from it";
+
+        expect(settings.setStaged({{"deviation", 3000.0f}}).empty());
+        expect(settings.set({{"sample_rate", 96000.0f}}).empty());
+        expect(settings.activateContext().has_value());
+        expect(eq(readNumber(settings.get(), "sample_rate"), 96000.0f)) << "an activation in the same context applies what set() named";
+        expect(eq(readNumber(settings.get(), "deviation"), 3000.0f)) << "and leaves a parameter set() never named at its value in force, as it leaves a member";
+    };
 };
 
 int main() { /* not needed for ut */ }

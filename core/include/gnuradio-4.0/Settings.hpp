@@ -946,8 +946,10 @@ public:
      * change to one through `check` and store it in the parameter's own type. setStaged() and an activation apply a
      * change through `apply` when it is staged, before any member of the same call is staged. A refusal on any of these
      * paths throws `gr::exception` with its reason, as a member's bad value throws, and the call leaves nothing stored
-     * or staged. The values in force at the call become the defaults. Declare before the block runs:
-     * writableMembers() is read without the lock.
+     * or staged. The values in force at the call become the defaults and join every stored parameter set, and each
+     * auto-update set takes the declared names: activating a context restores the declared values it stores, and an
+     * activation in the same context re-applies a declared parameter only once set() names it, as for a member.
+     * Declare before the block runs: writableMembers() is read without the lock.
      */
     void declareParameters(settings::DeclaredParameters parameters);
 

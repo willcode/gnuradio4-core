@@ -183,6 +183,15 @@ void CtxSettingsBase::declareParameters(settings::DeclaredParameters parameters)
     _declared = std::make_unique<DeclaredState>(DeclaredState{.parameters = std::move(parameters), .writableMembers = std::move(writable)});
     _declared->parameters.read(_activeParameters);
     _declared->parameters.read(_defaultParameters);
+    // every stored set and every auto-update set takes the declared parameters, as the first stored set takes every member
+    for (auto& [context, storedSets] : _storedParameters) {
+        for (CtxSettingsPair& stored : storedSets) {
+            _declared->parameters.read(stored.settings);
+        }
+    }
+    for (auto& [ctx, autoUpdateParameters] : _autoUpdateParameters) {
+        autoUpdateParameters.insert(_declared->parameters.names.begin(), _declared->parameters.names.end());
+    }
 }
 
 bool CtxSettingsBase::isDeclaredImpl(std::string_view key) const { return _declared != nullptr && _declared->parameters.names.contains(std::string(key)); }
@@ -227,7 +236,7 @@ std::optional<SettingsCtx> CtxSettingsBase::activateContextImpl(SettingsCtx ctx)
         std::optional<property_map> parameters = getBestMatchStoredParameters(ctx);
         if (parameters) {
             if (!_autoUpdateParameters.contains(bestMatchSettingsCtx.value())) {
-                _autoUpdateParameters[bestMatchSettingsCtx.value()] = getBestMatchAutoUpdateParameters(bestMatchSettingsCtx.value()).value_or(_descriptor->writableMembers);
+                _autoUpdateParameters[bestMatchSettingsCtx.value()] = getBestMatchAutoUpdateParameters(bestMatchSettingsCtx.value()).value_or(writableMembers());
             }
             const std::set<std::string>& currentAutoUpdateParams = _autoUpdateParameters.at(bestMatchSettingsCtx.value());
 
@@ -440,7 +449,7 @@ void CtxSettingsBase::resolveDuplicateTimestamp(SettingsCtx& ctx) {
 
 void CtxSettingsBase::addStoredParameters(const property_map& newParameters, const SettingsCtx& ctx) {
     if (!_autoUpdateParameters.contains(ctx)) {
-        _autoUpdateParameters[ctx] = getBestMatchAutoUpdateParameters(ctx).value_or(_descriptor->writableMembers);
+        _autoUpdateParameters[ctx] = getBestMatchAutoUpdateParameters(ctx).value_or(writableMembers());
     }
 
     std::vector<CtxSettingsPair>& sortedVectorForContext = _storedParameters[ctx.context];
@@ -602,7 +611,7 @@ property_map CtxSettingsBase::setImpl(const property_map& parameters, SettingsCt
         // initialize with empty property_map when best match parameters not found
         property_map newParameters = getBestMatchStoredParameters(ctx).value_or(_defaultParameters);
         // the auto-update set changes with the stored parameters, once every value of the call is taken
-        std::set<std::string> autoUpdateParameters = _autoUpdateParameters.contains(ctx) ? _autoUpdateParameters.at(ctx) : getBestMatchAutoUpdateParameters(ctx).value_or(_descriptor->writableMembers);
+        std::set<std::string> autoUpdateParameters = _autoUpdateParameters.contains(ctx) ? _autoUpdateParameters.at(ctx) : getBestMatchAutoUpdateParameters(ctx).value_or(writableMembers());
         property_map          declared;
 
         for (const auto& [key, value] : parameters) {
@@ -618,6 +627,7 @@ property_map CtxSettingsBase::setImpl(const property_map& parameters, SettingsCt
                 autoUpdateParameters.erase(std::string(key));
             } else if (isDeclaredImpl(key)) {
                 declared.insert_or_assign(key, value);
+                autoUpdateParameters.erase(std::string(key));
             } else {
                 ret.insert_or_assign(key, value);
             }
@@ -747,7 +757,7 @@ void CtxSettingsBase::autoUpdate(const Tag& tag) {
 
     // fuzzy-match auto-update parameters (exact lookup may fail due to timestamp mismatch)
     if (!_autoUpdateParameters.contains(ctx)) {
-        _autoUpdateParameters[ctx] = getBestMatchAutoUpdateParameters(ctx).value_or(_descriptor->writableMembers);
+        _autoUpdateParameters[ctx] = getBestMatchAutoUpdateParameters(ctx).value_or(writableMembers());
     }
     auto& autoUpdateParams = _autoUpdateParameters[ctx];
 
