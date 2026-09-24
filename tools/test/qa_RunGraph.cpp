@@ -301,6 +301,16 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         const std::string_view memberLine = lineHolding(memberRefused.output, " did not load: ");
         expect(memberLine.contains("value \"many\" for key 'event_count'")) << memberRefused.output;
         expect(!memberLine.contains(".cpp:") && !memberLine.contains(".hpp:")) << "a member's refusal names no file and line of the library" << memberRefused.output;
+
+        std::vector<std::string> parameter = recipeChainRun();
+        parameter.emplace_back("-s");
+        parameter.emplace_back("counted.count=many");
+
+        const Result parameterRefused = run(parameter);
+        expect(eq(parameterRefused.exitCode, 1)) << parameterRefused.output;
+        const std::string_view parameterLine = lineHolding(parameterRefused.output, " did not load: ");
+        expect(!parameterLine.empty()) << parameterRefused.output;
+        expect(!parameterLine.contains(".cpp:") && !parameterLine.contains(".hpp:")) << "nor does an exported parameter's" << parameterRefused.output;
     };
 
     "without --scheduler the graph runs on the single-threaded Simple scheduler"_test = [] {
