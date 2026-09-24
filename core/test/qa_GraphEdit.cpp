@@ -1,5 +1,6 @@
 #include <boost/ut.hpp>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -58,6 +59,31 @@ struct CountingSource : gr::Block<CountingSource> {
             this->requestStop();
         }
         return 1.0f;
+    }
+};
+
+// emits kSamples samples in every run and then reports DONE, so each run ends by itself
+struct FiniteSource : gr::Block<FiniteSource> {
+    gr::PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(FiniteSource, out);
+
+    static constexpr std::size_t kSamples = 4096UZ;
+
+    std::size_t _nProduced = 0UZ;
+
+    void start() { _nProduced = 0UZ; }
+
+    gr::work::Status processBulk(gr::OutputSpanLike auto& outSpan) {
+        if (_nProduced >= kSamples) {
+            outSpan.publish(0UZ);
+            return gr::work::Status::DONE;
+        }
+        const std::size_t n = std::min(outSpan.size(), kSamples - _nProduced);
+        std::fill_n(outSpan.begin(), n, 1.0f);
+        outSpan.publish(n);
+        _nProduced += n;
+        return n == 0UZ ? gr::work::Status::INSUFFICIENT_OUTPUT_ITEMS : gr::work::Status::OK;
     }
 };
 
@@ -221,6 +247,31 @@ struct CountingResource : std::pmr::memory_resource {
 std::pmr::memory_resource* domainResource(const gr::ComputeDomain&, void*) {
     static CountingResource resource;
     return &resource;
+}
+
+// A block whose input no edge feeds never finishes, so a run of such a graph is stopped once `done()` holds.
+// `done()` is read only after the graph's progress sequence has moved, when the run has started its blocks, so a
+// block state left by an earlier run does not count. The wait gives up after kStallPolls polls without progress.
+template<typename TScheduler, typename TDone>
+[[nodiscard]] bool runUntil(TScheduler& scheduler, TDone done) {
+    constexpr std::size_t kStallPolls = 5000UZ;
+
+    const gr::Sequence& progress = scheduler.graph().progress();
+    const std::size_t   before   = progress.value();
+    std::thread         runner([&scheduler] { std::ignore = scheduler.runAndWait(); });
+    std::size_t         seen     = before;
+    std::size_t         nStalled = 0UZ;
+    bool                reached  = false;
+    while (!reached && nStalled < kStallPolls) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const std::size_t current = progress.value();
+        nStalled                  = current == seen ? nStalled + 1UZ : 0UZ;
+        seen                      = current;
+        reached                   = current != before && done();
+    }
+    std::ignore = scheduler.changeStateTo(gr::lifecycle::State::REQUESTED_STOP);
+    runner.join();
+    return reached;
 }
 
 } // namespace qa_edit
@@ -569,6 +620,108 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         expect(eq(flow.edges().size(), 1UZ)) << "the removed edge came back on restart";
 
         expect(!flow.removeEdgeBySourcePort(source.unique_name, "out", sinkA.unique_name, "in").has_value()) << "removing an absent edge reported success";
+    };
+
+    "an edge removed before a first run carries nothing when the graph runs"_test = [] {
+        gr::Graph flow;
+        auto&     source  = flow.emplaceBlock<qa_edit::FiniteSource>();
+        auto&     kept    = flow.emplaceBlock<qa_edit::Sink>();
+        auto&     removed = flow.emplaceBlock<qa_edit::Sink>();
+        expect(flow.connect<"out", "in">(source, kept).has_value());
+        expect(flow.connect<"out", "in">(source, removed).has_value());
+
+        const auto nRemoved = flow.removeEdgeBySourcePort(source.unique_name, "out", removed.unique_name, "in");
+        expect(fatal(nRemoved.has_value())) << "the removal was refused: " << (nRemoved.has_value() ? std::string{} : nRemoved.error().message);
+        expect(eq(*nRemoved, 1UZ));
+        expect(fatal(eq(flow.edges().size(), 1UZ)));
+        expect(flow.edges()[0].state() == gr::Edge::EdgeState::WaitingToBeConnected) << "the removal connected the remaining edge";
+        expect(!source.out.isConnected()) << "the removal connected the source port";
+
+        gr::scheduler::Simple scheduler;
+        expect(fatal(scheduler.exchange(std::move(flow)).has_value()));
+        expect(qa_edit::runUntil(scheduler, [&kept] { return kept.state() == gr::lifecycle::State::STOPPED; })) << "the kept consumer did not finish";
+        expect(eq(kept._nReceived, qa_edit::FiniteSource::kSamples)) << "the kept consumer missed samples";
+        expect(eq(removed._nReceived, 0UZ)) << "the removed edge carried samples";
+    };
+
+    "an edge removed after a run to completion carries nothing in the next run"_test = [] {
+        constexpr std::size_t kSamples = qa_edit::FiniteSource::kSamples;
+
+        gr::Graph flow;
+        auto&     source  = flow.emplaceBlock<qa_edit::FiniteSource>();
+        auto&     kept    = flow.emplaceBlock<qa_edit::Sink>();
+        auto&     removed = flow.emplaceBlock<qa_edit::Sink>();
+        expect(flow.connect<"out", "in">(source, kept).has_value());
+        expect(flow.connect<"out", "in">(source, removed).has_value());
+
+        gr::scheduler::Simple scheduler;
+        expect(fatal(scheduler.exchange(std::move(flow)).has_value()));
+        expect(fatal(scheduler.runAndWait().has_value()));
+        expect(fatal(eq(kept._nReceived, kSamples)));
+        expect(fatal(eq(removed._nReceived, kSamples)));
+        expect(fatal(!source.out.isConnected())) << "the stopped consumers left the source port connected";
+
+        const auto nRemoved = scheduler.graph().removeEdgeBySourcePort(source.unique_name, "out", removed.unique_name, "in");
+        expect(fatal(nRemoved.has_value())) << "the removal was refused: " << (nRemoved.has_value() ? std::string{} : nRemoved.error().message);
+        expect(eq(*nRemoved, 1UZ));
+        expect(eq(scheduler.graph().edges().size(), 1UZ));
+
+        expect(qa_edit::runUntil(scheduler, [&kept] { return kept.state() == gr::lifecycle::State::STOPPED; })) << "the kept consumer did not finish";
+        expect(eq(kept._nReceived, 2UZ * kSamples)) << "the kept consumer missed samples in the second run";
+        expect(eq(removed._nReceived, kSamples)) << "the removed edge carried samples in the second run";
+    };
+
+    "a recorded edge removed beside a connected sibling leaves the sibling its buffer"_test = [] {
+        constexpr std::size_t kUnread = 16UZ;
+
+        gr::Graph flow;
+        auto&     source    = flow.emplaceBlock<qa_edit::Source>();
+        auto&     connected = flow.emplaceBlock<qa_edit::Sink>();
+        auto&     recorded  = flow.emplaceBlock<qa_edit::Sink>();
+        expect(flow.connect<"out", "in">(source, connected).has_value());
+        expect(fatal(flow.connectPendingEdges()));
+        {
+            auto written = source.out.streamWriter().reserve<gr::SpanReleasePolicy::ProcessAll>(kUnread);
+            std::fill(written.begin(), written.end(), 1.0f);
+        }
+        expect(fatal(eq(connected.in.streamReader().available(), kUnread)));
+
+        expect(flow.connect<"out", "in">(source, recorded).has_value());
+        const auto nRemoved = flow.removeEdgeBySourcePort(source.unique_name, "out", recorded.unique_name, "in");
+        expect(fatal(nRemoved.has_value())) << "the removal was refused: " << (nRemoved.has_value() ? std::string{} : nRemoved.error().message);
+        expect(eq(*nRemoved, 1UZ));
+        expect(fatal(eq(flow.edges().size(), 1UZ)));
+        expect(eq(flow.edges()[0].destinationBlock()->uniqueName(), std::string_view(connected.unique_name))) << "the wrong edge was removed";
+        expect(flow.edges()[0].state() == gr::Edge::EdgeState::Connected);
+        expect(eq(connected.in.streamReader().available(), kUnread)) << "the connected sibling was given a new buffer and lost its unread samples";
+        expect(!recorded.in.isConnected()) << "the removed edge was connected";
+    };
+
+    "an emplaced edge removed again releases its reader"_test = [] {
+        constexpr std::size_t kWritten = 16UZ;
+
+        gr::Graph flow;
+        auto&     source = flow.emplaceBlock<qa_edit::Source>();
+        auto&     kept   = flow.emplaceBlock<qa_edit::Sink>();
+        auto&     added  = flow.emplaceBlock<qa_edit::Sink>();
+        expect(flow.connect<"out", "in">(source, kept).has_value());
+        expect(fatal(flow.connectPendingEdges()));
+        const auto emplaced = flow.emplaceEdge(source.unique_name, "out", added.unique_name, "in", gr::undefined_size, 0, "added");
+        expect(fatal(emplaced.has_value())) << "the edge could not be emplaced: " << (emplaced.has_value() ? std::string{} : emplaced.error().message);
+        expect(fatal(added.in.isConnected())) << "the emplaced edge did not connect its consumer";
+        expect(fatal(eq(source.out.nReaders(), 2UZ)));
+
+        const auto nRemoved = flow.removeEdgeBySourcePort(source.unique_name, "out", added.unique_name, "in");
+        expect(fatal(nRemoved.has_value())) << "the removal was refused: " << (nRemoved.has_value() ? std::string{} : nRemoved.error().message);
+        expect(eq(*nRemoved, 1UZ));
+        {
+            auto written = source.out.streamWriter().reserve<gr::SpanReleasePolicy::ProcessAll>(kWritten);
+            std::fill(written.begin(), written.end(), 1.0f);
+        }
+        expect(eq(source.out.nReaders(), 1UZ)) << "the removed edge still holds a reader of the source";
+        expect(!added.in.isConnected()) << "the removed consumer is still connected";
+        expect(fatal(kept.in.isConnected())) << "the kept consumer lost its connection";
+        expect(eq(kept.in.streamReader().available(), kWritten)) << "the kept consumer does not see the source's samples";
     };
 
 #ifndef GR_TEST_WITHOUT_BLOCK_REGISTRY // emplacement by name resolves the type through the registry

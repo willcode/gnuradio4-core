@@ -575,20 +575,32 @@ public:
             return std::unexpected(Error(std::format("No edge from {}.{} in {}", sourceBlock, sourcePort, this->unique_name)));
         }
 
-        if (auto result = sourcePortRef.disconnect(); !result) {
-            return std::unexpected(Error(std::format("Block {} sourcePortRef could not be disconnected {}: {}", sourceBlock, this->unique_name, result.error().message)));
+        // A requested edge holds one of the port's readers while its destination input is connected, whatever the
+        // state of its record: emplaceEdge() connects the two ports and leaves the record WaitingToBeConnected. When
+        // no requested edge holds a reader, the records are erased alone and the port's readers keep their buffer.
+        const auto inputConnected = [&](const Edge& edge) {
+            const auto* input = resolvedInput(edge);
+            return input != nullptr && input->isConnected();
+        };
+        const bool holdsReader = sourcePortRef.isConnected() && std::ranges::any_of(_edges, [&](const Edge& edge) { return isRequestedEdge(edge) && inputConnected(edge); });
+        if (holdsReader) {
+            if (auto result = sourcePortRef.disconnect(); !result) {
+                return std::unexpected(Error(std::format("Block {} sourcePortRef could not be disconnected {}: {}", sourceBlock, this->unique_name, result.error().message)));
+            }
         }
 
         const auto [first, last] = std::ranges::remove_if(_edges, isRequestedEdge);
         const auto nRemoved      = static_cast<std::size_t>(std::ranges::distance(first, last));
         _edges.erase(first, last);
 
-        for (auto& edge : _edges) { // siblings lost their buffer with the port teardown
-            if (sharesSourcePort(edge)) {
-                edge._state = Edge::EdgeState::WaitingToBeConnected;
+        if (holdsReader) {
+            for (auto& edge : _edges) { // siblings lost their buffer with the port teardown
+                if (sharesSourcePort(edge)) {
+                    edge._state = Edge::EdgeState::WaitingToBeConnected;
+                }
             }
+            std::ignore = connectPendingEdges();
         }
-        std::ignore = connectPendingEdges();
 
         return nRemoved;
     }
