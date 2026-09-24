@@ -352,6 +352,13 @@ public:
         for (const recipe::ParameterDeclaration& declaration : _recipeBindings->declarations) {
             declared.names.insert(declaration.name);
         }
+        declared.check = [this](const property_map& changed) -> std::expected<property_map, std::string> {
+            auto derivation = deriveRecipeChange(changed);
+            if (!derivation.has_value()) {
+                return std::unexpected(derivation.error().message);
+            }
+            return std::move(derivation->change);
+        };
         declared.apply = [this](const property_map& changed) -> std::optional<std::string> {
             if (auto applied = applyRecipeParameters(changed); !applied.has_value()) {
                 return applied.error().message;
@@ -368,76 +375,24 @@ public:
         return {};
     }
 
-    /// Applies exported-parameter changes: trial-evaluates every binding against the updated
-    /// values, stages the derived settings onto the interior blocks, and commits the values.
-    /// A refusal anywhere rejects the change whole; the running values stand. Only the bindings
-    /// whose derived value moved are staged, so an interior block's settingsChanged names the
-    /// keys that actually changed and not every key the recipe binds to it; a block whose
-    /// bindings all held their value is not staged at all.
+    /// Applies one change of exported parameters. Every binding is evaluated against the values in force with the
+    /// change overlaid, and every interior block checks the derived values that moved for it. Only then are those
+    /// values staged and the change committed. A refusal anywhere, an interior block's included, rejects the change
+    /// whole, and the values in force stand. An interior block's settingsChanged names the keys that moved, and a
+    /// block whose bindings all held their value is not staged at all.
     [[nodiscard]] std::expected<void, Error> applyRecipeParameters(const property_map& changed) {
-        if (_recipeBindings == nullptr) {
-            return std::unexpected(Error("no recipe bindings attached"));
+        auto derivation = deriveRecipeChange(changed);
+        if (!derivation.has_value()) {
+            return std::unexpected(derivation.error());
         }
-        recipe::AttachedBindings& attached = *_recipeBindings;
-        std::vector<pmt::Value>   trial    = attached.values;
-        for (const auto& [name, value] : changed) {
-            bool declared = false;
-            for (std::size_t index = 0; index < attached.declarations.size(); ++index) {
-                if (std::string_view(attached.declarations[index].name) == std::string_view(name)) {
-                    auto held = recipe::heldValue(attached.declarations[index], value);
-                    if (!held.has_value()) {
-                        return std::unexpected(held.error());
-                    }
-                    trial[index] = std::move(*held);
-                    declared     = true;
-                    break;
-                }
-            }
-            if (!declared) {
-                return std::unexpected(Error(std::format("recipe_unknown_parameter: '{}'", recipe::detail::printableEcho(name))));
-            }
-        }
-        struct StagedTarget {
-            BlockModel*  block;
-            property_map derived;
-        };
-        std::vector<StagedTarget> staged;
-        if (attached.lastStaged.size() != attached.bindings.size()) {
-            attached.lastStaged.assign(attached.bindings.size(), std::nullopt);
-        }
-        std::vector<std::optional<pmt::Value>> derivedNow;
-        derivedNow.reserve(attached.bindings.size());
-        for (std::size_t index = 0; index < attached.bindings.size(); ++index) {
-            const recipe::Binding& binding = attached.bindings[index];
-            auto                   result  = recipe::bindingValue(binding, std::span<const pmt::Value>(trial));
-            if (!result.has_value()) {
-                return std::unexpected(result.error());
-            }
-            auto target = resolveRecipeTarget(binding.namePath);
-            if (!target.has_value()) {
-                return std::unexpected(target.error());
-            }
-            derivedNow.push_back(*result);
-            const std::optional<pmt::Value>& last = attached.lastStaged[index];
-            if (last.has_value() && recipe::derivedValuesAgree(*last, *result)) {
-                continue;
-            }
-            auto existing = std::ranges::find_if(staged, [&](const StagedTarget& entry) { return entry.block == *target; });
-            if (existing == staged.end()) {
-                staged.push_back({.block = *target, .derived = {}});
-                existing = std::prev(staged.end());
-            }
-            existing->derived[convert_string_domain(binding.settingKey)] = std::move(*result);
-        }
-        for (auto& [interiorBlock, derived] : staged) {
+        for (auto& [interiorBlock, derived] : derivation->moved) {
             if (property_map notSet = interiorBlock->settings().setStaged(derived); !notSet.empty()) {
                 return std::unexpected(Error("recipe_expression_conversion: an interior block refused a derived staged setting"));
             }
         }
-        // recorded only once every target accepted: a refusal part-way leaves the record on the
-        // last committed values, so the next change restages what this one may have applied
-        attached.lastStaged = std::move(derivedNow);
-        attached.values     = std::move(trial);
+        recipe::AttachedBindings& attached = *_recipeBindings;
+        attached.lastStaged                = std::move(derivation->derived);
+        attached.values                    = std::move(derivation->values);
         return {};
     }
 
@@ -445,6 +400,68 @@ public:
 
 private:
     std::unique_ptr<recipe::AttachedBindings> _recipeBindings;
+
+    struct RecipeTarget {
+        BlockModel*  block;
+        property_map derived; // the derived values that moved, by setting key
+    };
+
+    /// One change of exported parameters, evaluated and checked, and not yet applied.
+    struct RecipeDerivation {
+        property_map                           change;  // the changed parameters in their declared types
+        std::vector<pmt::Value>                values;  // every parameter's value, the change overlaid
+        std::vector<std::optional<pmt::Value>> derived; // each binding's value, aligned with the bindings
+        std::vector<RecipeTarget>              moved;
+    };
+
+    [[nodiscard]] std::expected<RecipeDerivation, Error> deriveRecipeChange(const property_map& changed) {
+        if (_recipeBindings == nullptr) {
+            return std::unexpected(Error("no recipe bindings attached"));
+        }
+        const recipe::AttachedBindings& attached = *_recipeBindings;
+        RecipeDerivation                derivation{.change = {}, .values = attached.values, .derived = {}, .moved = {}};
+        for (const auto& [name, value] : changed) {
+            const auto declaration = std::ranges::find_if(attached.declarations, [&name](const recipe::ParameterDeclaration& entry) { return std::string_view(entry.name) == std::string_view(name); });
+            if (declaration == attached.declarations.end()) {
+                return std::unexpected(Error(std::format("recipe_unknown_parameter: '{}'", recipe::detail::printableEcho(name))));
+            }
+            auto held = recipe::heldValue(*declaration, value);
+            if (!held.has_value()) {
+                return std::unexpected(held.error());
+            }
+            derivation.change.insert_or_assign(name, *held);
+            derivation.values[static_cast<std::size_t>(std::distance(attached.declarations.begin(), declaration))] = std::move(*held);
+        }
+        derivation.derived.reserve(attached.bindings.size());
+        for (std::size_t index = 0; index < attached.bindings.size(); ++index) {
+            const recipe::Binding& binding = attached.bindings[index];
+            auto                   result  = recipe::bindingValue(binding, std::span<const pmt::Value>(derivation.values));
+            if (!result.has_value()) {
+                return std::unexpected(result.error());
+            }
+            auto target = resolveRecipeTarget(binding.namePath);
+            if (!target.has_value()) {
+                return std::unexpected(target.error());
+            }
+            derivation.derived.emplace_back(*result);
+            // the record holds what the last committed change staged; a first change finds none and stages every key
+            if (index < attached.lastStaged.size() && attached.lastStaged[index].has_value() && recipe::derivedValuesAgree(*attached.lastStaged[index], *result)) {
+                continue;
+            }
+            auto existing = std::ranges::find(derivation.moved, *target, &RecipeTarget::block);
+            if (existing == derivation.moved.end()) {
+                derivation.moved.push_back({.block = *target, .derived = {}});
+                existing = std::prev(derivation.moved.end());
+            }
+            existing->derived.insert_or_assign(convert_string_domain(binding.settingKey), std::move(*result));
+        }
+        for (const auto& [interiorBlock, derived] : derivation.moved) {
+            if (std::optional<std::string> refusal = interiorBlock->settings().checkStaged(derived)) {
+                return std::unexpected(Error(std::format("recipe_expression_conversion: interior block '{}' refuses a derived value: {}", recipe::detail::printableEcho(interiorBlock->name()), *refusal)));
+            }
+        }
+        return derivation;
+    }
 
     // templated on the graph type so the body is checked at instantiation, where gr::Graph is
     // complete — this header defines GraphWrapper ahead of Graph itself

@@ -480,14 +480,18 @@ struct BlockDescriptor {
  * @brief Settings one block instance declares at run time beside its type's reflected members.
  *
  * Such parameters belong to no block type: their names are known once the instance exists, as when a document declares
- * them. The owner names them, applies a change to them and reads the values in force. `apply` receives the declared
- * keys of one change together and returns the reason it refuses them, or nothing when the whole change is in force.
+ * them. The owner names them and supplies three functions, each taking the declared keys of one change together.
+ * `check` returns the change in the parameters' own types, or the reason `apply` would refuse it, and changes nothing.
+ * `apply` puts the change in force and returns the reason it refuses it, or nothing when the whole change is in force.
+ * `read` writes the values in force into a map.
  */
 struct DeclaredParameters {
+    using Checker = std::function<std::expected<property_map, std::string>(const property_map& changed)>;
     using Applier = std::function<std::optional<std::string>(const property_map& changed)>;
     using Reader  = std::function<void(property_map& parameters)>;
 
     std::set<std::string> names;
+    Checker               check;
     Applier               apply;
     Reader                read;
 };
@@ -716,6 +720,14 @@ struct SettingsBase {
      */
     [[nodiscard]] virtual property_map setStaged(const property_map& parameters) = 0;
 
+    /**
+     * @brief the reason setStaged() would refuse `parameters`, or nothing when setStaged() would take every key
+     *
+     * The check converts each value as setStaged() does and leaves the staged parameters as they are. A key that
+     * setStaged() would return unset counts as a refusal.
+     */
+    [[nodiscard]] virtual std::optional<std::string> checkStaged(const property_map& parameters) const = 0;
+
     virtual void storeDefaults() = 0;
     virtual void resetDefaults() = 0;
 
@@ -906,8 +918,9 @@ public:
 
     [[nodiscard]] std::set<std::string> autoUpdateParameters(SettingsCtx ctx = {}) noexcept override;
 
-    [[nodiscard]] property_map set(const property_map& parameters, SettingsCtx ctx = {}) override;
-    [[nodiscard]] property_map setStaged(const property_map& parameters) override;
+    [[nodiscard]] property_map               set(const property_map& parameters, SettingsCtx ctx = {}) override;
+    [[nodiscard]] property_map               setStaged(const property_map& parameters) override;
+    [[nodiscard]] std::optional<std::string> checkStaged(const property_map& parameters) const override;
 
     void storeDefaults() override;
     void resetDefaults() override;
@@ -929,10 +942,11 @@ public:
     /**
      * @brief takes parameters this instance declares beside its type's reflected members
      *
-     * A declared parameter is listed by writableMembers(), read by get() and accepted by set(), setStaged() and
-     * loadParametersFromPropertyMap() like a writable member. A staged change to one applies when it is staged, through
-     * `apply`, and never waits for a work() call. A change `apply` refuses throws with its reason, and the value in
-     * force stands. The values in force at the call become the defaults. Declare before the block runs:
+     * writableMembers() lists a declared parameter and get() reads it. set() and loadParametersFromPropertyMap() check a
+     * change to one through `check` and store it in the parameter's own type. setStaged() and an activation apply a
+     * change through `apply` when it is staged, before any member of the same call is staged. A refusal on any of these
+     * paths throws `gr::exception` with its reason, as a member's bad value throws, and the call leaves nothing stored
+     * or staged. The values in force at the call become the defaults. Declare before the block runs:
      * writableMembers() is read without the lock.
      */
     void declareParameters(settings::DeclaredParameters parameters);

@@ -26,8 +26,9 @@ struct MinimalSettings : gr::SettingsBase {
     void setInitBlockParameters(const gr::property_map&) override {}
     void init() override {}
 
-    [[nodiscard]] gr::property_map set(const gr::property_map&, gr::SettingsCtx) override { return {}; }
-    [[nodiscard]] gr::property_map setStaged(const gr::property_map&) override { return {}; }
+    [[nodiscard]] gr::property_map           set(const gr::property_map&, gr::SettingsCtx) override { return {}; }
+    [[nodiscard]] gr::property_map           setStaged(const gr::property_map&) override { return {}; }
+    [[nodiscard]] std::optional<std::string> checkStaged(const gr::property_map&) const override { return std::nullopt; }
 
     void storeDefaults() override {}
     void resetDefaults() override {}
@@ -76,6 +77,7 @@ const boost::ut::suite<"an out-of-tree SettingsBase implementation"> settingsBas
         expect(base.stagedParameters().empty());
         expect(base.defaultParameters().empty());
         expect(base.activeParameters().empty());
+        expect(!base.checkStaged({}).has_value());
 
         base.addAutoForwardParameters({"gain"});
         expect(base.autoForwardParameters().contains("gain")) << "the mutator did not reach the implementation";
