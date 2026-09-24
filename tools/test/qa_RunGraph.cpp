@@ -227,6 +227,31 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         expect(underived.output.contains("recipe_expression_conversion")) << "the refusal names the recipe's reason" << underived.output;
     };
 
+    "a value that does not convert is refused by its reason alone, without the source location of the refusal"_test = [] {
+        const Result schedulerRefused = run({"--graph", "unread.yaml", "--set", "timeout_ms=many"});
+        expect(eq(schedulerRefused.exitCode, 2)) << schedulerRefused.output;
+        expect(schedulerRefused.output.contains("a scheduler setting could not be applied")) << schedulerRefused.output;
+        expect(!schedulerRefused.output.contains(".cpp:") && !schedulerRefused.output.contains(".hpp:")) << "a scheduler setting's refusal names no file and line of the library" << schedulerRefused.output;
+
+        std::vector<std::string> member = settingsChainRun();
+        member.emplace_back("-s");
+        member.emplace_back("source.event_count=many");
+
+        const Result memberRefused = run(member);
+        expect(eq(memberRefused.exitCode, 1)) << memberRefused.output;
+        expect(memberRefused.output.contains("the settings of block source could not be applied")) << memberRefused.output;
+        expect(!memberRefused.output.contains(".cpp:") && !memberRefused.output.contains(".hpp:")) << "a member's refusal names no file and line of the library" << memberRefused.output;
+
+        std::vector<std::string> parameter = recipeChainRun();
+        parameter.emplace_back("-s");
+        parameter.emplace_back("counted.count=many");
+
+        const Result parameterRefused = run(parameter);
+        expect(eq(parameterRefused.exitCode, 1)) << parameterRefused.output;
+        expect(parameterRefused.output.contains("the settings of block counted could not be applied")) << parameterRefused.output;
+        expect(!parameterRefused.output.contains(".cpp:") && !parameterRefused.output.contains(".hpp:")) << "nor does an exported parameter's" << parameterRefused.output;
+    };
+
     "a block name the graph does not hold is refused"_test = [] {
         std::vector<std::string> arguments = boundedRun();
         arguments.emplace_back("--show");

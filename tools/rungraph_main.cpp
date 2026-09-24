@@ -300,6 +300,15 @@ struct StagedSettings {
     return staged;
 }
 
+// The reason a refused setting gives. gr::exception::what() appends the source location of the throw, a path on the
+// machine that built the library, and the reader is given the message alone.
+[[nodiscard]] std::string_view reasonOf(const std::exception& error) {
+    if (const auto* refusal = dynamic_cast<const gr::exception*>(&error); refusal != nullptr) {
+        return refusal->message;
+    }
+    return error.what();
+}
+
 // Applies the settings to the scheduler, before the graph reaches it.
 //
 // The name is checked against the settings the scheduler declares first: a key outside that set is filed as meta
@@ -318,7 +327,7 @@ struct StagedSettings {
             return false;
         }
     } catch (const std::exception& error) {
-        std::println(stderr, "{}: a scheduler setting could not be applied: {}", kProgram, error.what());
+        std::println(stderr, "{}: a scheduler setting could not be applied: {}", kProgram, reasonOf(error));
         return false;
     }
     std::ignore = scheduler.settings().activateContext();
@@ -369,7 +378,7 @@ struct StagedSettings {
                 return false;
             }
         } catch (const std::exception& error) {
-            std::println(stderr, "{}: the settings of block {} could not be applied: {}", kProgram, name, error.what());
+            std::println(stderr, "{}: the settings of block {} could not be applied: {}", kProgram, name, reasonOf(error));
             return false;
         }
     }
