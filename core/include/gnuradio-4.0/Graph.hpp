@@ -738,20 +738,27 @@ public:
             return std::unexpected(Error(std::format("No edge from {}.{} in {}", sourceBlock, sourcePort, this->unique_name)));
         }
 
-        if (auto result = sourcePortRef.disconnect(); !result) {
-            return std::unexpected(Error(std::format("Block {} sourcePortRef could not be disconnected {}: {}", sourceBlock, this->unique_name, result.error().message)));
+        // Only a connected edge on a connected port holds a reader. Any other matching record is erased alone,
+        // and the port's connected readers keep their buffer.
+        const bool holdsReader = sourcePortRef.isConnected() && std::ranges::any_of(_edges, [&](const Edge& edge) { return isRequestedEdge(edge) && edge.state() != Edge::EdgeState::WaitingToBeConnected; });
+        if (holdsReader) {
+            if (auto result = sourcePortRef.disconnect(); !result) {
+                return std::unexpected(Error(std::format("Block {} sourcePortRef could not be disconnected {}: {}", sourceBlock, this->unique_name, result.error().message)));
+            }
         }
 
         const auto [first, last] = std::ranges::remove_if(_edges, isRequestedEdge);
         const auto nRemoved      = static_cast<std::size_t>(std::ranges::distance(first, last));
         _edges.erase(first, last);
 
-        for (auto& edge : _edges) { // siblings lost their buffer with the port teardown
-            if (sharesSourcePort(edge)) {
-                edge._state = Edge::EdgeState::WaitingToBeConnected;
+        if (holdsReader) {
+            for (auto& edge : _edges) { // siblings lost their buffer with the port teardown
+                if (sharesSourcePort(edge)) {
+                    edge._state = Edge::EdgeState::WaitingToBeConnected;
+                }
             }
+            std::ignore = connectPendingEdges();
         }
-        std::ignore = connectPendingEdges();
 
         return nRemoved;
     }
