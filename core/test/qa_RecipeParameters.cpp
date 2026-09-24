@@ -1,6 +1,8 @@
 #include <boost/ut.hpp>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <numbers>
@@ -678,6 +680,86 @@ blocks:
     return it == settings.end() ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(gr::recipe::detail::doubleOf(it->second).value_or(std::numeric_limits<double>::quiet_NaN()));
 }
 
+/**
+ * A definitions root holding one recipe, `qa::HalvingRecipe`, written to a temporary directory.
+ *
+ * Its one exported parameter, `level`, has no default and is therefore required, and its interior block `inner`
+ * derives `gain = 1000 / level`. A recipe reaches another recipe's interior only by its registry name, so this one is
+ * read through a loader's definition roots.
+ */
+struct HalvingRecipeRoot {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / "gr4_qa_recipe_parameters_nested";
+
+    HalvingRecipeRoot() {
+        std::filesystem::remove_all(path);
+        std::filesystem::create_directories(path);
+        std::ofstream index(path / "index.yaml");
+        index << "assets:\n  - file: halving_recipe.yaml\n    created: \"2024-01-01-00:00:00\"\n    modified: \"2024-01-15-10:00:00\"\n    block_type: qa::HalvingRecipe\n";
+        std::ofstream asset(path / "halving_recipe.yaml");
+        asset << R"yaml(definition_metadata:
+  block_type: qa::HalvingRecipe
+blocks:
+  - id: SUBGRAPH
+    parameters:
+      name: halving
+    exported_parameters:
+      - name: level
+        type: float32
+    graph:
+      blocks:
+        - id: "qa::RecipeScale"
+          parameters:
+            name: inner
+            gain: "=1000 / level"
+      exported_ports:
+        - [inner, INPUT, in, in]
+        - [inner, OUTPUT, out, out]
+)yaml";
+    }
+
+    HalvingRecipeRoot(const HalvingRecipeRoot&)            = delete;
+    HalvingRecipeRoot& operator=(const HalvingRecipeRoot&) = delete;
+
+    ~HalvingRecipeRoot() { std::filesystem::remove_all(path); }
+};
+
+/// a recipe whose interior holds a plain block and the recipe `qa::HalvingRecipe`, each deriving a value from `rate`
+constexpr std::string_view kNestingRecipe = R"yaml(
+blocks:
+  - id: SUBGRAPH
+    parameters:
+      name: nesting
+    exported_parameters:
+      - name: rate
+        type: float32
+    graph:
+      blocks:
+        - id: "qa::RecipeScale"
+          parameters:
+            name: first
+            gain: "=rate"
+        - id: "qa::HalvingRecipe"
+          parameters:
+            name: stage
+            level: "=rate - 1000"
+      exported_ports:
+        - [first, INPUT, in, in]
+        - [first, OUTPUT, out, out]
+)yaml";
+
+/// the nesting fixture at `rate`, built through a loader that reads `root`; the loader outlives the composite
+[[nodiscard]] std::shared_ptr<gr::BlockModel> nestingComposite(gr::PluginLoader& loader, float rate) {
+    registerRecipeTestBlock();
+    const auto composite = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kNestingRecipe), {{"rate", rate}});
+    expect(composite.has_value()) << (composite.has_value() ? "" : composite.error().message);
+    return composite.has_value() ? *composite : nullptr;
+}
+
+[[nodiscard]] gr::PluginLoader nestingLoader(const HalvingRecipeRoot& root) {
+    static gr::SchedulerRegistry schedulerRegistry;
+    return gr::PluginLoader(gr::globalBlockRegistry(), schedulerRegistry, std::vector<std::string>{root.path.string()});
+}
+
 /// the message of the gr::exception `call` throws, empty when it throws none
 template<typename TCall>
 [[nodiscard]] std::string refusalOf(TCall&& call) {
@@ -1208,6 +1290,25 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         }
         const auto fractional = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kTwoTargetsRecipe), {{"level", 4.5}});
         expect(!fractional.has_value()) << "a fraction for an int32 parameter is refused, as the literal path refuses it";
+    };
+
+    "a recipe inside a recipe re-derives its own interior when the outer parameter changes"_test = [] {
+        const HalvingRecipeRoot root;
+        auto                    loader    = nestingLoader(root);
+        const auto              composite = nestingComposite(loader, 2000.0f);
+        const auto              first     = composite == nullptr ? nullptr : interiorBlockNamed(composite, "first");
+        const auto              stage     = composite == nullptr ? nullptr : interiorBlockNamed(composite, "stage");
+        const auto              innermost = stage == nullptr ? nullptr : interiorBlockNamed(stage, "inner");
+        if (first == nullptr || innermost == nullptr) {
+            return;
+        }
+        expect(eq(readNumber(stage->settings().get(), "level"), 1000.0f)) << "the inner recipe was built from the outer's derived value";
+        expect(eq(readNumber(innermost->settings().get(), "gain"), 1.0f)) << "and derived its own interior from it";
+
+        expect(composite->settings().setStaged({{"rate", 3000.0f}}).empty());
+        expect(eq(readNumber(stage->settings().get(), "level"), 2000.0f)) << "the outer binding reached the inner recipe's exported parameter";
+        expect(eq(stagedNumber(innermost, "gain"), 0.5f)) << "and the inner recipe re-derived its interior from it";
+        expect(eq(stagedNumber(first, "gain"), 3000.0f)) << "beside the outer's own interior block";
     };
 };
 
