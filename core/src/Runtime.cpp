@@ -183,23 +183,30 @@ struct Runtime::Impl {
 
     std::mutex                        runMutex; // guards the members below
     std::condition_variable           runEnded;
-    std::thread                       runThread; // start()'s run; joined by the next start() and the destructor
-    std::uint64_t                     nRunsStarted = 0ULL;
-    std::uint64_t                     nRunsEnded   = 0ULL;
-    std::expected<void, RuntimeError> lastResult; // of the last run that ended, success before the first
+    std::thread                       runThread;  // start()'s run; joined by the next start() and the destructor
+    std::thread                       stopThread; // a run's stop request; joined by the next request and the destructor
+    std::uint64_t                     nRunsStarted   = 0ULL;
+    std::uint64_t                     nRunsReturned  = 0ULL; // runs whose scheduler call has returned
+    std::uint64_t                     nRunsEnded     = 0ULL;
+    std::uint64_t                     stoppedRun     = 0ULL;  // the last run whose stop was requested, 0 for none
+    bool                              requestingStop = false; // a stop request has not returned
+    std::expected<void, RuntimeError> lastResult;             // of the last run that ended, success before the first
 
     static constexpr std::size_t kMaxPendingEvents = 1024UZ;
 
-    static constexpr std::chrono::milliseconds kStopPollInterval{10}; // stopRun() reads the scheduler's state this often
+    static constexpr std::chrono::milliseconds kStopPollInterval{10}; // requestStop() reads the scheduler's state this often
 
     Impl()                       = default;
     Impl(const Impl&)            = delete;
     Impl& operator=(const Impl&) = delete;
 
     ~Impl() {
-        stopRun();
+        std::ignore = stopRun(std::nullopt);
         if (runThread.joinable()) {
             runThread.join();
+        }
+        if (stopThread.joinable()) {
+            stopThread.join();
         }
     }
 
@@ -224,30 +231,65 @@ struct Runtime::Impl {
         return result;
     }
 
+    // A run ends once its scheduler call has returned and a stop request made of it has returned, so that no block of
+    // the run is still inside its stop() when the next run starts.
     void endRun(std::expected<void, RuntimeError> result) {
-        std::lock_guard lock(runMutex);
+        std::unique_lock lock(runMutex);
+        ++nRunsReturned;
+        runEnded.notify_all();
+        runEnded.wait(lock, [this] { return !requestingStop; });
         lastResult = std::move(result);
         ++nRunsEnded;
         runEnded.notify_all();
     }
 
-    // Requests the stop of the run in progress and returns once that run has ended. The stop is requested once the
-    // scheduler is active. Until then it reads the state the run before it left, or a state runAndWait() passes on
-    // its way to RUNNING. A transition to REQUESTED_STOP from STOPPED has no effect, and from a state before RUNNING
-    // it can collide with the run's own transition. The request is the transition alone: the scheduler's stop()
-    // moves a scheduler that refuses it to ERROR.
-    void stopRun() {
+    // Requests the stop of the run in progress, once for each run, and waits until that run has ended, for at most
+    // `timeout` when one is given. Returns whether the run has ended. The request runs on stopThread, where a block's
+    // slow stop() holds up that thread and not the caller. When the thread cannot start, the caller makes the request.
+    [[nodiscard]] bool stopRun(std::optional<std::chrono::nanoseconds> timeout) {
         std::unique_lock    lock(runMutex);
         const std::uint64_t run   = nRunsStarted;
         const auto          ended = [this, run] { return nRunsEnded >= run; };
-        while (!ended()) {
+        if (!ended() && stoppedRun != run) {
+            stoppedRun     = run;
+            requestingStop = true;
+            if (stopThread.joinable()) { // the thread of an earlier run's request, which takes runMutex no more
+                stopThread.join();
+            }
+            try {
+                stopThread = std::thread([this, run] {
+                    std::unique_lock threadLock(runMutex);
+                    requestStop(threadLock, run);
+                });
+            } catch (const std::system_error&) {
+                requestStop(lock, run);
+            }
+        }
+        if (!timeout.has_value()) {
+            runEnded.wait(lock, ended);
+            return true;
+        }
+        return runEnded.wait_for(lock, *timeout, ended);
+    }
+
+    // Requests the stop of run `run` once the scheduler is active, unless the run's scheduler call returns first. Until
+    // then it reads the state the run before it left, or a state runAndWait() passes on its way to RUNNING. A
+    // transition to REQUESTED_STOP from STOPPED has no effect, and from a state before RUNNING it can collide with the
+    // run's own transition. The request is the transition alone: the scheduler's stop() moves a scheduler that
+    // refuses it to ERROR. `lock` holds runMutex and releases it during the transition.
+    void requestStop(std::unique_lock<std::mutex>& lock, std::uint64_t run) {
+        const auto returned = [this, run] { return nRunsReturned >= run; };
+        while (!returned()) {
             if (lifecycle::isActive(schedulerBlock->state())) {
                 lock.unlock();
                 std::ignore = schedulerBlock->changeStateTo(lifecycle::State::REQUESTED_STOP);
                 lock.lock();
+                break;
             }
-            std::ignore = runEnded.wait_for(lock, kStopPollInterval, ended);
+            std::ignore = runEnded.wait_for(lock, kStopPollInterval, returned);
         }
+        requestingStop = false;
+        runEnded.notify_all();
     }
 
     void drain() {
@@ -717,6 +759,7 @@ std::optional<RuntimeError> Runtime::start() {
         impl.runThread = std::thread([&impl] { impl.endRun(impl.runToEnd("Runtime::start")); });
     } catch (const std::system_error& error) {
         impl.lastResult = std::unexpected(localError(std::format("the run's thread did not start: {}", error.what()), where));
+        ++impl.nRunsReturned;
         ++impl.nRunsEnded;
         return impl.lastResult.error();
     }
@@ -725,8 +768,15 @@ std::optional<RuntimeError> Runtime::start() {
 
 void Runtime::stop() {
     if (_impl) {
-        _impl->stopRun();
+        std::ignore = _impl->stopRun(std::nullopt);
     }
+}
+
+bool Runtime::stopFor(std::chrono::nanoseconds timeout) {
+    if (!_impl) {
+        return true;
+    }
+    return _impl->stopRun(timeout);
 }
 
 bool Runtime::busy() const {
