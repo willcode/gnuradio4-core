@@ -667,7 +667,7 @@ blocks:
 /// the fixture's discriminator gain at one parameter point, in the interior member's own type
 [[nodiscard]] float derivedGain(double sampleRate, double deviation) { return static_cast<float>(sampleRate / (2.0 * std::numbers::pi * deviation)); }
 
-/// a numeric value staged on `block` under `key`, NaN when none is staged, so a missing key fails every comparison
+/// a numeric value staged on `block` under `key`, NaN when none is staged; a missing key fails every comparison
 [[nodiscard]] float stagedNumber(const std::shared_ptr<gr::BlockModel>& block, std::string_view key) {
     const gr::property_map staged = block->settings().stagedParameters();
     const auto             it     = staged.find(std::pmr::string(key));
@@ -684,8 +684,8 @@ blocks:
  * A definitions root holding one recipe, `qa::HalvingRecipe`, written to a temporary directory.
  *
  * Its one exported parameter, `level`, has no default and is therefore required, and its interior block `inner`
- * derives `gain = 1000 / level`. A recipe reaches another recipe's interior only by its registry name, so this one is
- * read through a loader's definition roots.
+ * derives `gain = 1000 / level`. A recipe reaches another recipe's interior only by its registry name, and a loader
+ * reads this one from its definition roots.
  */
 struct HalvingRecipeRoot {
     std::filesystem::path path = std::filesystem::temp_directory_path() / "gr4_qa_recipe_parameters_nested";
@@ -1185,7 +1185,7 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         };
         gr::SettingsBase& settings = (*composite)->settings();
 
-        // the first application after a load stages every bound key, so it is settled before anything is counted
+        // the first application after a load stages every bound key; the case settles it before it counts anything
         std::ignore = settings.setStaged({{"level", 1.0f}});
         applyInterior();
         recipeWatches().clear();

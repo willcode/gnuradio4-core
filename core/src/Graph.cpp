@@ -57,8 +57,8 @@ std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::strin
         }
         if (*instantiated) {
             const std::shared_ptr<BlockModel>& newBlock = addBlock(*instantiated);
-            // a composite has no setting of `name` any more than of an exported parameter, so the
-            // label is applied the way the reader applies a file's
+            // the label takes setName(), as the reader applies a file's label; the exported parameters are in
+            // force from the instantiation, and the remaining keys load as settings
             if (!blockName.empty()) {
                 newBlock->setName(std::string(blockName));
             }

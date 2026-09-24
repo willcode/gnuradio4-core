@@ -315,9 +315,9 @@ inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGrap
             }
 
             // a recipe derives its interior from its exported parameters when the composite is
-            // built, so they travel with the instantiation and leave the settings map; every other
-            // key takes the settings path it always took. A block that is not a definition
-            // declares none, so nothing is held back from it.
+            // built. The exported parameters travel with the instantiation and leave the settings
+            // map, and every other key takes the ordinary settings path. A block that is not a
+            // definition exports no parameter and keeps its whole map.
             const auto split = splitRecipeParameters(loader, blockType, std::move(blockParameters));
 
             // no `version` key means the newest registered version

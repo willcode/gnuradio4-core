@@ -335,11 +335,11 @@ public:
     [[nodiscard]] gr::property_map exportedInputPorts() final { return exportedPortsFor(_exportedInputPortsForBlock); }
     [[nodiscard]] gr::property_map exportedOutputPorts() final { return exportedPortsFor(_exportedOutputPortsForBlock); }
 
-    /// Attaches a recipe's live parameter machinery: the composite's exported parameters join
-    /// the composite's own settings, so every caller that lists, reads, sets or stages a block's
-    /// settings reaches them, and a change re-evaluates the recipe's expressions and stages the
-    /// derived values onto the interior blocks. Every binding target must resolve now, so a
-    /// broken recipe refuses at attach rather than at its first live change.
+    /// Attaches a recipe's live parameter machinery. The composite's exported parameters join its
+    /// own settings, and every caller that lists, reads, sets or stages a block's settings reaches
+    /// them. A change re-evaluates the recipe's expressions and stages the derived values onto the
+    /// interior blocks. Every binding target resolves here: a recipe with a broken target is
+    /// refused at attach, before its first live change.
     [[nodiscard]] std::expected<void, Error> attachRecipeBindings(recipe::AttachedBindings bindings) {
         for (const auto& binding : bindings.bindings) {
             if (auto target = resolveRecipeTarget(binding.namePath); !target.has_value()) {
@@ -376,10 +376,10 @@ public:
     }
 
     /// Applies one change of exported parameters. Every binding is evaluated against the values in force with the
-    /// change overlaid, and every interior block checks the derived values that moved for it. Only then are those
-    /// values staged and the change committed. A refusal anywhere, an interior block's included, rejects the change
-    /// whole, and the values in force stand. An interior block's settingsChanged names the keys that moved, and a
-    /// block whose bindings all held their value is not staged at all.
+    /// change overlaid, and every interior block checks the derived values that moved for it. The derived values are
+    /// staged, and the change committed, after every check passes. A refusal anywhere, an interior block's included,
+    /// rejects the change whole, and the values in force stand. An interior block's settingsChanged names the keys that
+    /// moved, and a block whose bindings all held their value is not staged at all.
     [[nodiscard]] std::expected<void, Error> applyRecipeParameters(const property_map& changed) {
         auto derivation = deriveRecipeChange(changed);
         if (!derivation.has_value()) {
