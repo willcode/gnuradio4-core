@@ -384,7 +384,11 @@ public:
             bool declared = false;
             for (std::size_t index = 0; index < attached.declarations.size(); ++index) {
                 if (std::string_view(attached.declarations[index].name) == std::string_view(name)) {
-                    trial[index] = value;
+                    auto held = recipe::heldValue(attached.declarations[index], value);
+                    if (!held.has_value()) {
+                        return std::unexpected(held.error());
+                    }
+                    trial[index] = std::move(*held);
                     declared     = true;
                     break;
                 }

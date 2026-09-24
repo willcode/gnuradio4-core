@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <gnuradio-4.0/Message.hpp>
+#include <gnuradio-4.0/Settings.hpp>
 #include <gnuradio-4.0/Tag.hpp>
 
 namespace gr::recipe {
@@ -599,8 +600,68 @@ namespace detail {
     return {};
 }
 
-/// Overlays supplied values on declared defaults. Unknown names are refused by name; missing
-/// required parameters are refused together, all named in one error.
+namespace detail {
+
+template<typename T>
+[[nodiscard]] std::expected<pmt::Value, std::string> heldAs(bool sequence, std::string_view name, const pmt::Value& value) {
+    if (sequence) {
+        auto converted = gr::settings::convertParameter<std::vector<T>>(name, value);
+        if (!converted.has_value()) {
+            return std::unexpected(converted.error());
+        }
+        return pmt::Value(gr::detail::collectionToTensor(*converted));
+    }
+    auto converted = gr::settings::convertParameter<T>(name, value);
+    if (!converted.has_value()) {
+        return std::unexpected(converted.error());
+    }
+    return pmt::Value(std::move(*converted));
+}
+
+} // namespace detail
+
+/// A parameter's value in the parameter's declared type. The value converts as a block setting of that type converts
+/// one, with the same refusals, and a refusal names the parameter.
+[[nodiscard]] inline std::expected<pmt::Value, gr::Error> heldValue(const ParameterDeclaration& declaration, const pmt::Value& value) {
+    const std::string_view type     = declaration.type;
+    const bool             sequence = detail::vectorTypeWord(type);
+    const std::string_view element  = sequence ? type.substr(0UZ, type.size() - 2UZ) : type;
+    const std::string_view name     = declaration.name;
+
+    std::expected<pmt::Value, std::string> held = std::unexpected(std::format("the type word {} names no settings type", type));
+    if (element == "bool") {
+        held = detail::heldAs<bool>(sequence, name, value);
+    } else if (element == "int8") {
+        held = detail::heldAs<std::int8_t>(sequence, name, value);
+    } else if (element == "int16") {
+        held = detail::heldAs<std::int16_t>(sequence, name, value);
+    } else if (element == "int32") {
+        held = detail::heldAs<std::int32_t>(sequence, name, value);
+    } else if (element == "int64") {
+        held = detail::heldAs<std::int64_t>(sequence, name, value);
+    } else if (element == "uint8") {
+        held = detail::heldAs<std::uint8_t>(sequence, name, value);
+    } else if (element == "uint16") {
+        held = detail::heldAs<std::uint16_t>(sequence, name, value);
+    } else if (element == "uint32") {
+        held = detail::heldAs<std::uint32_t>(sequence, name, value);
+    } else if (element == "uint64") {
+        held = detail::heldAs<std::uint64_t>(sequence, name, value);
+    } else if (element == "float32") {
+        held = detail::heldAs<float>(sequence, name, value);
+    } else if (element == "float64") {
+        held = detail::heldAs<double>(sequence, name, value);
+    } else if (element == "string") {
+        held = detail::heldAs<std::string>(sequence, name, value);
+    }
+    if (!held.has_value()) {
+        return std::unexpected(gr::Error(std::format("recipe_expression_conversion: parameter '{}' of type {} does not take the value: {}", detail::printableEcho(name), detail::printableEcho(type), detail::printableEcho(held.error()))));
+    }
+    return std::move(*held);
+}
+
+/// Overlays supplied values on declared defaults, each held in its parameter's declared type. Unknown names are
+/// refused by name; missing required parameters are refused together, all named in one error.
 [[nodiscard]] inline std::expected<std::vector<pmt::Value>, gr::Error> resolveParameters(std::span<const ParameterDeclaration> declarations, const property_map& supplied) {
     for (const auto& [name, value] : supplied) {
         const bool declared = std::ranges::any_of(declarations, [&](const ParameterDeclaration& declaration) { return std::string_view(declaration.name) == std::string_view(name); });
@@ -619,10 +680,12 @@ namespace detail {
                 break;
             }
         }
-        if (suppliedValue != nullptr) {
-            values.push_back(*suppliedValue);
-        } else if (declaration.defaultValue.has_value()) {
-            values.push_back(*declaration.defaultValue);
+        if (suppliedValue != nullptr || declaration.defaultValue.has_value()) {
+            auto held = heldValue(declaration, suppliedValue != nullptr ? *suppliedValue : *declaration.defaultValue);
+            if (!held.has_value()) {
+                return std::unexpected(held.error());
+            }
+            values.push_back(std::move(*held));
         } else {
             missing += missing.empty() ? declaration.name : (", " + declaration.name);
             values.emplace_back();
