@@ -481,10 +481,10 @@ inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGrap
         }
         const property_map* given = settingsByPosition[position];
 
-        // a recipe consumes its exported parameters when the composite is built and has no
-        // setting of their names afterwards, so they travel with the instantiation and leave
-        // the settings map; every other key takes the settings path it always took. A block
-        // that is not a definition declares none, so nothing is held back from it.
+        // a recipe derives its interior from its exported parameters when the composite is
+        // built, so they travel with the instantiation and leave the settings map; every other
+        // key takes the settings path it always took. A block that is not a definition
+        // declares none, so nothing is held back from it.
         const auto          split      = splitRecipeParameters(loader, blockType, mergedParameters(&fromFile, given));
         const property_map& parameters = split.remaining;
 

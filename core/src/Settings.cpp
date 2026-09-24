@@ -38,12 +38,15 @@ CtxSettingsBase::CtxSettingsBase(void* block, const settings::BlockDescriptor& d
 
 // --- Simple accessors ---
 
-const std::set<std::string>& CtxSettingsBase::writableMembers() const { return _descriptor->writableMembers; }
+const std::set<std::string>& CtxSettingsBase::writableMembers() const { return _declared != nullptr ? _declared->writableMembers : _descriptor->writableMembers; }
 
 std::set<std::string> CtxSettingsBase::readableMembers() const {
     std::set<std::string> names;
     for (const settings::MemberDescriptor* member : _descriptor->readableMembers) {
         names.emplace(member->name);
+    }
+    if (_declared != nullptr) {
+        names.insert(_declared->parameters.names.begin(), _declared->parameters.names.end());
     }
     return names;
 }
@@ -181,6 +184,27 @@ property_map CtxSettingsBase::setStaged(const property_map& parameters) {
     return setStagedImpl(parameters);
 }
 
+void CtxSettingsBase::declareParameters(settings::DeclaredParameters parameters) {
+    std::lock_guard       lg(_mutex);
+    std::set<std::string> writable = _descriptor->writableMembers;
+    writable.insert(parameters.names.begin(), parameters.names.end());
+    _declared = std::make_unique<DeclaredState>(DeclaredState{.parameters = std::move(parameters), .writableMembers = std::move(writable)});
+    _declared->parameters.read(_activeParameters);
+    _declared->parameters.read(_defaultParameters);
+}
+
+bool CtxSettingsBase::isDeclaredImpl(std::string_view key) const { return _declared != nullptr && _declared->parameters.names.contains(std::string(key)); }
+
+void CtxSettingsBase::applyDeclaredImpl(const property_map& changed) {
+    if (changed.empty()) {
+        return;
+    }
+    if (const std::optional<std::string> refusal = _declared->parameters.apply(changed)) {
+        throw gr::exception(*refusal);
+    }
+    _declared->parameters.read(_activeParameters);
+}
+
 // re-applying a value the block already holds must cost nothing, so it is never staged
 bool CtxSettingsBase::isActiveValueImpl(const std::pmr::string& key, const pmt::Value& value) const {
     const auto it = _activeParameters.find(key);
@@ -230,6 +254,18 @@ std::optional<SettingsCtx> CtxSettingsBase::activateContextImpl(SettingsCtx ctx)
         std::optional<property_map> _parameters = getBestMatchStoredParameters(ctx);
         if (_parameters) {
             auto& parameters = *_parameters;
+            if (_declared != nullptr) {
+                property_map declared;
+                for (auto it = parameters.begin(); it != parameters.end();) {
+                    if (isDeclaredImpl(it->first)) {
+                        declared.insert(*it);
+                        it = parameters.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                applyDeclaredImpl(declared);
+            }
             _stagedParameters.insert(parameters.begin(), parameters.end());
             _activeCtx = bestMatchSettingsCtx.value();
             // moving to another context is an event of its own: the next apply reports it whether or not the
@@ -602,6 +638,8 @@ property_map CtxSettingsBase::setImpl(const property_map& parameters, SettingsCt
                 if (auto autoIt = currentAutoUpdateParameters.find(std::string(key)); autoIt != currentAutoUpdateParameters.end()) {
                     currentAutoUpdateParameters.erase(autoIt);
                 }
+            } else if (isDeclaredImpl(key)) {
+                newParameters.insert_or_assign(key, value); // never in the auto-update set, so the activation stages it
             } else {
                 ret.insert_or_assign(key, value);
             }
@@ -621,6 +659,7 @@ property_map CtxSettingsBase::setImpl(const property_map& parameters, SettingsCt
 
 property_map CtxSettingsBase::setStagedImpl(const property_map& parameters) {
     property_map ret;
+    property_map declared;
     if (_descriptor->hooks.reflectable) {
         for (const auto& [key, value] : parameters) {
             auto it = _descriptor->writableByName.find(key);
@@ -631,11 +670,14 @@ property_map CtxSettingsBase::setStagedImpl(const property_map& parameters) {
                 if (const auto tagged = _taggedKeys.find(std::string_view(key)); tagged != _taggedKeys.end()) {
                     _taggedKeys.erase(tagged);
                 }
+            } else if (isDeclaredImpl(key)) {
+                declared.insert_or_assign(key, value);
             } else {
                 ret.insert_or_assign(key, value);
             }
         }
     }
+    applyDeclaredImpl(declared);
     if (!_stagedParameters.empty()) {
         setChanged(true);
     }
@@ -866,6 +908,9 @@ void CtxSettingsBase::updateActiveParametersImpl() noexcept {
     for (const settings::MemberDescriptor* member : _descriptor->readableMembers) {
         member->readParameter(member->address(_block), member->name, _activeParameters);
     }
+    if (_declared != nullptr) {
+        _declared->parameters.read(_activeParameters);
+    }
 }
 
 std::size_t CtxSettingsBase::updateActiveParameters(std::initializer_list<std::string_view> keys) noexcept {
@@ -889,6 +934,9 @@ void CtxSettingsBase::storeCurrentParameters(property_map& parameters) {
     }
     for (const settings::MemberDescriptor* member : _descriptor->readableMembers) {
         member->readParameter(member->address(_block), member->name, parameters);
+    }
+    if (_declared != nullptr) {
+        _declared->parameters.read(parameters);
     }
 }
 
@@ -918,7 +966,7 @@ void CtxSettingsBase::loadParametersFromPropertyMap(const property_map& paramete
     property_map    newProperties;
 
     for (const auto& [key, value] : parameters) {
-        if (_descriptor->writableByName.contains(key)) {
+        if (_descriptor->writableByName.contains(key) || isDeclaredImpl(key)) {
             newProperties[key] = value;
         } else {
             auto str = ctx.context.value_or(std::string_view{});
