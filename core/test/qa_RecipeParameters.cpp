@@ -1464,6 +1464,35 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         composite->processScheduledMessages();
         expect(takeMessages().empty()) << "each change is announced once";
     };
+
+    "the reply to a staged-settings Set names each key it set, an exported parameter included"_test = [] {
+        auto       loader    = recipeTestLoader();
+        const auto composite = parameterizedComposite(loader);
+        if (composite == nullptr) {
+            return;
+        }
+        gr::Graph&     graph = *composite->graph();
+        gr::MsgPortOut toComposite;
+        gr::MsgPortIn  fromComposite;
+        expect(graph.msgOut.connect(fromComposite).has_value());
+        expect(toComposite.connect(graph.msgIn).has_value());
+
+        gr::sendMessage<gr::message::Command::Set>(toComposite, "", gr::block::property::kStagedSetting, {{"deviation", 5000.0f}, {"name", std::string("renamed")}}, "request-1");
+        composite->processScheduledMessages();
+        expect(eq(fromComposite.streamReader().available(), 1UZ)) << "a Set with a request id is answered";
+        if (fromComposite.streamReader().available() != 1UZ) {
+            return;
+        }
+        gr::ReaderSpanLike auto replies = fromComposite.streamReader().get<gr::SpanReleasePolicy::ProcessAll>(1UZ);
+        const gr::Message       reply   = replies[0];
+        expect(replies.consume(replies.size()));
+        expect(reply.cmd == gr::message::Command::Final) << "the reply is final";
+        expect(reply.data.has_value()) << "the Set was taken";
+        if (reply.data.has_value()) {
+            expect(eq(readNumber(*reply.data, "deviation"), 5000.0f)) << "the reply names the exported parameter at its value in force";
+            expect(reply.data->contains("name")) << "and the framework setting, as staged";
+        }
+    };
 };
 
 int main() { /* not needed for ut */ }

@@ -1,5 +1,7 @@
 #include <gnuradio-4.0/Block.hpp>
 
+#include <ranges>
+
 namespace gr {
 
 void BlockBase::initStandardPropertyCallbacks() noexcept {
@@ -225,6 +227,16 @@ std::optional<Message> BlockBase::propertyCallbackStagedSettings(std::string_vie
 
         if (notSet.empty()) {
             if (!message.clientRequestID.empty()) {
+                // A parameter the instance declares applies when it is staged and never enters the staged map. The reply
+                // names it at its value in force.
+                for (const auto& key : std::views::keys(*message.data)) {
+                    if (stagedParameter.contains(key)) {
+                        continue;
+                    }
+                    if (std::optional<pmt::Value> inForce = cbSettings().get(std::string(key)); inForce.has_value()) {
+                        stagedParameter.insert_or_assign(key, std::move(*inForce));
+                    }
+                }
                 message.cmd  = Final;
                 message.data = std::move(stagedParameter);
                 return message;
