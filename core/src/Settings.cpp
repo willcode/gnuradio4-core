@@ -181,7 +181,7 @@ void CtxSettingsBase::declareParameters(settings::DeclaredParameters parameters)
     std::lock_guard       lg(_mutex);
     std::set<std::string> writable = _descriptor->writableMembers;
     writable.insert(parameters.names.begin(), parameters.names.end());
-    _declared = std::make_unique<DeclaredState>(DeclaredState{.parameters = std::move(parameters), .writableMembers = std::move(writable)});
+    _declared = std::make_unique<DeclaredState>(DeclaredState{.parameters = std::move(parameters), .writableMembers = std::move(writable), .applied = {}});
     _declared->parameters.read(_activeParameters);
     _declared->parameters.read(_defaultParameters);
     // every stored set and every auto-update set takes the declared parameters, as the first stored set takes every member
