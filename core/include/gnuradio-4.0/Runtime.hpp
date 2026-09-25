@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -188,6 +189,12 @@ public:
     /// RuntimeGraph owns. A document the reader refuses is an error carrying the reader's message. For a
     /// document that does not parse, the message is the reader's sentence headed by the line and column.
     [[nodiscard]] static std::expected<RuntimeGraph, RuntimeError> fromYaml(std::string_view document);
+
+    /// `fromYaml` with the caller's settings in place of the document's: each key names a block at the document's top
+    /// level by its unique name or name, and its values replace those of the block's parameters before the block reads
+    /// them, as `gr::loadGrc` with a `gr::BlockSettings` does. A name no block carries, a name two blocks share and a
+    /// key a block does not declare are errors.
+    [[nodiscard]] static std::expected<RuntimeGraph, RuntimeError> fromYaml(std::string_view document, const std::map<std::string, property_map, std::less<>>& overrides);
 
     /// Writes the graph as a graph document through `gr::saveGrc`, on an owning graph or a view. Call it
     /// only on a graph no scheduler is running. For a running graph, the reply to a `Get` on the

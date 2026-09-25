@@ -1008,6 +1008,24 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(sameTags(fromOriginal.tags, fromLoaded.tags)) << "the loaded graph changed the tag sequence";
     };
 
+    "settings given to fromYaml replace the document's, and a name no block carries is an error"_test = [] {
+        registerTestBlocks();
+        constexpr std::string_view document = "blocks:\n  - id: qa::Scale\n    parameters:\n      name: scale\n      gain: 3.0\n      label: from-the-document\n";
+
+        auto loaded = RuntimeGraph::fromYaml(document, {{"scale", {{"gain", 5.0f}}}});
+        expect(fatal(loaded.has_value())) << (loaded ? std::string{} : loaded.error().message);
+        const std::vector<BlockHandle> blocks = loaded->blocks();
+        expect(fatal(eq(blocks.size(), 1UZ)));
+        expect(blocks.front().get(std::string("gain")) == std::optional<pmt::Value>(5.0f));
+        expect(blocks.front().get(std::string("label")) == std::optional<pmt::Value>(std::string("from-the-document")));
+
+        std::optional<std::expected<RuntimeGraph, RuntimeError>> unknownName;
+        expect(nothrow([&] { unknownName.emplace(RuntimeGraph::fromYaml(document, {{"scal", {{"gain", 5.0f}}}})); }));
+        expect(fatal(unknownName.has_value() && !unknownName->has_value()));
+        expect(unknownName->error().message.contains("block 'scal'")) << unknownName->error().message;
+        expect(eq(unknownName->error().where, std::string("RuntimeGraph::fromYaml")));
+    };
+
     "a document the reader refuses is an error, never an exception"_test = [] {
         registerTestBlocks();
         using Loaded = std::expected<RuntimeGraph, RuntimeError>;

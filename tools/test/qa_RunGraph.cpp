@@ -113,6 +113,11 @@ constexpr std::string_view kRecipeDirectory{GR_TOOLS_TEST_ASSETS "/recipes"};
 // the graph of one recipe composite, the plugins its interior blocks come from and the directory its recipe is read
 // from; the graph ends by itself, and the bound only guards a run whose derived count never arrived
 [[nodiscard]] std::vector<std::string> recipeChainRun() { return {"--graph", std::string(kRecipeChainFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--plugin-dir", std::string(kRecipeDirectory), "--seconds", "5"}; }
+
+constexpr std::string_view kRecipeStartFile{GR_TOOLS_TEST_ASSETS "/recipe_start_chain.yaml"};
+
+// the same, over the composite whose interior block opens the resource the composite's parameter names
+[[nodiscard]] std::vector<std::string> recipeStartRun() { return {"--graph", std::string(kRecipeStartFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--plugin-dir", std::string(kRecipeDirectory), "--seconds", "5"}; }
 #endif
 
 // the schedulers rungraph registers itself, one per execution policy of core's Simple scheduler
@@ -407,6 +412,26 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         expect(set.output.contains("last value was: 1000\n")) << "the sink's derived count followed the parameter" << set.output;
         expect(!set.output.contains("last value was: 100\n")) << "the file's value did not reach the sink" << set.output;
         expect(set.output.contains("the graph ended on its own")) << "the source's derived count followed it too" << set.output;
+    };
+
+    // the graph file names no resource, and the interior block refuses to start without one
+    "--set gives a recipe composite's interior block the derived value its start() reads"_test = [] {
+        std::vector<std::string> arguments = recipeStartRun();
+        arguments.insert(arguments.end(), {"--set", "started.device=named-on-the-command-line", "--show", "started"});
+
+        const Result started = run(arguments);
+        expect(eq(started.exitCode, 0)) << started.output;
+        expect(!started.output.contains("no resource to open")) << "the interior block's start() read the value derived from --set, not the graph file's empty one" << started.output;
+        expect(started.output.contains(R"(started: device = "named-on-the-command-line")")) << started.output;
+        expect(started.output.contains("the graph ended on its own")) << "the interior source ended the run" << started.output;
+    };
+
+    "a derived value a recipe composite's interior block refuses is refused as the graph file's would be"_test = [] {
+        std::vector<std::string> arguments = recipeStartRun();
+        arguments.insert(arguments.end(), {"--set", "started.device=named-on-the-command-line", "--set", "started.level=!!float32 2"});
+
+        const Result refused = run(arguments);
+        expect(refused.output.contains("Failed to validate field 'gain' with value '2")) << "the interior block's limits refuse the derived gain" << refused.output;
     };
 
     "a recipe composite refuses a name its recipe does not export, and a value its recipe cannot derive from"_test = [] {
