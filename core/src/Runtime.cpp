@@ -341,6 +341,8 @@ property_map BlockHandle::stagedParameters() const { return _model ? modelOf(_mo
 
 property_map BlockHandle::defaultParameters() const { return _model ? modelOf(_model)->settings().defaultParameters() : property_map{}; }
 
+std::set<std::string> BlockHandle::writableMembers() const { return _model ? modelOf(_model)->settings().writableMembers() : std::set<std::string>{}; }
+
 std::optional<property_map> BlockHandle::getStored(std::span<const std::string> keys, SettingsCtx ctx) const { return _model ? modelOf(_model)->settings().getStored(keys, ctx) : std::nullopt; }
 
 std::optional<pmt::Value> BlockHandle::getStored(const std::string& key, SettingsCtx ctx) const { return _model ? modelOf(_model)->settings().getStored(key, ctx) : std::nullopt; }
