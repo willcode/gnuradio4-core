@@ -177,6 +177,8 @@ struct Block {
 
     std::shared_ptr<Level> interior; ///< the nested graph of a SUBGRAPH entry
 
+    bool holdsDevice = false; ///< whether the revision of `type` the entry takes declares a device; set by resolveDeviceBlocks()
+
     [[nodiscard]] bool isSubgraph() const noexcept { return interior != nullptr; }
 };
 
@@ -606,6 +608,40 @@ inline void resolveConnectionTypes(Level& level, const ConnectionTypeResolver& t
     for (Block& block : level.blocks) {
         if (block.isSubgraph()) {
             resolveConnectionTypes(*block.interior, typeOf);
+        }
+    }
+}
+
+/// Answers whether the revision of a block type a graph entry takes declares that it holds a device, given the
+/// registry key and the entry's pinned version as the file spells it, empty where the entry pins none.
+using DeviceResolver = std::function<bool(std::string_view blockType, std::string_view pinnedVersion)>;
+
+/// Marks every block of `level` and of every level below it whose type holds a device. A subgraph entry is passed
+/// over, and the blocks of its interior are marked.
+inline void resolveDeviceBlocks(Level& level, const DeviceResolver& holdsDevice) {
+    if (!holdsDevice) {
+        return;
+    }
+    for (Block& block : level.blocks) {
+        if (block.isSubgraph()) {
+            resolveDeviceBlocks(*block.interior, holdsDevice);
+        } else {
+            block.holdsDevice = holdsDevice(block.type, block.pinnedVersion);
+        }
+    }
+}
+
+/// `name (type)` for every marked block, in the order the document lists them: the blocks of a level, then the
+/// blocks of each of its subgraphs in turn
+inline void collectDeviceBlocks(const Level& level, std::vector<std::string>& out) {
+    for (const Block& block : level.blocks) {
+        if (block.holdsDevice) {
+            out.push_back(std::format("{} ({})", block.name, block.type));
+        }
+    }
+    for (const Block& block : level.blocks) {
+        if (block.isSubgraph()) {
+            collectDeviceBlocks(*block.interior, out);
         }
     }
 }
@@ -1167,6 +1203,15 @@ inline void writeSubgraphs(DocWriter& writer, const Level& level, std::size_t de
             names += (i == 0UZ ? "" : ", ") + schedulers[i];
         }
         summary.push_back(writer.labeled("Schedulers", names));
+    }
+    std::vector<std::string> deviceBlocks;
+    collectDeviceBlocks(level, deviceBlocks);
+    if (!deviceBlocks.empty()) {
+        std::string names;
+        for (std::size_t i = 0UZ; i < deviceBlocks.size(); ++i) {
+            names += (i == 0UZ ? "" : ", ") + deviceBlocks[i];
+        }
+        summary.push_back(writer.labeled("Blocks holding a device", names));
     }
     writer.rawBullets(summary);
 

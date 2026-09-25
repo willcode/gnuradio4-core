@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <format>
@@ -22,6 +23,7 @@
 #include <gnuradio-4.0/config.hpp>
 #include <gnuradio-4.0/meta/formatter.hpp>
 
+#include "BlockLookup.hpp"
 #include "DocWriter.hpp"
 #include "GraphDoc.hpp"
 
@@ -84,6 +86,31 @@ inline constexpr std::array<std::string_view, 6> kSettingMetaSuffixes{"::descrip
         set.emplace_back("experimental");
     }
     return set.empty() ? "none declared" : joined(set, ", ");
+}
+
+/// the words `attributes` declares other than the version and the status, which the document states on their own
+[[nodiscard]] inline std::vector<AttributeText> declaredWords(const property_map& attributes) {
+    std::vector<AttributeText> words = attributeTexts(attributes);
+    std::erase_if(words, [](const AttributeText& word) { return word.key == block::detail::kVersionKey || word.key == block::detail::kStatusKey; });
+    return words;
+}
+
+/// the label a declared word is stated under: its key with the first letter capitalized
+[[nodiscard]] inline std::string attributeLabel(std::string_view key) {
+    std::string label(key);
+    if (!label.empty()) {
+        label.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(label.front())));
+    }
+    return label;
+}
+
+/// the declared words of one version as one table cell, `key: word` joined by ", "; empty for a version that declares none
+[[nodiscard]] inline std::string attributesCell(const property_map& attributes) {
+    std::vector<std::string> pairs;
+    for (const AttributeText& word : declaredWords(attributes)) {
+        pairs.push_back(std::format("{}: {}", word.key, word.value));
+    }
+    return joined(pairs, ", ");
 }
 
 /// the sample-count bound a port declares; the largest representable count means "no bound"
@@ -182,9 +209,11 @@ inline void writeBlock(DocWriter& writer, std::string_view key, std::string_view
     facts.push_back(writer.labeled("Block category", std::format("{}", instance->blockCategory())));
     facts.push_back(writer.labeled("UI category", std::format("{}", instance->uiCategory())));
 
-    // Facts, not advice: a version and a status are printed where the block has something to say and are
-    // left out where it has not, and nothing here refuses, warns about or reorders anything on either.
-    const std::vector<block::Version> registeredVersions = loader.registry().versions(key);
+    // The declared words are those of the version documented, the version the instance was made at.
+    for (const AttributeText& word : declaredWords(loader.blockAttributes(key, instance->version()).value_or(property_map{}))) {
+        facts.push_back(writer.labeled(attributeLabel(word.key), word.value));
+    }
+    const std::vector<block::Version> registeredVersions = loader.blockVersions(key);
     const block::Status               declaredStatus     = instance->status();
     if (instance->version() != block::kDefaultVersion || registeredVersions.size() > 1UZ) {
         facts.push_back(writer.labeled("Version", std::to_string(instance->version())));
@@ -202,9 +231,10 @@ inline void writeBlock(DocWriter& writer, std::string_view key, std::string_view
         std::vector<std::vector<std::string>> versionRows;
         versionRows.reserve(registeredVersions.size());
         for (const block::Version version : registeredVersions) {
-            versionRows.push_back({std::to_string(version), statusText(loader.registry().status(key, version).value_or(block::Status{})), version == registeredVersions.back() ? "newest" : ""});
+            const property_map attributes = loader.blockAttributes(key, version).value_or(property_map{});
+            versionRows.push_back({std::to_string(version), statusText(block::attributesFromMap(attributes).status), attributesCell(attributes), version == registeredVersions.back() ? "newest" : ""});
         }
-        const std::array<std::string_view, 3> versionHeaders{"Version", "Status", "Taken by default"};
+        const std::array<std::string_view, 4> versionHeaders{"Version", "Status", "Attributes", "Taken by default"};
         writer.table(versionHeaders, versionRows);
     }
 
@@ -233,7 +263,7 @@ inline void writeBlock(DocWriter& writer, std::string_view key, std::string_view
         settingKeys.emplace(std::string_view(name));
     }
 
-    std::set<std::string> consumedMetaKeys{"description"};
+    std::set<std::string> consumedMetaKeys{"description", std::string(block::kAttributesMetaKey)};
     if (settingKeys.empty()) {
         writer.paragraph("This block declares no settings.");
     } else {

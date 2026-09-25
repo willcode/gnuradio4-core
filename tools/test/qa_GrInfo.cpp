@@ -125,6 +125,38 @@ constexpr std::size_t kWidth = 80UZ;
 // directory from another
 [[nodiscard]] std::string_view tailOf(std::string_view path, std::size_t count) { return path.size() <= count ? path : path.substr(path.size() - count); }
 
+// whether a line of the report is the fact `name` with `value`: the name, the padding that aligns the values, the value
+[[nodiscard]] bool hasFact(std::string_view text, std::string_view name, std::string_view value) {
+    for (std::size_t start = 0UZ; start < text.size();) {
+        const std::size_t end  = std::min(text.find('\n', start), text.size());
+        std::string_view  line = text.substr(start, end - start);
+        start                  = end + 1UZ;
+        line.remove_prefix(std::min(line.find_first_not_of(' '), line.size()));
+        if (!line.starts_with(name) || !line.ends_with(value) || line.size() < name.size() + value.size() + 2UZ) {
+            continue;
+        }
+        const std::string_view padding = line.substr(name.size(), line.size() - name.size() - value.size());
+        if (padding.find_first_not_of(' ') == std::string_view::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// the attribute names grinfo prints a declared word under, none of which a block that declares nothing prints
+constexpr std::array<std::string_view, 5> kAttributeFacts{"resource", "family", "emits", "compute", "role"};
+
+// the text of the first JSON object that follows `"name": `, braces included; empty when there is none
+[[nodiscard]] std::string_view jsonObject(std::string_view text, std::string_view name) {
+    const std::string key   = std::format("\"{}\": {{", name);
+    const std::size_t begin = text.find(key);
+    if (begin == std::string_view::npos) {
+        return {};
+    }
+    const std::size_t end = text.find('}', begin);
+    return end == std::string_view::npos ? std::string_view{} : text.substr(begin + key.size() - 1UZ, end - begin - key.size() + 2UZ);
+}
+
 #ifdef GR_TOOLS_CORE_TEST_PLUGINS
 // the two directories core's own tests build: one of plugins, one of shared objects that register blocks without
 // being plugins
@@ -288,6 +320,115 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(eq(occurrences(block.output, "\"dataType\": \"float64\""), 2UZ)) << "the concrete type of each port of each key" << block.output;
     };
 
+    "a block that declares nothing prints no attribute line and carries no attributes object"_test = [] {
+        const Result block = run(overTestDirectories({"block", "LibraryDoubler"}));
+        expect(eq(block.exitCode, 0)) << block.output;
+        expect(hasFact(block.output, "version", "1")) << "the instrument: a fact line is found where the report has one" << block.output;
+        for (const std::string_view name : kAttributeFacts) {
+            expect(!block.output.contains(std::format("\n  {} ", name))) << name << block.output;
+        }
+
+        const Result json = run(overTestDirectories({"block", "LibraryDoubler", "--json"}));
+        expect(eq(json.exitCode, 0)) << json.output;
+        expect(!json.output.contains("\"attributes\"")) << json.output;
+    };
+#endif
+
+#ifdef GR_TOOLS_VERSIONED_PLUGIN
+    "a block that declares attributes prints each word and the role derived from its ports"_test = [] {
+        const Result block = run({"block", "test::versioned", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        expect(eq(block.exitCode, 0)) << block.output;
+        expect(hasFact(block.output, "resource", "device")) << block.output;
+        expect(hasFact(block.output, "family", "versioned")) << block.output;
+        expect(hasFact(block.output, "role", "transceiver")) << "a stream input and a stream output" << block.output;
+        expect(hasFact(block.output, "version", "2")) << "the newest revision" << block.output;
+        expect(!block.output.contains("\n  emits ")) << "a word the block does not declare has no line" << block.output;
+        expect(!block.output.contains("\n  compute ")) << block.output;
+
+        const std::size_t resource = block.output.find("\n  resource ");
+        const std::size_t family   = block.output.find("\n  family ");
+        const std::size_t role     = block.output.find("\n  role ");
+        const std::size_t version  = block.output.find("\n  version ");
+        expect(resource < family && family < role && role < version) << "the order the attributes map is written in" << block.output;
+    };
+
+    "block --json carries the declared words in one attributes object"_test = [] {
+        const Result block = run({"block", "test::versioned", "--json", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        expect(eq(block.exitCode, 0)) << block.output;
+        expect(isOneJsonDocument(block.output)) << block.output;
+        const std::string_view attributes = jsonObject(block.output, "attributes");
+        expect(attributes.contains("\"resource\": \"device\"")) << block.output;
+        expect(attributes.contains("\"family\": \"versioned\"")) << block.output;
+        expect(attributes.contains("\"role\": \"transceiver\"")) << block.output;
+        expect(attributes.contains("\"version\": 2")) << "a number, not a string" << block.output;
+        expect(!attributes.contains("\"emits\"")) << "a word the block does not declare is left out" << block.output;
+    };
+
+    "a declaring type prints its version before its status, as every type does"_test = [] {
+        const Result block = run({"block", "test::versioned", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        expect(eq(block.exitCode, 0)) << block.output;
+        expect(hasFact(block.output, "status", "experimental")) << "the instrument: the declared status has its line" << block.output;
+        const std::array<std::size_t, 5> lines{block.output.find("\n  resource "), block.output.find("\n  family "), block.output.find("\n  role "), block.output.find("\n  version "), block.output.find("\n  status ")};
+        expect(lines.back() != std::string::npos && std::ranges::is_sorted(lines)) << "resource, family, role, version, status" << block.output;
+
+        const Result json = run({"block", "test::versioned", "--json", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        expect(eq(json.exitCode, 0)) << json.output;
+        const std::string_view attributes = jsonObject(json.output, "attributes");
+        expect(attributes.contains("\"status\": [") && attributes.contains("\"experimental\"")) << "the flags as a list of words" << json.output;
+        const std::array<std::size_t, 5> keys{attributes.find("\"resource\""), attributes.find("\"family\""), attributes.find("\"role\""), attributes.find("\"version\""), attributes.find("\"status\"")};
+        expect(keys.back() != std::string_view::npos && std::ranges::is_sorted(keys)) << "the keys in the order of the text lines" << json.output;
+    };
+
+    "blocks --resource keeps the blocks whose newest version declares the word"_test = [] {
+        const Result all = run(overTestDirectories({"blocks", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}));
+        expect(eq(all.exitCode, 0)) << all.output;
+        expect(all.output.contains("VersionedFirst")) << "the instrument: without the option every block is listed" << all.output;
+        expect(all.output.contains("LibraryDoubler")) << all.output;
+
+        const Result devices = run(overTestDirectories({"blocks", "--resource", "device", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}));
+        expect(eq(devices.exitCode, 0)) << devices.output;
+        expect(devices.output.starts_with("blocks declaring resource: device\n")) << "the first line names the narrowing" << devices.output;
+        expect(hasFact(devices.output, "block keys", "2")) << "the totals count the kept keys" << devices.output;
+        expect(hasFact(devices.output, "block families", "2")) << devices.output;
+        expect(hasFact(devices.output, "libraries", "1")) << "the one plugin that holds a kept key" << devices.output;
+        expect(!all.output.contains("blocks declaring resource")) << "no naming line without the option" << all.output;
+        expect(devices.output.contains("\n      versioned\n")) << "the key whose newest version declares a device" << devices.output;
+        expect(devices.output.contains("VersionedSecond")) << "the type behind it, registered under its own name" << devices.output;
+        expect(!devices.output.contains("VersionedFirst")) << "a type that declares no resource" << devices.output;
+        expect(!devices.output.contains("LibraryDoubler")) << devices.output;
+        expect(!devices.output.contains("fixed_source")) << devices.output;
+
+        const Result files = run(overTestDirectories({"blocks", "--resource", "file", "--json", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}));
+        expect(eq(files.exitCode, 0)) << files.output;
+        expect(isOneJsonDocument(files.output)) << files.output;
+        expect(!files.output.contains("\"versioned\"")) << "no block of these directories declares a file" << files.output;
+        const std::string_view fileTotals = jsonObject(files.output, "totals");
+        expect(fileTotals.contains("\"blockKeys\": 0")) << files.output;
+        expect(fileTotals.contains("\"blockLibraries\": 0")) << files.output;
+        expect(fileTotals.contains("\"plugins\": 0")) << files.output;
+
+        const Result deviceJson = run(overTestDirectories({"blocks", "--resource", "device", "--json", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}));
+        expect(eq(deviceJson.exitCode, 0)) << deviceJson.output;
+        const std::string_view deviceTotals = jsonObject(deviceJson.output, "totals");
+        expect(deviceTotals.contains("\"blockKeys\": 2")) << deviceJson.output;
+        expect(deviceTotals.contains("\"blockLibraries\": 0")) << "the block libraries loaded hold no kept key" << deviceJson.output;
+        expect(deviceTotals.contains("\"plugins\": 1")) << "the versioned plugin holds both" << deviceJson.output;
+    };
+
+    "a resource word outside the set is refused with the usage text"_test = [] {
+        const Result refused = run({"blocks", "--resource", "radio", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        expect(eq(refused.exitCode, 2)) << refused.output;
+        expect(refused.output.contains("'radio'")) << refused.output;
+        expect(refused.output.contains("none, device, file, network")) << "the words the option takes" << refused.output;
+        expect(refused.output.contains("Usage: grinfo")) << refused.output;
+
+        const Result withoutValue = run({"blocks", "--resource"});
+        expect(eq(withoutValue.exitCode, 2)) << withoutValue.output;
+        expect(withoutValue.output.contains("--resource needs a value")) << withoutValue.output;
+    };
+#endif
+
+#ifdef GR_TOOLS_CORE_TEST_PLUGINS
     "no line of any report is wider than a terminal"_test = [] {
         for (const std::vector<std::string>& arguments : {std::vector<std::string>{"version"}, {"blocks"}, {"blocks", "--verbose"}, {"block", "convert"}, {"block", "LibraryDoubler", "--all-settings"}}) {
             const Result report = run(overTestDirectories(arguments));

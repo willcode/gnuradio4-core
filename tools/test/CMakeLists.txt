@@ -8,6 +8,11 @@ add_dependencies(qa_GraphDoc graphdoc)
 target_compile_definitions(
   qa_GraphDoc PRIVATE GR_TOOLS_TEST_ASSETS="${GR_TOOLS_TEST_ASSETS}" GR_TOOLS_GRAPHDOC="$<TARGET_FILE:graphdoc>"
                       GR_TOOLS_TEST_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}")
+if(GR_ENABLE_BLOCK_REGISTRY AND INTERNAL_ENABLE_BLOCK_PLUGINS)
+  # the device line of the summary is read from core's test plugin that declares a device on its newer revision
+  target_compile_definitions(qa_GraphDoc PRIVATE GR_TOOLS_VERSIONED_PLUGIN="$<TARGET_FILE_DIR:versioned_plugin>")
+  add_dependencies(qa_GraphDoc versioned_plugin)
+endif()
 
 # A reader reviews the whole document, so the pinned documents are compared as files rather than asserted piecewise: a
 # formatting change then shows up as a diff of the document itself. They carry the `.expected` extension because the
@@ -65,6 +70,10 @@ if(GR_ENABLE_BLOCK_REGISTRY)
     target_compile_definitions(qa_RegistryDoc
                                PRIVATE GR_TOOLS_TEST_BLOCK_LIBRARY="${CMAKE_BINARY_DIR}/core/test/block_library")
     add_dependencies(qa_RegistryDoc block_library)
+
+    # a plugin key with two revisions, whose version table is read through the loader
+    target_compile_definitions(qa_RegistryDoc PRIVATE GR_TOOLS_VERSIONED_PLUGIN="$<TARGET_FILE_DIR:versioned_plugin>")
+    add_dependencies(qa_RegistryDoc versioned_plugin)
   endif()
 endif()
 
@@ -104,5 +113,8 @@ if(TARGET grinfo)
       bad_plugin
       block_library
       block_library_second)
+    # the attribute cases read a plugin whose newer revision of one key declares a device
+    target_compile_definitions(qa_GrInfo PRIVATE GR_TOOLS_VERSIONED_PLUGIN="$<TARGET_FILE_DIR:versioned_plugin>")
+    add_dependencies(qa_GrInfo versioned_plugin)
   endif()
 endif()

@@ -101,7 +101,7 @@ const boost::ut::suite<"PluginRegistration"> pluginRegistrationTests = [] {
         expect(fatal(eq(loader.plugins().size(), 1UZ))) << "the versioned plugin loads";
         expect(!registry.contains(kVersionedKey)) << "the host's registry does not hold the key, so each answer comes from the plugin";
 
-        const gr::property_map newestExpected = gr::block::attributesToMap({.resource = gr::block::Resource::Device, .family = "versioned", .version = 2U}, gr::block::Role::Transceiver);
+        const gr::property_map newestExpected = gr::block::attributesToMap({.resource = gr::block::Resource::Device, .family = "versioned", .status = {.experimental = true}, .version = 2U}, gr::block::Role::Transceiver);
         const gr::property_map olderExpected  = gr::block::attributesToMap({.version = 1U}, gr::block::Role::Unknown);
         expect(newestExpected != olderExpected) << "the two versions differ in more than the number";
 

@@ -1,5 +1,6 @@
 #include <boost/ut.hpp>
 
+#include <array>
 #include <format>
 #include <memory>
 #include <string>
@@ -95,7 +96,33 @@ struct DocFilterV2 : Block<DocFilterV2> {
     [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
 };
 
+/// two revisions of a block that holds a device: a source, and a sink that also emits and runs on an FPGA
+struct DocRadioV1 : Block<DocRadioV1> {
+    static constexpr gr::block::Attributes attributes{.resource = gr::block::Resource::Device, .family = "docradio"};
+
+    PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(DocRadioV1, out);
+
+    explicit DocRadioV1(property_map init = {}) : Block<DocRadioV1>(std::move(init)) {}
+
+    [[nodiscard]] constexpr float processOne() const noexcept { return 0.0f; }
+};
+
+struct DocRadioV2 : Block<DocRadioV2> {
+    static constexpr gr::block::Attributes attributes{.resource = gr::block::Resource::Device, .family = "docradio", .emits = gr::block::Emits::Rf, .compute = gr::block::Compute::Fpga, .status = {.experimental = true}, .version = 2U};
+
+    PortIn<float> in;
+
+    GR_MAKE_REFLECTABLE(DocRadioV2, in);
+
+    explicit DocRadioV2(property_map init = {}) : Block<DocRadioV2>(std::move(init)) {}
+
+    void processOne(float) const noexcept {}
+};
+
 constexpr std::string_view kVersionedKey   = "doc::filter";
+constexpr std::string_view kRadioKey       = "doc::radio";
 constexpr std::string_view kRefusingKey    = "doc::refuses_to_construct";
 constexpr std::string_view kRefusalText    = "this factory refuses to construct anything";
 constexpr std::string_view kMissingPlugins = "/gnuradio4-doctools-directory-that-does-not-exist";
@@ -129,6 +156,11 @@ struct Fixture {
         const BlockRegistration second = makeBlockRegistration<DocFilterV2>(&makeDocBlock<DocFilterV2>);
         std::ignore                    = registry.insert(kVersionedKey, "", first.factory, first.attributes);
         std::ignore                    = registry.insert(kVersionedKey, "", second.factory, second.attributes);
+
+        const BlockRegistration olderRadio = makeBlockRegistration<DocRadioV1>(&makeDocBlock<DocRadioV1>);
+        const BlockRegistration newerRadio = makeBlockRegistration<DocRadioV2>(&makeDocBlock<DocRadioV2>);
+        std::ignore                        = registry.insert(kRadioKey, "", olderRadio.factory, olderRadio.attributes);
+        std::ignore                        = registry.insert(kRadioKey, "", newerRadio.factory, newerRadio.attributes);
     }
 
     [[nodiscard]] std::string document(gr::tools::Format format) {
@@ -137,11 +169,42 @@ struct Fixture {
     }
 };
 
+/// the section a key has in a Markdown document, from its heading to the next key's heading
+[[nodiscard]] std::string_view sectionOf(std::string_view document, std::string_view key) {
+    const std::string heading = std::format("### {}\n", key);
+    const std::size_t begin   = document.find(heading);
+    if (begin == std::string_view::npos) {
+        return {};
+    }
+    const std::size_t end = document.find("\n### ", begin + heading.size());
+    return document.substr(begin, end == std::string_view::npos ? std::string_view::npos : end - begin);
+}
+
+/// the labels a section gives the declared words other than the version and the status
+constexpr std::array<std::string_view, 5> kAttributeLabels{"**Resource**", "**Family**", "**Emits**", "**Compute**", "**Role**"};
+
 /// one fixture for the whole binary: the plugins are opened once
 [[nodiscard]] Fixture& fixture() {
     static Fixture instance;
     return instance;
 }
+
+#ifdef GR_TOOLS_VERSIONED_PLUGIN
+constexpr std::string_view kPluginVersionedKey = "test::versioned";
+
+/// core's test plugin that registers two revisions of one key, the newer one declaring a device and a status
+struct PluginVersionsFixture {
+    BlockRegistry            registry;
+    SchedulerRegistry        schedulerRegistry;
+    std::vector<std::string> directories{std::string(GR_TOOLS_VERSIONED_PLUGIN)};
+    PluginLoader             loader{registry, schedulerRegistry, directories};
+
+    [[nodiscard]] std::string document(gr::tools::Format format) {
+        const gr::tools::registrydoc::Inputs inputs{.loader = loader, .pluginDirectories = directories, .coreVersion = GR_TOOLS_CORE_VERSION};
+        return gr::tools::registrydoc::render(inputs, format, "Versioned plugin fixture");
+    }
+};
+#endif
 
 #ifdef GR_TOOLS_TEST_BLOCK_LIBRARY
 constexpr std::string_view kLibraryKey = "test::library_doubler";
@@ -222,6 +285,59 @@ const boost::ut::suite<"RegistryDoc"> registryDocTests = [] {
         expect(document.find("the second revision of the filter") != std::string::npos) << "the newest version is what an unversioned caller gets";
         expect(document.find("Taken by default") != std::string::npos);
         expect(document.find("**Status**: deprecated, experimental") == std::string::npos) << "the newest is what the section documents, and it declares no flag";
+    };
+
+    "a block that declares attributes has them as facts, in the order the map is written"_test = [] {
+        const std::string      document = fixture().document(Format::Markdown);
+        const std::string_view section  = sectionOf(document, kRadioKey);
+        expect(fatal(!section.empty())) << document;
+        const std::array<std::string_view, 7> facts{"- **UI category**: ", "- **Resource**: device\n", "- **Family**: docradio\n", "- **Emits**: rf\n", "- **Compute**: fpga\n", "- **Role**: sink\n", "- **Version**: 2\n"};
+        std::size_t                           previous = 0UZ;
+        for (const std::string_view fact : facts) {
+            const std::size_t at = section.find(fact);
+            expect(at != std::string_view::npos && at >= previous) << fact << section;
+            previous = at == std::string_view::npos ? previous : at;
+        }
+        expect(section.contains("- **Status**: experimental\n")) << "the status keeps its own fact" << section;
+    };
+
+    "each version of a key that declares attributes has its words in the version table"_test = [] {
+        const std::string      document = fixture().document(Format::Markdown);
+        const std::string_view radio    = sectionOf(document, kRadioKey);
+        expect(radio.contains("| Version | Status | Attributes | Taken by default |")) << radio;
+        expect(radio.contains("| 1 | none declared | resource: device, family: docradio, role: source |  |")) << "the older revision is a source" << radio;
+        expect(radio.contains("| 2 | experimental | resource: device, family: docradio, emits: rf, compute: fpga, role: sink | newest |")) << radio;
+
+        const std::string_view filter = sectionOf(document, kVersionedKey);
+        expect(filter.contains("| 1 | deprecated, experimental |  |  |")) << "a version that declares no word has an empty cell" << filter;
+        expect(filter.contains("| 2 | none declared |  | newest |")) << filter;
+    };
+
+#ifdef GR_TOOLS_VERSIONED_PLUGIN
+    "a plugin key with several versions has the version table, each version with its words"_test = [] {
+        PluginVersionsFixture  plugin;
+        const std::string      document = plugin.document(Format::Markdown);
+        const std::string_view section  = sectionOf(document, kPluginVersionedKey);
+        expect(fatal(section.contains("- **UI category**: "))) << "the instrument: the section and its facts are found" << document;
+        expect(section.contains("| Version | Status | Attributes | Taken by default |")) << section;
+        expect(section.contains("| 1 | none declared |  |  |")) << "the older revision declares no word" << section;
+        expect(section.contains("| 2 | experimental | resource: device, family: versioned, role: transceiver | newest |")) << section;
+        expect(section.contains("- **Resource**: device\n")) << "the facts state the newest revision's words" << section;
+        expect(section.contains("- **Status**: experimental\n")) << section;
+        expect(!section.contains("\n| Attributes |")) << "no meta entry repeats the declared words" << section;
+    };
+#endif
+
+    "a block that declares nothing has no attribute fact"_test = [] {
+        const std::string document = fixture().document(Format::Markdown);
+        for (const std::string_view key : {std::string_view("doc::scale"), std::string_view("doc::combiner"), kVersionedKey}) {
+            const std::string_view section = sectionOf(document, key);
+            expect(fatal(section.contains("- **UI category**: "))) << "the instrument: the section and its facts are found" << key;
+            for (const std::string_view label : kAttributeLabels) {
+                expect(!section.contains(label)) << key << label << section;
+            }
+        }
+        expect(!sectionOf(document, "doc::scale").contains("Attributes")) << "no version table and no meta entry either";
     };
 
     "a block whose factory throws is listed with its error"_test = [] {

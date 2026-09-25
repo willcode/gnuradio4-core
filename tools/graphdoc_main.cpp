@@ -38,15 +38,19 @@ blocks and a table of connections, in that order, under a summary of the file.
 A key the importer does not read is listed rather than dropped, and a file the
 importer would refuse is refused here too, with a message of this program's own.
 
-The connection table names the type each connection carries. That one column
+The connection table names the type each connection carries. That column
 comes from the blocks themselves: the tool constructs the source block of a
-connection and reads the type off the named output port. Blocks come from the
-registry linked into this program, from the directories named by --plugin-dir,
-from the colon-separated list in GNURADIO4_PLUGIN_DIRECTORIES, and from the
-plugin directory of this installation, which is always searched. A block no
-registry holds and a port a block does not declare leave the column blank.
-Everything else in the document is read from the file alone, so a graph whose
-blocks this build does not provide is still described.
+connection and reads the type off the named output port. The summary names the
+blocks whose type declares that it holds a device, read from the attributes the
+type registers with, for the version the entry pins or else the newest one; no
+block is constructed for that line. Blocks come from the registry linked into
+this program, from the directories named by --plugin-dir, from the
+colon-separated list in GNURADIO4_PLUGIN_DIRECTORIES, and from the plugin
+directory of this installation, which is always searched. A block no registry
+holds and a port a block does not declare leave the column blank, and a block
+no registry holds is not named on the device line. Everything else in the
+document is read from the file alone, so a graph whose blocks this build does
+not provide is still described.
 
 The HTML is a single self-contained page: its style sheet is embedded, it loads
 nothing over the network, and it draws every diagram itself as an inline SVG.
@@ -148,6 +152,7 @@ int main(int argc, char** argv) {
     gr::PluginLoader loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), paths);
     OutputPortTypes  outputPortTypes(loader);
     graphdoc::resolveConnectionTypes(*level, [&outputPortTypes](std::string_view blockType, std::string_view port) { return outputPortTypes(blockType, port); });
+    graphdoc::resolveDeviceBlocks(*level, [&loader](std::string_view blockType, std::string_view pinnedVersion) { return holdsDevice(loader, blockType, pinnedVersion); });
 #endif
 
     if (options.title.empty()) {
