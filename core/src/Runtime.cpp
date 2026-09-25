@@ -327,51 +327,17 @@ std::string_view BlockHandle::uniqueName() const { return _model ? modelOf(_mode
 
 std::string_view BlockHandle::typeName() const { return _model ? modelOf(_model)->typeName() : std::string_view{}; }
 
-property_map BlockHandle::set(const property_map& parameters, SettingsCtx ctx) { return _model ? modelOf(_model)->settings().set(parameters, ctx) : parameters; }
-
 property_map BlockHandle::setStaged(const property_map& parameters) { return _model ? modelOf(_model)->settings().setStaged(parameters) : parameters; }
 
 property_map BlockHandle::get(std::span<const std::string> keys) const { return _model ? modelOf(_model)->settings().get(keys) : property_map{}; }
 
 std::optional<pmt::Value> BlockHandle::get(const std::string& key) const { return _model ? modelOf(_model)->settings().get(key) : std::nullopt; }
 
-property_map BlockHandle::activeParameters() const { return _model ? modelOf(_model)->settings().activeParameters() : property_map{}; }
-
 property_map BlockHandle::stagedParameters() const { return _model ? modelOf(_model)->settings().stagedParameters() : property_map{}; }
 
 property_map BlockHandle::defaultParameters() const { return _model ? modelOf(_model)->settings().defaultParameters() : property_map{}; }
 
 std::set<std::string> BlockHandle::writableMembers() const { return _model ? modelOf(_model)->settings().writableMembers() : std::set<std::string>{}; }
-
-std::optional<property_map> BlockHandle::getStored(std::span<const std::string> keys, SettingsCtx ctx) const { return _model ? modelOf(_model)->settings().getStored(keys, ctx) : std::nullopt; }
-
-std::optional<pmt::Value> BlockHandle::getStored(const std::string& key, SettingsCtx ctx) const { return _model ? modelOf(_model)->settings().getStored(key, ctx) : std::nullopt; }
-
-std::optional<SettingsCtx> BlockHandle::activateContext(SettingsCtx ctx) { return _model ? modelOf(_model)->settings().activateContext(ctx) : std::nullopt; }
-
-SettingsCtx BlockHandle::activeContext() const { return _model ? modelOf(_model)->settings().activeContext() : SettingsCtx{}; }
-
-bool BlockHandle::removeContext(SettingsCtx ctx) { return _model ? modelOf(_model)->settings().removeContext(ctx) : false; }
-
-std::set<std::string> BlockHandle::autoUpdateParameters(SettingsCtx ctx) { return _model ? modelOf(_model)->settings().autoUpdateParameters(ctx) : std::set<std::string>{}; }
-
-void BlockHandle::storeDefaults() {
-    if (_model) {
-        modelOf(_model)->settings().storeDefaults();
-    }
-}
-
-void BlockHandle::resetDefaults() {
-    if (_model) {
-        modelOf(_model)->settings().resetDefaults();
-    }
-}
-
-void BlockHandle::loadParametersFromPropertyMap(const property_map& parameters, SettingsCtx ctx) {
-    if (_model) {
-        modelOf(_model)->settings().loadParametersFromPropertyMap(parameters, ctx);
-    }
-}
 
 property_map BlockHandle::metaInformation() const { return _model ? modelOf(_model)->metaInformation() : property_map{}; }
 
@@ -381,10 +347,8 @@ void BlockHandle::setMetaInformation(property_map information) {
     }
 }
 
-RuntimeGraph::RuntimeGraph() : RuntimeGraph(property_map{}) {}
-
-RuntimeGraph::RuntimeGraph(property_map initialSettings) : _impl(std::make_unique<Impl>()) {
-    _impl->owned = std::make_unique<Graph>(std::move(initialSettings));
+RuntimeGraph::RuntimeGraph() : _impl(std::make_unique<Impl>()) {
+    _impl->owned = std::make_unique<Graph>();
     _impl->view  = _impl->owned.get();
 }
 
@@ -545,12 +509,6 @@ std::expected<void, RuntimeError> RuntimeGraph::remove(const BlockHandle& block)
     return {};
 }
 
-void RuntimeGraph::clear() {
-    if (_impl && _impl->view != nullptr) {
-        _impl->view->clear();
-    }
-}
-
 std::expected<void, RuntimeError> RuntimeGraph::connect(const BlockHandle& sourceBlock, std::string_view sourcePort, //
     const BlockHandle& destinationBlock, std::string_view destinationPort, EdgeSpec edge) {
     if (!_impl || _impl->view == nullptr || !sourceBlock.valid() || !destinationBlock.valid()) {
@@ -620,18 +578,6 @@ std::vector<std::string> RuntimeGraph::outputPortNames(const BlockHandle& block)
 std::vector<RuntimePort> RuntimeGraph::inputPorts(const BlockHandle& block) const { return block.valid() ? portsOf(*modelOf(block._model), true) : std::vector<RuntimePort>{}; }
 
 std::vector<RuntimePort> RuntimeGraph::outputPorts(const BlockHandle& block) const { return block.valid() ? portsOf(*modelOf(block._model), false) : std::vector<RuntimePort>{}; }
-
-std::string RuntimeGraph::portTypeName(const BlockHandle& block, bool isInput, std::string_view portName) const {
-    if (!block.valid()) {
-        return {};
-    }
-    BlockModel& model = *modelOf(block._model);
-    model.initDynamicPorts();
-
-    const PortDefinition definition{std::string(portName)};
-    const auto           port = isInput ? model.dynamicInputPort(definition) : model.dynamicOutputPort(definition);
-    return port.has_value() ? port.value()->typeName() : std::string{};
-}
 
 std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document) {
     constexpr std::string_view where = "RuntimeGraph::fromYaml";
@@ -779,14 +725,6 @@ bool Runtime::stopFor(std::chrono::nanoseconds timeout) {
         return true;
     }
     return _impl->stopRun(timeout);
-}
-
-bool Runtime::busy() const {
-    if (!_impl) {
-        return false;
-    }
-    std::lock_guard lock(_impl->runMutex);
-    return _impl->runInProgress();
 }
 
 void Runtime::wait() const {
