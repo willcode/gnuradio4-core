@@ -541,8 +541,8 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         // settings: the same forwards reach the same SettingsBase, and a staged value lands on the
         // caller's own object -- which is the live-control path the handle exists for
         expect(scale->get().contains(convert_string_domain(std::string("gain"))));
-        expect(scale->setStaged(property_map{{"taps", std::vector<float>{2.0f}}}).empty());
-        expect(scale->setStaged(property_map{{"label", std::string("adopted")}}).empty());
+        expect(scale->setStaged(property_map{{"taps", std::vector<float>{2.0f}}}) == property_map{});
+        expect(scale->setStaged(property_map{{"label", std::string("adopted")}}) == property_map{});
 
         // connect: an added block is addressable by name like any other
         expect(graph.inputPortNames(*scale) == std::vector<std::string>{"in"});
@@ -628,8 +628,8 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
                 if (value == active.end()) {
                     continue;
                 }
-                const property_map rejected = handle->setStaged(property_map{{convert_string_domain(member), value->second}});
-                expect(rejected.empty()) << std::format("{}: writable member '{}' was rejected by the erased path", key, member);
+                const auto rejected = handle->setStaged(property_map{{convert_string_domain(member), value->second}});
+                expect(rejected.has_value() && rejected->empty()) << std::format("{}: writable member '{}' was rejected by the erased path", key, member);
             }
 
             handle->setMetaInformation(property_map{{"qa_probe", std::string("round-trip")}});
@@ -1078,9 +1078,9 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(fatal(scheduler.valid()));
         expect(timeoutOf(scheduler) == chosenTimeout) << "the handle reports the timeout the scheduler was created with";
 
-        const property_map rejected = scheduler.setStaged({{"qa_undeclared", 1.0f}});
-        expect(rejected.contains(convert_string_domain(std::string("qa_undeclared")))) << "a key the scheduler does not declare comes back";
-        expect(scheduler.setStaged({{"timeout_ms", chosenTimeout + 1U}}).empty()) << "a key the scheduler declares is staged";
+        const auto rejected = scheduler.setStaged({{"qa_undeclared", 1.0f}});
+        expect(rejected.has_value() && rejected->contains(convert_string_domain(std::string("qa_undeclared")))) << "a key the scheduler does not declare comes back";
+        expect(scheduler.setStaged({{"timeout_ms", chosenTimeout + 1U}}) == property_map{}) << "a key the scheduler declares is staged";
 
         BlockHandle               outliving;
         std::optional<gr::Size_t> timeoutWhileOwned;
@@ -1539,6 +1539,64 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         expect(eq(awaitHeldStops(1UZ), 1UZ)) << "the block's stop() ran more than once";
         expect(runtime->state() == Runtime::State::Stopped);
         expect(runtime->result().has_value()) << "a stopped run is a successful run";
+    };
+};
+
+const boost::ut::suite<"refusals return"> refusalTests = [] {
+    using namespace boost::ut;
+    using namespace gr;
+    using namespace qa_runtime;
+
+    "a staged value the block cannot convert is returned, not thrown"_test = [] {
+        registerTestBlocks();
+        RuntimeGraph graph;
+        auto         scale = graph.emplace("qa::Scale", "scale");
+        expect(fatal(scale.has_value()));
+        const property_map mixed{{"label", std::string("staged")}, {"gain", std::string("loud")}, {"qa_undeclared", 1.0f}};
+        expect(nothrow([&] { std::ignore = scale->setStaged(mixed); }));
+        const auto refused = scale->setStaged(mixed);
+        expect(!refused.has_value()) << "the value was taken";
+        expect(refused.has_value() || refused.error().message.find("gain") != std::string::npos) << (refused ? std::string{} : refused.error().message);
+        expect(scale->stagedParameters().empty()) << "a refused call staged part of its values";
+    };
+
+    "a block built with a value it refuses is refused by add()"_test = [] {
+        RuntimeGraph graph;
+        expect(nothrow([&] { std::ignore = graph.add(std::make_shared<BlockWrapper<Scale>>(property_map{{"gain", std::string("loud")}}), "scale"); }));
+        const auto refused = graph.add(std::make_shared<BlockWrapper<Scale>>(property_map{{"gain", std::string("loud")}}), "refused");
+        expect(!refused.has_value()) << "a block that refused its parameters was added";
+        expect(graph.blocks().empty()) << "a refused block stayed in the graph";
+    };
+
+    "a nested graph with a setting it does not declare is refused by emplaceSubgraph()"_test = [] {
+        RuntimeGraph graph;
+        expect(nothrow([&] { std::ignore = graph.emplaceSubgraph("sub", property_map{{"qa_undeclared", 1.0f}}); }));
+        const auto refused = graph.emplaceSubgraph("refused", property_map{{"qa_undeclared", 1.0f}});
+        expect(!refused.has_value()) << "a nested graph that refused its parameters was added";
+        expect(graph.blocks().empty()) << "a refused nested graph stayed in the graph";
+        expect(graph.emplaceSubgraph("sub").has_value()) << "a nested graph with no parameters is added";
+    };
+
+    "a scheduler setting that is misspelled or refused is refused by create()"_test = [] {
+        registerTestBlocks();
+        const auto emptyGraph = [] { return RuntimeGraph{}; };
+
+        const auto misspelled = Runtime::create(emptyGraph(), Runtime::kDefaultScheduler, property_map{{"timeout_msx", gr::Size_t{10U}}});
+        expect(!misspelled.has_value()) << "a key the scheduler does not declare was dropped";
+
+        expect(!misspelled.has_value() && misspelled.error().message.find("timeout_msx") != std::string::npos) << "the refusal names the key";
+
+        RuntimeGraph kept;
+        expect(fatal(kept.emplace("qa::Scale", "scale").has_value()));
+        expect(!Runtime::create(std::move(kept), Runtime::kDefaultScheduler, property_map{{"timeout_msx", gr::Size_t{10U}}}).has_value());
+        expect(eq(kept.blocks().size(), 1UZ)) << "a refused create() took the caller's graph";
+        expect(Runtime::create(std::move(kept)).has_value()) << "the graph a refused create() left runs under a good one";
+
+        expect(nothrow([&] { std::ignore = Runtime::create(emptyGraph(), Runtime::kDefaultScheduler, property_map{{"timeout_ms", std::string("soon")}}); }));
+        const auto refused = Runtime::create(emptyGraph(), Runtime::kDefaultScheduler, property_map{{"timeout_ms", std::string("soon")}});
+        expect(!refused.has_value()) << "a value the scheduler refuses was taken";
+
+        expect(Runtime::create(emptyGraph(), Runtime::kDefaultScheduler, property_map{{"timeout_ms", gr::Size_t{10U}}}).has_value()) << "a declared key with a good value is taken";
     };
 };
 

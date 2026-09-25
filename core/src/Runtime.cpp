@@ -327,7 +327,19 @@ std::string_view BlockHandle::uniqueName() const { return _model ? modelOf(_mode
 
 std::string_view BlockHandle::typeName() const { return _model ? modelOf(_model)->typeName() : std::string_view{}; }
 
-property_map BlockHandle::setStaged(const property_map& parameters) { return _model ? modelOf(_model)->settings().setStaged(parameters) : parameters; }
+std::expected<property_map, RuntimeError> BlockHandle::setStaged(const property_map& parameters) {
+    constexpr std::string_view where = "BlockHandle::setStaged";
+    if (!_model) {
+        return std::unexpected(localError("block handle is empty", where));
+    }
+    try {
+        return modelOf(_model)->settings().setStaged(parameters);
+    } catch (const gr::exception& error) { // a value that does not convert, or a declared parameter's refusal
+        return std::unexpected(localError(error.message, where));
+    } catch (const std::exception& error) {
+        return std::unexpected(localError(error.what(), where));
+    }
+}
 
 property_map BlockHandle::get(std::span<const std::string> keys) const { return _model ? modelOf(_model)->settings().get(keys) : property_map{}; }
 
@@ -382,7 +394,7 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplace(std::string_view 
     model->setName(std::string(name)); // before addBlock, so that init() sees the final name
     try {
         _impl->view->addBlock(model);
-    } catch (const gr::exception& error) { // init() throws the parameters the block refuses
+    } catch (const gr::exception& error) { // init() throws for a parameter the block refuses
         return std::unexpected(localError(error.message, "RuntimeGraph::emplace"));
     } catch (const std::exception& error) {
         return std::unexpected(localError(error.what(), "RuntimeGraph::emplace"));
@@ -401,7 +413,13 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::add(std::shared_ptr<Block
     if (!name.empty()) {
         block->setName(std::string(name)); // before addBlock, so that init() sees the final name
     }
-    _impl->view->addBlock(block);
+    try {
+        _impl->view->addBlock(block);
+    } catch (const gr::exception& error) { // init() throws for a parameter the block refuses
+        return std::unexpected(localError(error.message, "RuntimeGraph::add"));
+    } catch (const std::exception& error) {
+        return std::unexpected(localError(error.what(), "RuntimeGraph::add"));
+    }
     return BlockHandle(std::shared_ptr<void>(std::move(block)));
 }
 
@@ -410,18 +428,25 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplaceSubgraph(std::stri
         return std::unexpected(localError("graph handle is empty", "RuntimeGraph::emplaceSubgraph"));
     }
 
-    auto wrapper = std::make_shared<GraphWrapper<Graph>>(std::move(parameters));
-    wrapper->setName(std::string(name));
+    constexpr std::string_view where = "RuntimeGraph::emplaceSubgraph";
+    try {
+        auto wrapper = std::make_shared<GraphWrapper<Graph>>(std::move(parameters));
+        wrapper->setName(std::string(name));
 
-    // Graph(property_map) always takes the global loader, so a nested graph would not inherit
-    // whichever loader its parent was given
-    if (Graph* inner = wrapper->graph(); inner != nullptr) {
-        inner->_pluginLoader = _impl->view->_pluginLoader;
+        // Graph(property_map) always takes the global loader, so a nested graph would not inherit
+        // whichever loader its parent was given
+        if (Graph* inner = wrapper->graph(); inner != nullptr) {
+            inner->_pluginLoader = _impl->view->_pluginLoader;
+        }
+
+        std::shared_ptr<BlockModel> model = wrapper;
+        _impl->view->addBlock(model);
+        return BlockHandle(std::shared_ptr<void>(std::move(model)));
+    } catch (const gr::exception& error) { // the graph's settings or init() refuse the parameters
+        return std::unexpected(localError(error.message, where));
+    } catch (const std::exception& error) {
+        return std::unexpected(localError(error.what(), where));
     }
-
-    std::shared_ptr<BlockModel> model = wrapper;
-    _impl->view->addBlock(model);
-    return BlockHandle(std::shared_ptr<void>(std::move(model)));
 }
 
 std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::interior(const BlockHandle& block) const {
@@ -641,9 +666,12 @@ std::expected<Runtime, RuntimeError> Runtime::create(RuntimeGraph&& graph, std::
     if (!graph._impl || !graph._impl->owned) {
         return std::unexpected(localError("Runtime::create needs a graph this RuntimeGraph owns, not a view", "Runtime::create"));
     }
-    std::unique_ptr<Graph> owned = std::move(graph._impl->owned);
-    graph._impl.reset();
-    return create(std::move(*owned), type, std::move(schedulerParameters));
+    // the inner create moves the graph out only as its last step, so a refused call leaves the caller's graph intact
+    std::expected<Runtime, RuntimeError> runtime = create(std::move(*graph._impl->owned), type, std::move(schedulerParameters));
+    if (runtime.has_value()) {
+        graph._impl.reset();
+    }
+    return runtime;
 }
 
 std::expected<Runtime, RuntimeError> Runtime::create(gr::Graph&& graph, std::string_view type, property_map schedulerParameters) {
@@ -651,14 +679,30 @@ std::expected<Runtime, RuntimeError> Runtime::create(gr::Graph&& graph, std::str
 
     PluginLoader& loader = loaderFor(graph);
 
-    std::shared_ptr<SchedulerModel> scheduler = loader.instantiateScheduler(type, schedulerParameters);
+    constexpr std::string_view      where = "Runtime::create";
+    std::shared_ptr<SchedulerModel> scheduler;
+    try {
+        scheduler = loader.instantiateScheduler(type, schedulerParameters);
+    } catch (const gr::exception& error) { // the scheduler's constructor throws for a value it refuses
+        return std::unexpected(localError(error.message, where));
+    } catch (const std::exception& error) {
+        return std::unexpected(localError(error.what(), where));
+    }
     if (!scheduler) {
-        return std::unexpected(localError(std::format("unknown scheduler type '{}' -- {} types are available, see availableSchedulerTypes()", type, loader.availableSchedulers().size()), "Runtime::create"));
+        return std::unexpected(localError(std::format("unknown scheduler type '{}' -- {} types are available, see availableSchedulerTypes()", type, loader.availableSchedulers().size()), where));
     }
 
     auto impl            = std::make_unique<Runtime::Impl>();
     impl->scheduler      = std::move(scheduler);
     impl->schedulerBlock = SchedulerModel::asBlockModelPtr(impl->scheduler);
+
+    // the scheduler's constructor files a key it does not declare as meta-information and keeps the default
+    const std::set<std::string>& declared = impl->schedulerBlock->settings().writableMembers();
+    for (const auto& [key, value] : schedulerParameters) {
+        if (const std::string keyName{std::string_view(key)}; !declared.contains(keyName)) {
+            return std::unexpected(localError(std::format("scheduler type '{}' declares no setting '{}'", type, keyName), where));
+        }
+    }
 
     // subscribe before the graph starts: an unread msgOut turns a child's error into an exception
     // thrown on a worker thread, taking the reason with it
