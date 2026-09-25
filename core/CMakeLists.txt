@@ -34,6 +34,25 @@ if(EMSCRIPTEN)
   add_library(gnuradio-blocklib-core STATIC src/BlockRegistry.cpp)
 else()
   add_library(gnuradio-blocklib-core SHARED src/BlockRegistry.cpp)
+  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/gnuradio-4.0/Plugin.hpp" _gr_plugin_abi_define
+       REGEX "^#define[ \t]+GR_PLUGIN_CURRENT_ABI_VERSION[ \t]+[0-9]+")
+  list(LENGTH _gr_plugin_abi_define _gr_plugin_abi_define_count)
+  if(NOT
+     _gr_plugin_abi_define_count
+     EQUAL
+     1)
+    message(FATAL_ERROR "Plugin.hpp defines GR_PLUGIN_CURRENT_ABI_VERSION ${_gr_plugin_abi_define_count} times, "
+                        "and the block-library core needs exactly one definition for its SOVERSION")
+  endif()
+  string(
+    REGEX
+    REPLACE "^#define[ \t]+GR_PLUGIN_CURRENT_ABI_VERSION[ \t]+([0-9]+).*$"
+            "\\1"
+            _gr_plugin_abi_version
+            "${_gr_plugin_abi_define}")
+  # The SOVERSION guards the registration layout a block library was built against: the dynamic linker refuses a block
+  # library that needs another number. The number is GR_PLUGIN_CURRENT_ABI_VERSION and moves with it.
+  set_target_properties(gnuradio-blocklib-core PROPERTIES SOVERSION ${_gr_plugin_abi_version})
 endif()
 add_library(gnuradio4::gnuradio-blocklib-core ALIAS gnuradio-blocklib-core)
 message(INFO "PATH include " $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/>)
