@@ -15,7 +15,7 @@ namespace gr::testing {
 
 std::unique_ptr<gr::SchedulerModel> makeForeignScheduler(gr::property_map /*parameters*/) { return nullptr; }
 
-const bool registered [[maybe_unused]] = gr::globalSchedulerRegistry().insert("test::plugin_foreign_scheduler", "", makeForeignScheduler, gr::block::kDefaultVersion, {}, 1);
+const bool registered [[maybe_unused]] = gr::globalSchedulerRegistry().insert("test::plugin_foreign_scheduler", "", makeForeignScheduler, {}, 1);
 
 gr::plugin<GR_PLUGIN_CURRENT_ABI_VERSION>& foreignSchedulerPlugin() {
     static gr::plugin<GR_PLUGIN_CURRENT_ABI_VERSION> instance;

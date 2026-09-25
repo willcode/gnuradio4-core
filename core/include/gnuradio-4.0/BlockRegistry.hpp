@@ -55,8 +55,9 @@
 // scheduler reads the `msgIn` and `msgOut` ports of a plugin's block through typed pointers, and the layout of a port
 // crosses the boundary too. `SchedulerModel::start()` returns the refusal of a start as a `std::expected`, and a host
 // reads it from a plugin's scheduler. `gr_plugin_base` ends with `blockVersions()` and `createPinnedBlock()`, through
-// which a host reaches a plugin's block at a pinned version.
-#define GR_PLUGIN_CURRENT_ABI_VERSION 11
+// which a host reaches a plugin's block at a pinned version. `BlockModel` carries no `version()` or `status()`
+// virtual: both read the block's attributes from its meta information.
+#define GR_PLUGIN_CURRENT_ABI_VERSION 12
 
 namespace gr {
 
@@ -70,15 +71,15 @@ using BlockFactory = std::unique_ptr<BlockModel> (*)(property_map);
  *
  * `name` and `alias` are the strings the typed `insert<TBlock>()` path would have derived for the
  * same block, so a declaration-only registration unit can hand them to `insertBlockFactory()`
- * without naming the type. `version` and `status` are read in `makeBlockRegistration<TBlock>()`,
- * where the type is still named, so the unit that carries them names none either.
+ * without naming the type. `attributes` is read in `makeBlockRegistration<TBlock>()`, where the type
+ * is still named, so the unit that carries it names none either. It is the map form of what the type
+ * declares, version included, and empty for a type that declares nothing.
  */
 struct BlockRegistration {
-    std::string    name;
-    std::string    alias;
-    BlockFactory   factory = nullptr;
-    block::Version version = block::kDefaultVersion;
-    block::Status  status{};
+    std::string  name;
+    std::string  alias;
+    BlockFactory factory = nullptr;
+    property_map attributes{};
 };
 
 /// The registry alias for a block registered as `alias` with template parameters `aliasParameters`.
@@ -105,10 +106,10 @@ class GeneralRegistry {
         return std::make_unique<TWrapper<TBlock>>(std::move(params));
     }
 
-    /// one registered revision of one key: its factory and what the type declares
+    /// one registered revision of one key: its factory and the map form of the attributes the type declares
     struct TVersionHandler {
         decltype(this_t::factoryProto)* createFunction = nullptr;
-        block::Status                   status{};
+        property_map                    attributes{};
     };
 
     /// A key holds every version registered under it, ordered, so the newest is the last entry. Two
@@ -138,6 +139,15 @@ class GeneralRegistry {
         return it == _blockTypeHandlers.cend() ? nullptr : std::addressof(it->second);
     }
 
+    [[nodiscard]] const TVersionHandler* versionHandlerFor(std::string_view blockName, block::Version version) const {
+        const TTypeHandler* handler = handlerFor(blockName);
+        if (handler == nullptr) {
+            return nullptr;
+        }
+        const auto versionIt = handler->versions.find(version);
+        return versionIt == handler->versions.cend() ? nullptr : std::addressof(versionIt->second);
+    }
+
 public:
     /// every entry of a registry, as `takeEntries()` moves them out and `restoreEntries()` puts them back
     struct Entries {
@@ -159,12 +169,14 @@ public:
     ~GeneralRegistry() = default;
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
-    /// Adds an entry a generated definition unit already produced: nothing here names the block type. The entry
-    /// records `abiVersion`. Its default argument is evaluated at the call site. The entry therefore records the
+    /// Adds an entry a generated definition unit already produced: nothing here names the block type. The entry is
+    /// filed under the version `attributes` states, `block::kDefaultVersion` when it states none, and records
+    /// `abiVersion`. Its default argument is evaluated at the call site. The entry therefore records the
     /// `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever copy of this function runs.
     /// Reports whether it added anything: a key, or a version under an existing key.
-    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, block::Version version = block::kDefaultVersion, block::Status status = {}, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
-        const TVersionHandler entry{.createFunction = factory, .status = status};
+    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, property_map attributes = {}, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
+        const block::Version  version = block::attributesFromMap(attributes).version;
+        const TVersionHandler entry{.createFunction = factory, .attributes = std::move(attributes)};
 
         auto addVersion = [&entry, version](TTypeHandler& handler) { return handler.versions.insert_or_assign(version, entry).second; };
 
@@ -189,10 +201,10 @@ public:
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
     bool insert(std::string_view alias = "", std::string_view aliasParameters = "", std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
-        return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, block::versionOf<TBlock>(), block::statusOf<TBlock>(), abiVersion);
+        return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, block::detail::declaredAttributesMap<TBlock>(), abiVersion);
     }
 #else
-    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] block::Version version = block::kDefaultVersion, [[maybe_unused]] block::Status status = {}, [[maybe_unused]] std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) { return false; }
+    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] property_map attributes = {}, [[maybe_unused]] std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) { return false; }
 
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
@@ -214,15 +226,11 @@ public:
 
     /// the one version named, or nothing; the instance records that it was pinned
     [[nodiscard]] std::unique_ptr<TModel> create(std::string_view blockName, block::Version version, property_map blockParams) const {
-        const TTypeHandler* handler = handlerFor(blockName);
-        if (handler == nullptr) {
+        const TVersionHandler* entry = versionHandlerFor(blockName, version);
+        if (entry == nullptr) {
             return nullptr;
         }
-        const auto versionIt = handler->versions.find(version);
-        if (versionIt == handler->versions.cend()) {
-            return nullptr;
-        }
-        auto created = versionIt->second.createFunction(std::move(blockParams));
+        auto created = entry->createFunction(std::move(blockParams));
         // only a block model records the pin; a scheduler model has no such state
         if constexpr (requires { created->setPinnedVersion(version); }) {
             if (created) {
@@ -250,17 +258,23 @@ public:
         return std::prev(handler->versions.cend())->first;
     }
 
-    /// what that one registration declares, or nothing when the key or the version is not registered
+    /// the attributes map of the newest version registered under `blockName`, empty for a type that declares none;
+    /// nothing when the key is not registered
+    [[nodiscard]] std::optional<property_map> attributes(std::string_view blockName) const {
+        const std::optional<block::Version> newest = newestVersion(blockName);
+        return newest.has_value() ? attributes(blockName, *newest) : std::nullopt;
+    }
+
+    /// the attributes map of that one registration; nothing when the key or the version is not registered
+    [[nodiscard]] std::optional<property_map> attributes(std::string_view blockName, block::Version version) const {
+        const TVersionHandler* entry = versionHandlerFor(blockName, version);
+        return entry == nullptr ? std::nullopt : std::optional<property_map>{entry->attributes};
+    }
+
+    /// the status flags that one registration declares; nothing when the key or the version is not registered
     [[nodiscard]] std::optional<block::Status> status(std::string_view blockName, block::Version version) const {
-        const TTypeHandler* handler = handlerFor(blockName);
-        if (handler == nullptr) {
-            return std::nullopt;
-        }
-        const auto versionIt = handler->versions.find(version);
-        if (versionIt == handler->versions.cend()) {
-            return std::nullopt;
-        }
-        return versionIt->second.status;
+        const TVersionHandler* entry = versionHandlerFor(blockName, version);
+        return entry == nullptr ? std::nullopt : std::optional<block::Status>{block::attributesFromMap(entry->attributes).status};
     }
 
     [[nodiscard]] std::vector<std::string> keys() const {
@@ -344,17 +358,15 @@ class SchedulerRegistry : public GeneralRegistry<SchedulerModel, SchedulerWrappe
 template<typename TBlock, meta::fixed_string OverrideName = "">
 [[nodiscard]] BlockRegistration makeBlockRegistration(BlockFactory factory) {
     using namespace vir::literals;
-    constexpr auto           name     = refl::class_name<TBlock>;
-    constexpr auto           longname = refl::type_name<TBlock>;
-    constexpr block::Version version  = block::versionOf<TBlock>();
-    constexpr block::Status  status   = block::statusOf<TBlock>();
+    constexpr auto name     = refl::class_name<TBlock>;
+    constexpr auto longname = refl::type_name<TBlock>;
     if constexpr (OverrideName != "") {
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(OverrideName, {}), factory, version, status};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(OverrideName, {}), factory, block::detail::declaredAttributesMap<TBlock>()};
     } else if constexpr (name != longname) {
         constexpr auto tmpl = longname.substring(name.size + 1_cw, longname.size - 2_cw - name.size);
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, tmpl), factory, version, status};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, tmpl), factory, block::detail::declaredAttributesMap<TBlock>()};
     } else {
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, {}), factory, version, status};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, {}), factory, block::detail::declaredAttributesMap<TBlock>()};
     }
 }
 

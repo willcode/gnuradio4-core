@@ -8,7 +8,7 @@ namespace good {
 struct VersionedFirst : gr::Block<VersionedFirst> {
     using Description = gr::Doc<"the older revision of the block this plugin registers twice">;
 
-    static constexpr gr::block::Version version = 1U;
+    static constexpr gr::block::Attributes attributes{.version = 1U};
 
     gr::PortIn<float>  in;
     gr::PortOut<float> out;
@@ -23,7 +23,7 @@ struct VersionedFirst : gr::Block<VersionedFirst> {
 struct VersionedSecond : gr::Block<VersionedSecond> {
     using Description = gr::Doc<"the newer revision, which an unpinned create takes">;
 
-    static constexpr gr::block::Version version = 2U;
+    static constexpr gr::block::Attributes attributes{.version = 2U};
 
     gr::PortIn<float>  in;
     gr::PortOut<float> out;
