@@ -940,7 +940,7 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         auto runtime = erasedChain("e5-messages", 256U, 1.0f);
         expect(runtime.has_value());
 
-        expect(runtime->send(Runtime::Command::Get, "", gr::scheduler::property::kGraphGRC).has_value());
+        expect(runtime->send(RuntimeCommand::Get, "", gr::scheduler::property::kGraphGRC).has_value());
         expect(runtime->runAndWait().has_value());
         std::ignore = takeCollected("e5-messages");
 
@@ -978,12 +978,12 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
 
         // queued before the run, handled by its first sweeps: the staged gain is applied while the graph runs
         const std::string settings(gr::block::property::kSetting);
-        expect(runtime->send(Runtime::Command::Get, scaleName, settings, {}, "get-1").has_value());
-        expect(runtime->send(Runtime::Command::Subscribe, scaleName, settings, {}, "subscribe-2").has_value());
-        expect(runtime->send(Runtime::Command::Set, scaleName, settings, {{"gain", kStagedGain}}).has_value());
-        expect(runtime->send(Runtime::Command::Get, scaleName, settings).has_value());
+        expect(runtime->send(RuntimeCommand::Get, scaleName, settings, {}, "get-1").has_value());
+        expect(runtime->send(RuntimeCommand::Subscribe, scaleName, settings, {}, "subscribe-2").has_value());
+        expect(runtime->send(RuntimeCommand::Set, scaleName, settings, {{"gain", kStagedGain}}).has_value());
+        expect(runtime->send(RuntimeCommand::Get, scaleName, settings).has_value());
         const property_map absentEdge{{std::pmr::string(serialization_fields::EDGE_SOURCE_BLOCK), std::string("qa_no_such_block")}, {std::pmr::string(serialization_fields::EDGE_SOURCE_PORT), std::string("out")}};
-        expect(runtime->send(Runtime::Command::Set, "", gr::scheduler::property::kRemoveEdge, absentEdge, "remove-3").has_value());
+        expect(runtime->send(RuntimeCommand::Set, "", gr::scheduler::property::kRemoveEdge, absentEdge, "remove-3").has_value());
         expect(runtime->runAndWait().has_value());
         std::ignore = takeCollected("e6-events");
 

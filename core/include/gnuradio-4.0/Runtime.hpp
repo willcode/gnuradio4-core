@@ -250,8 +250,6 @@ class GNURADIO_EXPORT Runtime {
 public:
     enum class State : std::uint8_t { Idle, Initialized, Running, RequestedPause, Paused, RequestedStop, Stopped, Error };
 
-    using Command = RuntimeCommand;
-
     static constexpr std::string_view kDefaultScheduler = "gr::scheduler::Simple<singleThreaded>";
 
     /// Instantiates scheduler `type`, hands it `graph` and takes ownership of both; `graph` is consumed when a runtime
@@ -311,7 +309,7 @@ public:
     [[nodiscard]] std::vector<RuntimeEvent> pollEvents(std::size_t maxEvents = 64);
 
     /// Sends to the scheduler's message input, which reaches every string-keyed endpoint.
-    [[nodiscard]] std::expected<void, RuntimeError> send(Command command, std::string_view serviceName, std::string_view endpoint, //
+    [[nodiscard]] std::expected<void, RuntimeError> send(RuntimeCommand command, std::string_view serviceName, std::string_view endpoint, //
         property_map payload = {}, std::string_view clientRequestID = {});
 
     /// Quiesces the work loop for the duration of a live graph edit.
