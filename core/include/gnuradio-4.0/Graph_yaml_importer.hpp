@@ -200,7 +200,7 @@ inline std::size_t editDistance(std::string_view from, std::string_view to) {
             diagonal                = above;
         }
     }
-    return row.back();
+    return row[to.size()];
 }
 
 /// Up to three of the candidates nearest to the name, nearest first, joined for a message.

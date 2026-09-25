@@ -1010,7 +1010,7 @@ const boost::ut::suite<"GRC load with settings"> grcSettingsTests = [] {
     using namespace gr;
     using namespace qa_grc;
 
-    constexpr std::string_view kSummedRamps = R"yaml(blocks:
+    static constexpr std::string_view kSummedRamps = R"yaml(blocks:
   - id: qa::RampSource
     parameters:
       name: left
