@@ -608,7 +608,6 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
     // every writable member of every registered block is visible and settable through the entry
     "settings parity over the whole block registry"_test = [] {
         registerTestBlocks();
-        const SettingsCtx probeCtx{.time = 1ULL, .context = std::string("qa-runtime-parity-probe")};
 
         std::vector<std::string> skipped;
         for (const std::string& key : globalBlockRegistry().keys()) {
@@ -619,19 +618,17 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
                 continue;
             }
 
-            // a context nothing has stored under falls back to the block's whole writable-member set
-            expect(handle->set({}, probeCtx).empty()) << key;
-            const std::set<std::string> writable = handle->autoUpdateParameters(probeCtx);
-            const property_map          active   = handle->activeParameters();
+            const std::set<std::string> writable = handle->writableMembers();
+            const property_map          active   = handle->get();
             expect(!writable.empty()) << key << " reports no writable members";
 
             for (const std::string& member : writable) {
                 const auto value = active.find(convert_string_domain(member));
-                expect(value != active.end()) << std::format("{}: writable member '{}' is not in activeParameters()", key, member);
+                expect(value != active.end()) << std::format("{}: writable member '{}' is not in get()", key, member);
                 if (value == active.end()) {
                     continue;
                 }
-                const property_map rejected = handle->set(property_map{{convert_string_domain(member), value->second}});
+                const property_map rejected = handle->setStaged(property_map{{convert_string_domain(member), value->second}});
                 expect(rejected.empty()) << std::format("{}: writable member '{}' was rejected by the erased path", key, member);
             }
 

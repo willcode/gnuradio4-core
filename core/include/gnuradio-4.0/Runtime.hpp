@@ -77,6 +77,9 @@ public:
     [[nodiscard]] property_map              stagedParameters() const;
     [[nodiscard]] property_map              defaultParameters() const;
 
+    /// The keys `setStaged()` accepts: the type's writable members and the parameters the block declared.
+    [[nodiscard]] std::set<std::string> writableMembers() const;
+
     [[nodiscard]] std::optional<property_map> getStored(std::span<const std::string> keys = {}, SettingsCtx ctx = {}) const;
     [[nodiscard]] std::optional<pmt::Value>   getStored(const std::string& key, SettingsCtx ctx = {}) const;
 
