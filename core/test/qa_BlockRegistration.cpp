@@ -404,6 +404,39 @@ const boost::ut::suite<"block attributes"> blockAttributesTests = [] {
         expect(registry.versions(registration.name) == std::vector<Version>{2U}) << "and files it under the version the map states";
     };
 
+    "a direct set() leaves the Attributes entry to the type and returns the key as not applied"_test = [] {
+        const std::pmr::string key(gr::block::kAttributesMetaKey);
+        constexpr Attributes   declared = gr::block::attributesOf<qa_registration::RadioTransceiver>();
+        const gr::property_map own      = registeredMap<qa_registration::RadioTransceiver>();
+        const gr::property_map another  = gr::block::attributesToMap(Attributes{.status = {.deprecated = true}, .version = Version{declared.version + 1U}}, Role::Unknown);
+        expect(another != own);
+
+        gr::BlockWrapper<qa_registration::RadioTransceiver> block;
+        expect(carriesEntry(block, own));
+
+        const gr::property_map notSet = block.settings().set({{"qa_note", gr::pmt::Value(std::string("kept"))}, {key, gr::pmt::Value(another)}});
+        expect(notSet.contains("qa_note"sv) && notSet.contains(key)) << "set() returns both keys it did not apply";
+        expect(block.metaInformation().contains("qa_note"sv)) << "an undeclared key is filed in meta_information";
+        expect(carriesEntry(block, own)) << "the Attributes entry is not";
+        expect(gr::block::attributesOf(block) == declared);
+        expect(eq(block.version(), declared.version));
+        expect(block.status() == declared.status);
+
+        expect(block.settings().setStaged({{key, gr::pmt::Value(another)}}).contains(key));
+        expect(block.settings().applyStagedParameters().appliedParameters.empty());
+        expect(carriesEntry(block, own)) << "the staged path leaves the entry as well";
+
+        block.settings().loadParametersFromPropertyMap({{key, gr::pmt::Value(another)}});
+        expect(carriesEntry(block, own)) << "and so does the graph-file path";
+
+        gr::BlockWrapper<qa_registration::Filter> undeclared;
+        expect(undeclared.settings().set({{key, gr::pmt::Value(another)}}).contains(key));
+        expect(!undeclared.metaInformation().contains(key)) << "a type that declares nothing carries no Attributes entry";
+        expect(gr::block::attributesOf(undeclared) == Attributes{});
+        expect(eq(undeclared.version(), gr::block::kDefaultVersion));
+        expect(undeclared.status() == Status{});
+    };
+
     "a device block's role follows its stream ports"_test = [] {
         expect(gr::block::roleOf<qa_registration::RadioSource>() == Role::Source);
         expect(gr::block::roleOf<qa_registration::RadioSink>() == Role::Sink);
