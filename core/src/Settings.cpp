@@ -1,3 +1,4 @@
+#include <gnuradio-4.0/BlockAttributes.hpp>
 #include <gnuradio-4.0/LifeCycle.hpp>
 #include <gnuradio-4.0/Settings.hpp>
 
@@ -932,6 +933,8 @@ void CtxSettingsBase::loadParametersFromPropertyMap(const property_map& paramete
     for (const auto& [key, value] : parameters) {
         if (_descriptor->writableByName.contains(key) || isDeclaredImpl(key)) {
             newProperties[key] = value;
+        } else if (std::string_view(key) == block::kAttributesMetaKey) {
+            continue; // an instance's Attributes entry is its type's declaration alone
         } else {
             auto str = ctx.context.value_or(std::string_view{});
             if (str.empty() && _descriptor->hooks.metaInformation != nullptr) { // store meta_information only for default

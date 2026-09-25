@@ -150,8 +150,7 @@ struct RecordingSink : Block<RecordingSink> {
 
 /// the older revision of a block registered twice, so a file can pin one of the two
 struct GainV1 : Block<GainV1> {
-    static constexpr gr::block::Status  status{.deprecated = true};
-    static constexpr gr::block::Version version = 1U;
+    static constexpr gr::block::Attributes attributes{.status = {.deprecated = true}, .version = 1U};
 
     PortIn<float>  in;
     PortOut<float> out;
@@ -164,7 +163,7 @@ struct GainV1 : Block<GainV1> {
 };
 
 struct GainV2 : Block<GainV2> {
-    static constexpr gr::block::Version version = 2U;
+    static constexpr gr::block::Attributes attributes{.version = 2U};
 
     PortIn<float>  in;
     PortOut<float> out;
@@ -179,7 +178,8 @@ struct GainV2 : Block<GainV2> {
 /// two revisions of one alias, each also its own type-name key
 template<typename TBlock>
 inline bool insertGainVersion(BlockRegistry& registry) {
-    return registry.insert(gr::meta::type_name<TBlock>(), "qa::Gain", [](property_map params) -> std::unique_ptr<BlockModel> { return std::make_unique<BlockWrapper<TBlock>>(std::move(params)); }, block::versionOf<TBlock>(), block::statusOf<TBlock>());
+    const BlockRegistration declared = makeBlockRegistration<TBlock>(+[](property_map params) -> std::unique_ptr<BlockModel> { return std::make_unique<BlockWrapper<TBlock>>(std::move(params)); });
+    return registry.insert(gr::meta::type_name<TBlock>(), "qa::Gain", declared.factory, declared.attributes);
 }
 
 inline void registerTestBlocks() {
@@ -232,6 +232,19 @@ inline gr::property_map canonicalGrc(PluginLoader& loader, const gr::Graph& grap
     auto parsed = pmt::yaml::deserialize(text);
     boost::ut::expect(parsed.has_value()) << "a dump this writer produced must parse";
     return parsed.value_or(gr::property_map{});
+}
+
+/// the `version` key of the first block entry in a saved graph, or nothing when that entry carries none
+[[nodiscard]] inline std::optional<gr::pmt::Value> savedBlockVersion(std::string_view dump) {
+    const auto parsed = gr::pmt::yaml::deserialize(dump);
+    boost::ut::expect(boost::ut::fatal(parsed.has_value())) << "a dump this writer produced must parse";
+    const auto  blocks = parsed->find("blocks");
+    const auto* list   = blocks == parsed->cend() ? nullptr : blocks->second.get_if<gr::Tensor<gr::pmt::Value>>();
+    boost::ut::expect(boost::ut::fatal(list != nullptr && list->begin() != list->end())) << "the dump lists its block";
+    const auto* entry = list->begin()->get_if<gr::property_map>();
+    boost::ut::expect(boost::ut::fatal(entry != nullptr)) << "a block entry is a map";
+    const auto version = entry->find("version");
+    return version == entry->cend() ? std::nullopt : std::optional<gr::pmt::Value>{version->second};
 }
 
 /// the graph, saved, loaded and saved again -- so the second document is what the reader made of the first
@@ -711,7 +724,7 @@ connections:
         const std::shared_ptr<BlockModel>& block = loaded->blocks().front();
         expect(eq(block->version(), gr::block::Version{2U}));
         expect(!block->pinnedVersion().has_value());
-        expect(!gr::saveGrc(loader, *loaded).contains("version:")) << "a graph that pinned nothing keeps taking the newest";
+        expect(!savedBlockVersion(gr::saveGrc(loader, *loaded)).has_value()) << "a graph that pinned nothing keeps taking the newest";
     };
 
     "a block entry that pins a version gets that version, and the save writes it back"_test = [] {
@@ -724,13 +737,49 @@ connections:
         expect(eq(block->version(), gr::block::Version{1U}));
         expect(block->pinnedVersion() == std::optional<gr::block::Version>{1U});
         expect(block->status().deprecated) << "reported, and nothing refused it";
-        expect(block->metaInformation().at("Version").value_or(gr::Size_t{}) == gr::Size_t{1});
+        const auto* declared = block->metaInformation().at(std::pmr::string(gr::block::kAttributesMetaKey)).get_if<property_map>();
+        expect(declared != nullptr && gr::block::attributesFromMap(*declared).version == gr::block::Version{1U});
 
-        const std::string dump = gr::saveGrc(loader, *loaded);
-        expect(dump.contains("version: !!uint32 1")) << dump;
+        const std::string               dump         = gr::saveGrc(loader, *loaded);
+        const std::optional<pmt::Value> savedVersion = savedBlockVersion(dump);
+        expect(savedVersion.has_value() && savedVersion->value_or(gr::block::Version{}) == gr::block::Version{1U}) << dump;
         const auto reloaded = gr::loadGrc(loader, dump);
         expect(eq(reloaded->blocks().size(), 1UZ));
         expect(reloaded->blocks().front()->pinnedVersion() == std::optional<gr::block::Version>{1U});
+    };
+
+    "an instance's Attributes entry is its type's, whatever the file's meta_information says"_test = [] {
+        registerTestBlocks();
+        PluginLoader& loader = gr::globalPluginLoader();
+
+        const auto undeclared = gr::loadGrc(loader, "blocks:\n  - id: qa::Scale\n    parameters:\n      name: scale\n    meta_information:\n      note: kept\n      Attributes: {version: 7, status: [deprecated]}\n");
+        expect(fatal(eq(undeclared->blocks().size(), 1UZ)));
+        const std::shared_ptr<BlockModel>& scale = undeclared->blocks().front();
+        expect(scale->metaInformation().contains(std::string_view("note"))) << "the file's other meta_information is restored";
+        expect(!scale->metaInformation().contains(gr::block::kAttributesMetaKey)) << "a type that declares nothing carries no Attributes entry";
+        expect(eq(scale->version(), gr::block::kDefaultVersion));
+        expect(scale->status() == gr::block::Status{});
+
+        const auto declared = gr::loadGrc(loader, "blocks:\n  - id: qa::Gain\n    parameters:\n      name: gain\n    meta_information:\n      Attributes: {resource: device, version: 1, status: [deprecated]}\n");
+        expect(fatal(eq(declared->blocks().size(), 1UZ)));
+        const std::shared_ptr<BlockModel>& gain = declared->blocks().front();
+        expect(eq(gain->version(), gr::block::Version{2U})) << "the newest registered type answers its own declaration";
+        expect(gain->status() == gr::block::Status{});
+        const auto* entry = gain->metaInformation().at(std::pmr::string(gr::block::kAttributesMetaKey)).get_if<property_map>();
+        expect(entry != nullptr && *entry == gr::block::attributesToMap(gr::block::attributesOf<GainV2>(), gr::block::roleOf<GainV2>()));
+    };
+
+    "a file's parameters cannot set an instance's Attributes entry"_test = [] {
+        registerTestBlocks();
+        PluginLoader& loader = gr::globalPluginLoader();
+
+        const auto loaded = gr::loadGrc(loader, "blocks:\n  - id: qa::Scale\n    parameters: {name: s, note: kept, Attributes: {version: 7, status: [deprecated]}}\n");
+        expect(fatal(eq(loaded->blocks().size(), 1UZ)));
+        const std::shared_ptr<BlockModel>& scale = loaded->blocks().front();
+        expect(scale->metaInformation().contains(std::string_view("note"))) << "an undeclared parameter still reaches meta_information";
+        expect(!scale->metaInformation().contains(gr::block::kAttributesMetaKey));
+        expect(eq(scale->version(), gr::block::kDefaultVersion));
+        expect(scale->status() == gr::block::Status{});
     };
 
     "a pin to a version that was never registered names the versions that were"_test = [] {

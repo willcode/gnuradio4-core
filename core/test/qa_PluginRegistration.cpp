@@ -21,6 +21,19 @@ constexpr std::string_view kVersionedKey = "test::versioned";
 
 [[nodiscard]] inline std::string versionedPluginDirectory() { return std::string(TESTS_BINARY_PATH) + "/versioned_plugin"; }
 
+/// the `version` key of the first block entry in a saved graph, or nothing when that entry carries none
+[[nodiscard]] inline std::optional<gr::pmt::Value> savedBlockVersion(std::string_view dump) {
+    const auto parsed = gr::pmt::yaml::deserialize(dump);
+    boost::ut::expect(boost::ut::fatal(parsed.has_value())) << "a dump this writer produced must parse";
+    const auto  blocks = parsed->find("blocks");
+    const auto* list   = blocks == parsed->cend() ? nullptr : blocks->second.get_if<gr::Tensor<gr::pmt::Value>>();
+    boost::ut::expect(boost::ut::fatal(list != nullptr && list->begin() != list->end())) << "the dump lists its block";
+    const auto* entry = list->begin()->get_if<gr::property_map>();
+    boost::ut::expect(boost::ut::fatal(entry != nullptr)) << "a block entry is a map";
+    const auto version = entry->find("version");
+    return version == entry->cend() ? std::nullopt : std::optional<gr::pmt::Value>{version->second};
+}
+
 } // namespace qa_plugin_registration
 
 const boost::ut::suite<"PluginRegistration"> pluginRegistrationTests = [] {
@@ -88,7 +101,7 @@ const boost::ut::suite<"PluginRegistration"> pluginRegistrationTests = [] {
         gr::Graph flow(loader);
         flow.addBlock(loader.instantiate(kVersionedKey));
         const std::string unpinnedDump = gr::saveGrc(loader, flow);
-        expect(!unpinnedDump.contains("version:")) << unpinnedDump << "an unpinned instance keeps taking the newest";
+        expect(!savedBlockVersion(unpinnedDump).has_value()) << unpinnedDump << "an unpinned instance keeps taking the newest";
 
         const auto unpinnedBack = gr::loadGrc(loader, unpinnedDump);
         expect(fatal(eq(unpinnedBack->blocks().size(), 1UZ)));
@@ -98,8 +111,9 @@ const boost::ut::suite<"PluginRegistration"> pluginRegistrationTests = [] {
         expect(fatal(pinned.has_value())) << (pinned.has_value() ? std::string{} : pinned.error().message);
         gr::Graph pinnedFlow(loader);
         pinnedFlow.addBlock(*pinned);
-        const std::string pinnedDump = gr::saveGrc(loader, pinnedFlow);
-        expect(pinnedDump.contains("version: !!uint32 1")) << pinnedDump;
+        const std::string                   pinnedDump   = gr::saveGrc(loader, pinnedFlow);
+        const std::optional<gr::pmt::Value> savedVersion = savedBlockVersion(pinnedDump);
+        expect(savedVersion.has_value() && savedVersion->value_or(gr::block::Version{}) == gr::block::Version{1U}) << pinnedDump;
 
         const auto pinnedBack = gr::loadGrc(loader, pinnedDump);
         expect(fatal(eq(pinnedBack->blocks().size(), 1UZ)));

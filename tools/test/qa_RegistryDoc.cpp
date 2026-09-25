@@ -68,8 +68,7 @@ struct DocCombiner : Block<DocCombiner> {
 struct DocFilterV1 : Block<DocFilterV1> {
     using Description = Doc<"the first revision of the filter">;
 
-    static constexpr gr::block::Status  status{.deprecated = true, .experimental = true};
-    static constexpr gr::block::Version version = 1U;
+    static constexpr gr::block::Attributes attributes{.status = {.deprecated = true, .experimental = true}, .version = 1U};
 
     PortIn<float>  in;
     PortOut<float> out;
@@ -84,7 +83,7 @@ struct DocFilterV1 : Block<DocFilterV1> {
 struct DocFilterV2 : Block<DocFilterV2> {
     using Description = Doc<"the second revision of the filter">;
 
-    static constexpr gr::block::Version version = 2U;
+    static constexpr gr::block::Attributes attributes{.version = 2U};
 
     PortIn<float>  in;
     PortOut<float> out;
@@ -125,8 +124,11 @@ struct Fixture {
         std::ignore = registry.insert<DocScale>("=doc::scale");
         std::ignore = registry.insert<DocCombiner>("=doc::combiner");
         std::ignore = registry.insert(kRefusingKey, "", &refusingFactory);
-        std::ignore = registry.insert(kVersionedKey, "", &makeDocBlock<DocFilterV1>, block::versionOf<DocFilterV1>(), block::statusOf<DocFilterV1>());
-        std::ignore = registry.insert(kVersionedKey, "", &makeDocBlock<DocFilterV2>, block::versionOf<DocFilterV2>(), block::statusOf<DocFilterV2>());
+
+        const BlockRegistration first  = makeBlockRegistration<DocFilterV1>(&makeDocBlock<DocFilterV1>);
+        const BlockRegistration second = makeBlockRegistration<DocFilterV2>(&makeDocBlock<DocFilterV2>);
+        std::ignore                    = registry.insert(kVersionedKey, "", first.factory, first.attributes);
+        std::ignore                    = registry.insert(kVersionedKey, "", second.factory, second.attributes);
     }
 
     [[nodiscard]] std::string document(gr::tools::Format format) {

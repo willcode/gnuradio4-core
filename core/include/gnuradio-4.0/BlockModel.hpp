@@ -510,14 +510,14 @@ public:
     [[nodiscard]] virtual UICategory uiCategory() const { return UICategory::None; }
 
     /**
-     * @brief The revision of the block type this instance is, and the qualities the type declares.
+     * @brief The revision of the block type this instance is, and the status flags the type declares.
      *
-     * Reported, never acted on. A type that declares neither is version `block::kDefaultVersion` with every flag
-     * false.
+     * Both read `block::attributesOf(*this)`. Reported, never acted on. A type that declares no attributes is version
+     * `block::kDefaultVersion` with every flag false.
      */
-    [[nodiscard]] virtual block::Version version() const noexcept { return block::kDefaultVersion; }
+    [[nodiscard]] block::Version version() const noexcept;
 
-    [[nodiscard]] virtual block::Status status() const noexcept { return {}; }
+    [[nodiscard]] block::Status status() const noexcept;
 
     /// The version the caller asked for by name, when it pinned one; nothing when it took the newest.
     [[nodiscard]] std::optional<block::Version> pinnedVersion() const noexcept { return _pinnedVersion; }
@@ -589,6 +589,23 @@ public:
 
     [[nodiscard]] virtual std::expected<void, Error> exportPort(bool exportFlag, std::string_view uniqueBlockName, PortDirection portDirection, std::string_view portName, std::string_view exportedName, std::source_location location = std::source_location::current());
 };
+
+namespace block {
+
+/// The attributes an instance carries under `kAttributesMetaKey` in its meta_information, every field at its default
+/// when it carries none. The returned `family` views the instance's meta_information.
+[[nodiscard]] inline Attributes attributesOf(const BlockModel& model) noexcept {
+    const property_map& meta     = model.metaInformation();
+    const auto          entry    = meta.find(kAttributesMetaKey);
+    const property_map* declared = entry == meta.cend() ? nullptr : entry->second.get_if<property_map>();
+    return declared == nullptr ? Attributes{} : attributesFromMap(*declared);
+}
+
+} // namespace block
+
+inline block::Version BlockModel::version() const noexcept { return block::attributesOf(*this).version; }
+
+inline block::Status BlockModel::status() const noexcept { return block::attributesOf(*this).status; }
 
 // two edges may name one and the same output port by index, by name, or — across a subgraph
 // boundary — through the subgraph's exported alias of an interior port, so differing
@@ -821,9 +838,6 @@ public:
     [[nodiscard]] block::Category blockCategory() const override { return T::blockCategory; }
 
     [[nodiscard]] UICategory uiCategory() const override { return T::DrawableControl::kCategory; }
-
-    [[nodiscard]] block::Version version() const noexcept override { return block::versionOf<T>(); }
-    [[nodiscard]] block::Status  status() const noexcept override { return block::statusOf<T>(); }
 
     [[nodiscard]] gr::Ratio  resamplingRatio() const noexcept override { return {static_cast<std::int32_t>(blockRef().input_chunk_size), static_cast<std::int32_t>(blockRef().output_chunk_size)}; }
     [[nodiscard]] gr::Size_t stride() const noexcept override { return blockRef().stride; }

@@ -51,15 +51,15 @@ using BlockFactory = std::unique_ptr<BlockModel> (*)(property_map);
  *
  * `name` and `alias` are the strings the typed `insert<TBlock>()` path would have derived for the
  * same block, so a declaration-only registration unit can hand them to `insertBlockFactory()`
- * without naming the type. `version` and `status` are read in `makeBlockRegistration<TBlock>()`,
- * where the type is still named, so the unit that carries them names none either.
+ * without naming the type. `attributes` is read in `makeBlockRegistration<TBlock>()`, where the type
+ * is still named, so the unit that carries it names none either. It is the map form of what the type
+ * declares, version included, and empty for a type that declares nothing.
  */
 struct BlockRegistration {
-    std::string    name;
-    std::string    alias;
-    BlockFactory   factory = nullptr;
-    block::Version version = block::kDefaultVersion;
-    block::Status  status{};
+    std::string  name;
+    std::string  alias;
+    BlockFactory factory = nullptr;
+    property_map attributes{};
 };
 
 /// The registry alias for a block registered as `alias` with template parameters `aliasParameters`.
@@ -86,10 +86,10 @@ class GeneralRegistry {
         return std::make_unique<TWrapper<TBlock>>(std::move(params));
     }
 
-    /// one registered revision of one key: its factory and what the type declares
+    /// one registered revision of one key: its factory and the map form of the attributes the type declares
     struct TVersionHandler {
         decltype(this_t::factoryProto)* createFunction = nullptr;
-        block::Status                   status{};
+        property_map                    attributes{};
     };
 
     /// A key holds every version registered under it, ordered, so the newest is the last entry. Two
@@ -107,6 +107,15 @@ class GeneralRegistry {
         return it == _blockTypeHandlers.cend() ? nullptr : std::addressof(it->second);
     }
 
+    [[nodiscard]] const TVersionHandler* versionHandlerFor(std::string_view blockName, block::Version version) const {
+        const TTypeHandler* handler = handlerFor(blockName);
+        if (handler == nullptr) {
+            return nullptr;
+        }
+        const auto versionIt = handler->versions.find(version);
+        return versionIt == handler->versions.cend() ? nullptr : std::addressof(versionIt->second);
+    }
+
 public:
     GeneralRegistry()                               = default;
     GeneralRegistry(const this_t& other)            = delete;
@@ -122,9 +131,11 @@ public:
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
     /// Adds an entry a generated definition unit already produced: nothing here names the block type.
-    /// Reports whether it added anything: a key, or a version under an existing key.
-    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, block::Version version = block::kDefaultVersion, block::Status status = {}) {
-        const TVersionHandler entry{.createFunction = factory, .status = status};
+    /// Reports whether it added anything: a key, or a version under an existing key. The entry is filed under the
+    /// version `attributes` states, `block::kDefaultVersion` when it states none.
+    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, property_map attributes = {}) {
+        const block::Version  version = block::attributesFromMap(attributes).version;
+        const TVersionHandler entry{.createFunction = factory, .attributes = std::move(attributes)};
 
         auto addVersion = [&entry, version](TTypeHandler& handler) { return handler.versions.insert_or_assign(version, entry).second; };
 
@@ -147,10 +158,10 @@ public:
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
     bool insert(std::string_view alias = "", std::string_view aliasParameters = "") {
-        return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, block::versionOf<TBlock>(), block::statusOf<TBlock>());
+        return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, block::detail::declaredAttributesMap<TBlock>());
     }
 #else
-    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] block::Version version = block::kDefaultVersion, [[maybe_unused]] block::Status status = {}) { return false; }
+    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] property_map attributes = {}) { return false; }
 
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
@@ -172,15 +183,11 @@ public:
 
     /// the one version named, or nothing; the instance records that it was pinned
     [[nodiscard]] std::unique_ptr<TModel> create(std::string_view blockName, block::Version version, property_map blockParams) const {
-        const TTypeHandler* handler = handlerFor(blockName);
-        if (handler == nullptr) {
+        const TVersionHandler* entry = versionHandlerFor(blockName, version);
+        if (entry == nullptr) {
             return nullptr;
         }
-        const auto versionIt = handler->versions.find(version);
-        if (versionIt == handler->versions.cend()) {
-            return nullptr;
-        }
-        auto created = versionIt->second.createFunction(std::move(blockParams));
+        auto created = entry->createFunction(std::move(blockParams));
         // only a block model records the pin; a scheduler model has no such state
         if constexpr (requires { created->setPinnedVersion(version); }) {
             if (created) {
@@ -208,17 +215,23 @@ public:
         return std::prev(handler->versions.cend())->first;
     }
 
-    /// what that one registration declares, or nothing when the key or the version is not registered
+    /// the attributes map of the newest version registered under `blockName`, empty for a type that declares none;
+    /// nothing when the key is not registered
+    [[nodiscard]] std::optional<property_map> attributes(std::string_view blockName) const {
+        const std::optional<block::Version> newest = newestVersion(blockName);
+        return newest.has_value() ? attributes(blockName, *newest) : std::nullopt;
+    }
+
+    /// the attributes map of that one registration; nothing when the key or the version is not registered
+    [[nodiscard]] std::optional<property_map> attributes(std::string_view blockName, block::Version version) const {
+        const TVersionHandler* entry = versionHandlerFor(blockName, version);
+        return entry == nullptr ? std::nullopt : std::optional<property_map>{entry->attributes};
+    }
+
+    /// the status flags that one registration declares; nothing when the key or the version is not registered
     [[nodiscard]] std::optional<block::Status> status(std::string_view blockName, block::Version version) const {
-        const TTypeHandler* handler = handlerFor(blockName);
-        if (handler == nullptr) {
-            return std::nullopt;
-        }
-        const auto versionIt = handler->versions.find(version);
-        if (versionIt == handler->versions.cend()) {
-            return std::nullopt;
-        }
-        return versionIt->second.status;
+        const TVersionHandler* entry = versionHandlerFor(blockName, version);
+        return entry == nullptr ? std::nullopt : std::optional<block::Status>{block::attributesFromMap(entry->attributes).status};
     }
 
     [[nodiscard]] std::vector<std::string> keys() const {
@@ -268,17 +281,15 @@ class SchedulerRegistry : public GeneralRegistry<SchedulerModel, SchedulerWrappe
 template<typename TBlock, meta::fixed_string OverrideName = "">
 [[nodiscard]] BlockRegistration makeBlockRegistration(BlockFactory factory) {
     using namespace vir::literals;
-    constexpr auto           name     = refl::class_name<TBlock>;
-    constexpr auto           longname = refl::type_name<TBlock>;
-    constexpr block::Version version  = block::versionOf<TBlock>();
-    constexpr block::Status  status   = block::statusOf<TBlock>();
+    constexpr auto name     = refl::class_name<TBlock>;
+    constexpr auto longname = refl::type_name<TBlock>;
     if constexpr (OverrideName != "") {
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(OverrideName, {}), factory, version, status};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(OverrideName, {}), factory, block::detail::declaredAttributesMap<TBlock>()};
     } else if constexpr (name != longname) {
         constexpr auto tmpl = longname.substring(name.size + 1_cw, longname.size - 2_cw - name.size);
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, tmpl), factory, version, status};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, tmpl), factory, block::detail::declaredAttributesMap<TBlock>()};
     } else {
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, {}), factory, version, status};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, {}), factory, block::detail::declaredAttributesMap<TBlock>()};
     }
 }
 

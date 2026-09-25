@@ -116,8 +116,7 @@ struct LoaderCanary : gr::Block<LoaderCanary> {
 
 // the older revision of a block registered twice, so a message can pin one of the two
 struct VersionedV1 : gr::Block<VersionedV1> {
-    static constexpr gr::block::Status  status{.deprecated = true};
-    static constexpr gr::block::Version version = 1U;
+    static constexpr gr::block::Attributes attributes{.status = {.deprecated = true}, .version = 1U};
 
     gr::PortIn<float>  in;
     gr::PortOut<float> out;
@@ -128,7 +127,7 @@ struct VersionedV1 : gr::Block<VersionedV1> {
 };
 
 struct VersionedV2 : gr::Block<VersionedV2> {
-    static constexpr gr::block::Version version = 2U;
+    static constexpr gr::block::Attributes attributes{.version = 2U};
 
     gr::PortIn<float>  in;
     gr::PortOut<float> out;
@@ -142,7 +141,8 @@ constexpr std::string_view kVersionedType = "qa_edit::Versioned";
 
 template<typename TBlock>
 bool insertVersioned(gr::BlockRegistry& registry) {
-    return registry.insert(gr::meta::type_name<TBlock>(), kVersionedType, [](gr::property_map params) -> std::unique_ptr<gr::BlockModel> { return std::make_unique<gr::BlockWrapper<TBlock>>(std::move(params)); }, gr::block::versionOf<TBlock>(), gr::block::statusOf<TBlock>());
+    const gr::BlockRegistration declared = gr::makeBlockRegistration<TBlock>(+[](gr::property_map params) -> std::unique_ptr<gr::BlockModel> { return std::make_unique<gr::BlockWrapper<TBlock>>(std::move(params)); });
+    return registry.insert(gr::meta::type_name<TBlock>(), kVersionedType, declared.factory, declared.attributes);
 }
 
 using TestScheduler = gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::multiThreaded>;

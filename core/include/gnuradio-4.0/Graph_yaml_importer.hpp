@@ -314,6 +314,11 @@ inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGrap
                 return;
             }
             for (const auto& [key, value] : *meta) {
+                // An instance's Attributes entry is its type's declaration alone. The file's copy is skipped, and a
+                // type that declares no attributes carries no such entry.
+                if (std::string_view(key) == block::kAttributesMetaKey) {
+                    continue;
+                }
                 createdBlock.metaInformation().try_emplace(key, value);
             }
         };
