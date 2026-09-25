@@ -78,6 +78,8 @@ Usage: grinfo [command] [options]
   --markdown         the same content as a CommonMark document
   --html             the same content as one HTML page that loads nothing else
   --verbose          with blocks, every block in detail rather than its name
+  --resource <word>  with blocks, only the blocks whose newest version declares
+                     that resource: none, device, file or network
   --all-settings     also the settings the framework declares on every block
   --help, -h         this text
 
@@ -98,10 +100,16 @@ A block is reported once however many instantiations it has: their type
 parameters are listed together, and a port or a setting is written in terms of
 those parameters wherever that is what tells the instantiations apart.
 
-What a block or a scheduler reports is read from an instance the registry
-creates with no parameters. The file a key came from is the file the dynamic
-linker holds that instance's type information in, so a block linked into this
-program is told apart from one a library brought.
+A block's or a scheduler's ports and settings are read from an instance the
+registry creates with no parameters. The file a key came from is the file the
+dynamic linker holds that instance's type information in, so a block linked into
+this program is told apart from one a library brought.
+
+The attributes a block type declares are read from its registration without an
+instance: the resource it holds, its family, what it emits, where its
+processing runs, the role its ports give it, its status and its version. Each
+declared word has a line of its own, and a block that declares none reports its
+version alone.
 
 --json, --markdown and --html each select one form of the report, and a
 command line that selects two is refused.
@@ -142,6 +150,9 @@ struct Options {
     bool                     verbose     = false;
     bool                     allSettings = false;
     bool                     help        = false;
+    // the resource `blocks` narrows its list to, and the word it was given as; nothing narrows without the option
+    std::optional<gr::block::Resource> resource;
+    std::string                        resourceWord;
 };
 
 // the command line, or nothing when it cannot be used; every refusal is reported as it is found
@@ -181,6 +192,26 @@ struct Options {
                 return std::nullopt;
             }
             options.pluginDirectories.emplace_back(arguments[index + 1UZ]);
+            index += 2UZ;
+            continue;
+        }
+        if (argument == "--resource") {
+            if (index + 1UZ >= arguments.size()) {
+                std::println(stderr, "{}: {} needs a value", kProgram, argument);
+                return std::nullopt;
+            }
+            // the word is read as a declaration would be, so the words allowed are the attributes' own
+            const std::string_view word = arguments[index + 1UZ];
+            gr::property_map       asked;
+            asked.insert_or_assign(std::pmr::string(gr::block::detail::kResourceKey), gr::pmt::Value(word));
+            std::vector<std::string>    rejected;
+            const gr::block::Attributes read = gr::block::attributesFromMap(asked, rejected);
+            if (!rejected.empty()) {
+                std::println(stderr, "{}: --{}", kProgram, rejected.front());
+                return std::nullopt;
+            }
+            options.resource = read.resource;
+            options.resourceWord.assign(word);
             index += 2UZ;
             continue;
         }
@@ -561,7 +592,8 @@ struct Instantiation {
     std::string              uiCategory;
     std::string              status;
     gr::block::Version       version = gr::block::kDefaultVersion;
-    std::string              error; // why no instance could be made; nothing below is filled then
+    gr::property_map         attributes; // what the type declares, from its registration; empty where it declares nothing
+    std::string              error;      // why no instance could be made; nothing below is filled then
     bool                     detailed = false;
     std::string              description;
     std::string              settingsError;
@@ -752,6 +784,7 @@ void collectSettings(const gr::BlockModel& block, std::vector<Setting>& into) {
     fact.family     = parts.family;
     fact.name       = parts.name;
     fact.parameters = splitParameters(parts.parameters);
+    fact.attributes = context.loader.blockAttributes(key).value_or(gr::property_map{});
 
     std::shared_ptr<gr::BlockModel> instance;
     try {
@@ -1239,16 +1272,27 @@ void printPortsAndSettings(const BlockTables& tables, std::string_view indent) {
         facts.emplace_back("types", list);
     }
     const Instantiation& first = block.instantiations.front();
+    // the words of a declaring type include its version and its status, and they are read without an instance, so a
+    // type whose factory fails still prints them; a type that declares nothing reports its version alone
+    const std::vector<gr::tools::AttributeText> declared = gr::tools::attributeTexts(first.attributes);
     if (!first.error.empty()) {
+        for (const gr::tools::AttributeText& word : declared) {
+            facts.emplace_back(word.key, word.value);
+        }
         facts.emplace_back("error", first.error);
         return facts;
     }
     if (first.registry == Registry::Blocks) {
         facts.emplace_back("category", std::format("{}, UI {}", first.blockCategory, first.uiCategory));
     }
-    facts.emplace_back("version", std::to_string(first.version));
-    if (!first.status.empty()) {
-        facts.emplace_back("status", first.status);
+    for (const gr::tools::AttributeText& word : declared) {
+        facts.emplace_back(word.key, word.value);
+    }
+    if (declared.empty()) {
+        facts.emplace_back("version", std::to_string(first.version));
+        if (!first.status.empty()) {
+            facts.emplace_back("status", first.status);
+        }
     }
     if (first.registry == Registry::Blocks) {
         // A key registered under a name of its own reports the type it is an alias of, and only then is the row
@@ -1463,6 +1507,27 @@ void writeInstantiation(JsonWriter& json, const Instantiation& fact) {
     json.member("uiCategory", fact.uiCategory);
     json.count("version", static_cast<std::size_t>(fact.version));
     json.member("status", fact.status);
+    if (!fact.attributes.empty()) {
+        json.key("attributes");
+        json.beginObject();
+        for (const std::string_view name : gr::tools::kAttributeKeys) {
+            const auto entry = fact.attributes.find(name);
+            if (entry == fact.attributes.cend()) {
+                continue;
+            }
+            json.key(name);
+            if (const auto* words = entry->second.get_if<gr::Tensor<gr::pmt::Value>>(); words != nullptr) {
+                json.beginArray();
+                for (const gr::pmt::Value& word : *words) {
+                    json.string(word.value_or(std::string_view{}));
+                }
+                json.endArray();
+            } else {
+                writeValue(json, entry->second);
+            }
+        }
+        json.endObject();
+    }
     json.member("error", fact.error);
     json.member("settingsError", fact.settingsError);
     if (fact.detailed) {
@@ -2027,10 +2092,10 @@ void documentVersion(DocWriter& document, const Context& context) {
     writeTotals(document, versionTotals(context));
 }
 
-[[nodiscard]] std::vector<std::pair<std::string, std::string>> blockTotals(const Context& context, const std::vector<Library>& libraries) {
+[[nodiscard]] std::vector<std::pair<std::string, std::string>> blockTotals(const Totals& totals, const std::vector<Library>& libraries) {
     return {
-        {"block keys", std::to_string(context.totals.blockKeys)},
-        {"block families", std::to_string(context.totals.blockFamilies)},
+        {"block keys", std::to_string(totals.blockKeys)},
+        {"block families", std::to_string(totals.blockFamilies)},
         {"libraries", std::to_string(libraries.size())},
     };
 }
@@ -2043,34 +2108,62 @@ void documentVersion(DocWriter& document, const Context& context) {
 }
 
 void reportBlocks(Context& context, const Options& options) {
+    // --resource keeps the keys whose newest version declares the word, read from the registration alone, and the
+    // totals of blocks, block libraries and plugins count what is kept
+    std::vector<std::string> keys   = context.keys;
+    Totals                   totals = context.totals;
+    if (options.resource.has_value()) {
+        std::erase_if(keys, [&context, &options](const std::string& key) { return gr::block::attributesFromMap(context.loader.blockAttributes(key).value_or(gr::property_map{})).resource != *options.resource; });
+        std::set<std::string> families;
+        for (const std::string& key : keys) {
+            families.emplace(partsOf(key).family);
+        }
+        totals.blockKeys     = keys.size();
+        totals.blockFamilies = families.size();
+    }
+
     std::vector<Instantiation> facts;
-    facts.reserve(context.keys.size());
-    for (const std::string& key : context.keys) {
+    facts.reserve(keys.size());
+    for (const std::string& key : keys) {
         facts.push_back(readKey(context, key, Registry::Blocks, options.verbose));
     }
     const std::vector<Library> libraries = group(std::move(facts));
+    if (options.resource.has_value()) {
+        totals.blockLibraries = static_cast<std::size_t>(std::ranges::count(libraries, KeyOrigin::BlockLibrary, &Library::origin));
+        totals.plugins        = static_cast<std::size_t>(std::ranges::count(libraries, KeyOrigin::Plugin, &Library::origin));
+    }
 
     if (options.form == Form::Json) {
         JsonWriter json;
         json.beginObject();
         json.count("schema", 2UZ);
         json.member("command", "blocks");
+        json.member("resource", options.resourceWord);
         writeLibraries(json, libraries, Registry::Blocks);
-        writeTotals(json, context.totals);
+        writeTotals(json, totals);
         json.endObject();
         std::println("{}", json.text);
         return;
     }
     if (options.form != Form::Text) {
         DocWriter document = documentFor(options.form, "grinfo blocks");
+        if (options.resource.has_value()) {
+            document.paragraph(std::format("blocks declaring resource: {}", options.resourceWord));
+        }
         documentLibraries(document, libraries, options.verbose, options.allSettings);
-        writeTotals(document, blockTotals(context, libraries));
+        writeTotals(document, blockTotals(totals, libraries));
         std::print("{}", document.finish());
         return;
     }
 
+    if (options.resource.has_value()) {
+        std::println("blocks declaring resource: {}", options.resourceWord);
+        if (!libraries.empty()) {
+            std::print("\n");
+        }
+    }
     printLibraries(libraries, options.verbose, options.allSettings);
-    printTotals(blockTotals(context, libraries));
+    printTotals(blockTotals(totals, libraries));
 }
 
 void reportSchedulers(Context& context, const Options& options) {

@@ -296,6 +296,45 @@ connections:
 /// every scalar the file above carries, each of which the document has to hold
 constexpr std::array<std::string_view, 22> kEveryKeyScalars{"Keys fixture", "7", "source_1", "NormalBlock", "source", "64", "leaf_value", "origin", "fast", "3", "512", "context_extra", "top-left", "ScheduledBlockGroup", "front_end", "gr::scheduler::Simple", "workers", "cpu_two", "nested_metadata", "gain", "4096", "extra_element"};
 
+/// A graph over the test plugin that registers `test::versioned` twice: the newer revision declares
+/// a device and the older one nothing. The same type is named under its own key, unpinned, pinned
+/// to each revision, and inside a subgraph.
+constexpr std::string_view kDeviceGraph = R"(blocks:
+  - id: test::versioned
+    parameters:
+      name: radio
+  - id: good::VersionedFirst
+    parameters:
+      name: plain
+  - id: test::versioned
+    version: 1
+    parameters:
+      name: pinned_old
+  - id: SUBGRAPH
+    parameters:
+      name: inner
+    graph:
+      blocks:
+        - id: good::VersionedSecond
+          parameters:
+            name: nested_radio
+        - id: test::versioned
+          version: 2
+          parameters:
+            name: pinned_new
+)";
+
+/// the same plugin's types with no revision that declares a device
+constexpr std::string_view kNoDeviceGraph = R"(blocks:
+  - id: good::VersionedFirst
+    parameters:
+      name: plain
+  - id: test::versioned
+    version: 1
+    parameters:
+      name: pinned_old
+)";
+
 /// every block name and type, and both ends of every connection, at every level of the fixture
 constexpr std::array<std::string_view, 7> kBlockNames{"source", "front_end", "sink", "pre_gain", "inner_chain", "fine_gain", "combiner"};
 constexpr std::array<std::string_view, 4> kBlockTypes{"qa::RampSource", "qa::Scale", "qa::SumInputs", "qa::RecordingSink"};
@@ -717,6 +756,27 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
         expect(!nestedVerdict.accepted && nestedVerdict.message.contains("Unable to parse exported port (not a list)")) << "and refuses the same entry inside a subgraph" << nestedVerdict.message;
 #endif
     };
+
+#ifdef GR_TOOLS_VERSIONED_PLUGIN
+    "the summary names the blocks whose type holds a device, in document order"_test = [] {
+        const std::string pluginDirectory = std::format("--plugin-dir \"{}\"", GR_TOOLS_VERSIONED_PLUGIN);
+        const Run         devices         = describe("device_graph.yaml", kDeviceGraph, pluginDirectory);
+        expect(eq(devices.exitCode, 0)) << devices.output;
+        expect(devices.output.contains("- **Blocks holding a device**: radio (test::versioned), nested_radio (good::VersionedSecond), pinned_new (test::versioned)\n")) << "the newest revision, or the one the entry pins" << devices.output;
+        expect(!devices.output.contains("plain (")) << devices.output;
+        expect(!devices.output.contains("pinned_old (")) << "the pinned revision declares nothing" << devices.output;
+
+        const Run none = describe("no_device_graph.yaml", kNoDeviceGraph, pluginDirectory);
+        expect(eq(none.exitCode, 0)) << none.output;
+        expect(none.output.contains("pinned_old")) << "the instrument: the document was written" << none.output;
+        expect(!none.output.contains("Blocks holding a device")) << "no line where no block declares a device" << none.output;
+
+        const Run fixtureDocument = describe("nested_graph_copy.yaml", fixture(), pluginDirectory);
+        expect(eq(fixtureDocument.exitCode, 0)) << fixtureDocument.output;
+        expect(fixtureDocument.output.contains("\n### Subgraph: front_end / inner_chain\n")) << "the instrument: the whole document was written" << fixtureDocument.output;
+        expect(!fixtureDocument.output.contains("Blocks holding a device")) << "the fixture graph declares none" << fixtureDocument.output;
+    };
+#endif
 
     "the summary counts the blocks of a level by kind"_test = [] {
         const auto level = graphdoc::read(kEveryKey);
