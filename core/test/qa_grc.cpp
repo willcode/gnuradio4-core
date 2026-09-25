@@ -8,16 +8,22 @@
 #include <gnuradio-4.0/Scheduler.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 /**
  * The GRC round trip: a graph saved by gr::saveGrc and read back by gr::loadGrc is the same graph.
@@ -173,6 +179,18 @@ struct GainV2 : Block<GainV2> {
     explicit GainV2(property_map init = {}) : Block<GainV2>(std::move(init)) {}
 
     [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
+};
+
+/// a source with a declared message input, so a definition can export a message port beside a stream port
+struct ControlledSource : Block<ControlledSource> {
+    MsgPortIn      command;
+    PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(ControlledSource, command, out);
+
+    explicit ControlledSource(property_map init = {}) : Block<ControlledSource>(std::move(init)) {}
+
+    [[nodiscard]] constexpr float processOne() const noexcept { return 0.0f; }
 };
 
 /// two revisions of one alias, each also its own type-name key
@@ -352,6 +370,115 @@ inline gr::PluginLoader recipeLoader(const std::vector<std::string>& roots) {
     static const bool        registered = registry.insert<Scale>("=qa::Scale");
     boost::ut::expect(registered) << "the interior block must reach the recipe loader's registry";
     return PluginLoader(registry, schedulers, roots);
+}
+
+/// a loader over its own registry, which holds the interior blocks of the attribute definitions and `qa::Gain` at
+/// version 2 alone
+inline gr::PluginLoader attributesLoader(const std::vector<std::string>& roots) {
+    static BlockRegistry     registry;
+    static SchedulerRegistry schedulers;
+    static const bool        registered = registry.insert<SumInputs>("=qa::SumInputs") && registry.insert<ControlledSource>("=qa::ControlledSource") && registry.insert<GainV2>("=qa::Gain");
+    boost::ut::expect(registered) << "the interior blocks must reach the attributes loader's registry";
+    return PluginLoader(registry, schedulers, roots);
+}
+
+// The capture moves file descriptor 2 with dup2, which the Emscripten file system does not promise to honor, so an
+// Emscripten build compiles out the capture and every assertion on a printed line.
+#if !defined(__EMSCRIPTEN__)
+/// stderr redirected into a file while it lives, so that what a load prints can be read back
+struct StderrCapture {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / std::format("qa_grc.{}.err", ::getpid());
+
+    int _savedFd = -1;
+
+    StderrCapture() {
+        std::fflush(stderr);
+        _savedFd            = ::dup(STDERR_FILENO);
+        const int captureFd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        ::dup2(captureFd, STDERR_FILENO);
+        ::close(captureFd);
+    }
+
+    StderrCapture(const StderrCapture&)            = delete;
+    StderrCapture& operator=(const StderrCapture&) = delete;
+
+    ~StderrCapture() {
+        std::fflush(stderr);
+        ::dup2(_savedFd, STDERR_FILENO);
+        ::close(_savedFd);
+        std::filesystem::remove(path);
+    }
+
+    [[nodiscard]] std::string text() const {
+        std::fflush(stderr);
+        std::ifstream     file(path);
+        std::stringstream captured;
+        captured << file.rdbuf();
+        return captured.str();
+    }
+};
+#endif
+
+/**
+ * A definitions root whose definitions declare attributes under `definition_metadata`.
+ *
+ * `qa::RadioSource` exports one output and `qa::RadioSink` two inputs, so the two derive opposite roles.
+ * `qa::ControlledRadio` exports a message input and a stream output. `qa::BadWord` states a `resource` outside the set,
+ * `qa::Revised` a second revision, `qa::NotAMap` an `attributes` value that is not a map, and `qa::Plain` nothing.
+ * `qa::Gain` is a key the loader's registry holds at version 2.
+ */
+struct AttributesAssetRoot {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / "gr4_qa_grc_attributes";
+
+    AttributesAssetRoot() {
+        std::filesystem::remove_all(path);
+        std::filesystem::create_directories(path);
+        std::ofstream index(path / "index.yaml");
+        index << "assets:\n";
+        const auto write = [this, &index](std::string_view file, std::string_view blockType, std::string_view attributes, std::string_view exportedPorts, std::string_view innerType = "qa::SumInputs") {
+            index << std::format("  - file: {}\n    created: \"2024-01-01-00:00:00\"\n    modified: \"2024-01-15-10:00:00\"\n    block_type: {}\n", file, blockType);
+            std::ofstream asset(path / file);
+            asset << std::format("definition_metadata:\n  block_type: {}\n{}blocks:\n  - id: SUBGRAPH\n    parameters:\n      name: composite\n    graph:\n      blocks:\n        - id: \"{}\"\n          parameters:\n            name: inner\n      exported_ports:\n{}", blockType, attributes, innerType, exportedPorts);
+        };
+        constexpr std::string_view kOutput = "        - [inner, OUTPUT, out, out]\n";
+        write("radio_source.yaml", "qa::RadioSource", "  attributes: {resource: device, family: example, emits: none, status: [experimental]}\n", kOutput);
+        write("radio_sink.yaml", "qa::RadioSink", "  attributes: {resource: device, family: example, emits: rf}\n", "        - [inner, INPUT, \"in#0\", in0]\n        - [inner, INPUT, \"in#1\", in1]\n");
+        write("controlled_radio.yaml", "qa::ControlledRadio", "  attributes: {resource: device, family: example}\n", "        - [inner, INPUT, command, command]\n" + std::string(kOutput), "qa::ControlledSource");
+        write("bad_word.yaml", "qa::BadWord", "  attributes: {resource: radio, family: example}\n", kOutput);
+        write("revised.yaml", "qa::Revised", "  attributes: {resource: file, version: 2}\n", kOutput);
+        write("not_a_map.yaml", "qa::NotAMap", "  attributes: 3\n", kOutput);
+        write("gain.yaml", "qa::Gain", "  attributes: {resource: file, family: shadow}\n", kOutput);
+        write("plain.yaml", "qa::Plain", "", kOutput);
+    }
+
+    AttributesAssetRoot(const AttributesAssetRoot&)            = delete;
+    AttributesAssetRoot& operator=(const AttributesAssetRoot&) = delete;
+
+    ~AttributesAssetRoot() { std::filesystem::remove_all(path); }
+};
+
+/// the loader over `root` built by `attributesLoader()`, with what its load wrote to stderr in `printed`
+[[nodiscard]] inline PluginLoader loadAttributesRoot(const AttributesAssetRoot& root, std::string& printed) {
+#if defined(__EMSCRIPTEN__)
+    printed.clear();
+    return attributesLoader({root.path.string()});
+#else
+    const StderrCapture capture;
+    PluginLoader        loader = attributesLoader({root.path.string()});
+    printed                    = capture.text();
+    return loader;
+#endif
+}
+
+/// whether `ports` holds a stream port, alone or inside a collection
+[[nodiscard]] inline bool holdsStreamPort(const BlockModel::DynamicPorts& ports) {
+    const auto isStream = [](const DynamicPort& port) { return port::isStream(port.portMaskInfo()); };
+    return std::ranges::any_of(ports, [&isStream](const BlockModel::DynamicPortOrCollection& portOrCollection) {
+        if (const auto* port = std::get_if<DynamicPort>(&portOrCollection); port != nullptr) {
+            return isStream(*port);
+        }
+        return std::ranges::any_of(std::get<BlockModel::NamedPortCollection>(portOrCollection).ports, isStream);
+    });
 }
 
 inline std::size_t countCategory(const gr::Graph& graph, block::Category category) {
@@ -780,6 +907,148 @@ connections:
         expect(!scale->metaInformation().contains(gr::block::kAttributesMetaKey));
         expect(eq(scale->version(), gr::block::kDefaultVersion));
         expect(scale->status() == gr::block::Status{});
+    };
+
+    "a definition's attributes are its declared words and the role its exported ports derive"_test = [] {
+        const AttributesAssetRoot assets;
+        std::string               printed;
+        PluginLoader              loader = loadAttributesRoot(assets, printed);
+        expect(eq(loader.nSkippedAssets(), 0UZ)) << "no definition is skipped for an attribute";
+#if !defined(__EMSCRIPTEN__)
+        expect(printed.contains("qa::BadWord")) << "the capture holds what the load printed";
+        expect(!printed.contains("qa::RadioSource") && !printed.contains("qa::RadioSink")) << printed;
+#endif
+
+        using gr::block::Resource;
+        using gr::block::Role;
+        const property_map sourceExpected = gr::block::attributesToMap({.resource = Resource::Device, .family = "example", .emits = gr::block::Emits::None, .status = {.experimental = true}}, Role::Source);
+        const property_map sinkExpected   = gr::block::attributesToMap({.resource = Resource::Device, .family = "example", .emits = gr::block::Emits::Rf}, Role::Sink);
+
+        const std::optional<property_map> source = loader.blockAttributes("qa::RadioSource");
+        expect(fatal(source.has_value()));
+        expect(*source == sourceExpected) << "the declared words and the derived role";
+        expect(eq(source->at("role").value_or(std::string_view{}), std::string_view("source")));
+        expect(eq(source->at("family").value_or(std::string_view{}), std::string_view("example")));
+
+        const std::optional<property_map> sink = loader.blockAttributes("qa::RadioSink");
+        expect(fatal(sink.has_value()));
+        expect(*sink == sinkExpected) << "exported inputs alone make a sink";
+        expect(eq(sink->at("role").value_or(std::string_view{}), std::string_view("sink")));
+
+        expect(loader.blockAttributes("qa::RadioSource", gr::block::kDefaultVersion) == source) << "a definition carries version 1";
+        expect(!loader.blockAttributes("qa::RadioSource", 2U).has_value()) << "and no other";
+
+        const std::optional<property_map> plain = loader.blockAttributes("qa::Plain");
+        expect(plain.has_value() && plain->empty()) << "a definition that declares nothing answers an empty map";
+        expect(!loader.blockAttributes("qa::Absent").has_value()) << "nothing for a name nobody holds";
+    };
+
+    "an exported message input counts for no role, so beside a stream output it leaves a source"_test = [] {
+        const AttributesAssetRoot assets;
+        std::string               printed;
+        PluginLoader              loader = loadAttributesRoot(assets, printed);
+
+        const std::optional<property_map> controlled = loader.blockAttributes("qa::ControlledRadio");
+        expect(fatal(controlled.has_value()));
+        expect(*controlled == gr::block::attributesToMap({.resource = gr::block::Resource::Device, .family = "example"}, gr::block::Role::Source)) << "the message input is left out";
+        expect(eq(controlled->at("role").value_or(std::string_view{}), std::string_view("source"))) << "not transceiver";
+    };
+
+    "a definition under a key the registry holds answers nothing for a version the registry lacks"_test = [] {
+        const AttributesAssetRoot assets;
+        std::string               printed;
+        PluginLoader              loader = loadAttributesRoot(assets, printed);
+
+        expect(fatal(loader.definitionForBlockName().contains("qa::Gain"))) << "the definition registers under the key";
+        const property_map& definitionMap = loader.definitionForBlockName().at("qa::Gain").attributes;
+        expect(eq(definitionMap.at("family").value_or(std::string_view{}), std::string_view("shadow"))) << "the definition declares a map of its own";
+        expect(loader.blockVersions("qa::Gain") == std::vector<gr::block::Version>{2U}) << "the registry holds the key at version 2";
+
+        expect(!loader.blockAttributes("qa::Gain", gr::block::kDefaultVersion).has_value()) << "the registry's answer for its key is final";
+        expect(!loader.instantiatePinnedOrError("qa::Gain", gr::block::kDefaultVersion).has_value()) << "as a create of that pin refuses";
+        const std::optional<property_map> registered = loader.registry().attributes("qa::Gain", 2U);
+        expect(fatal(registered.has_value()));
+        expect(loader.blockAttributes("qa::Gain", 2U) == registered);
+        expect(loader.blockAttributes("qa::Gain") == registered) << "the newest version answers from the registry too";
+        expect(*registered != definitionMap);
+    };
+
+    "a definition's word outside the set reads as unknown, and the load prints one line naming it"_test = [] {
+        const AttributesAssetRoot assets;
+        std::string               printed;
+        PluginLoader              loader = loadAttributesRoot(assets, printed);
+
+#if !defined(__EMSCRIPTEN__)
+        const auto linesNaming = [&printed](std::string_view blockType) {
+            std::vector<std::string> lines;
+            std::istringstream       stream(printed);
+            for (std::string line; std::getline(stream, line);) {
+                if (line.contains(blockType)) {
+                    lines.push_back(line);
+                }
+            }
+            return lines;
+        };
+
+        const std::vector<std::string> badWord = linesNaming("qa::BadWord");
+        expect(fatal(eq(badWord.size(), 1UZ))) << printed;
+        expect(badWord.front().contains("bad_word.yaml")) << badWord.front();
+        expect(badWord.front().contains(": attribute resource: 'radio' is not one of")) << badWord.front();
+        expect(badWord.front().contains("none, device, file, network")) << badWord.front() << "the words allowed";
+
+        const std::vector<std::string> revised = linesNaming("qa::Revised");
+        expect(fatal(eq(revised.size(), 1UZ))) << printed;
+        expect(revised.front().contains(": version: 2 is not 1")) << revised.front() << "the value given and the one allowed";
+
+        const std::vector<std::string> notAMap = linesNaming("qa::NotAMap");
+        expect(fatal(eq(notAMap.size(), 1UZ))) << printed;
+        expect(notAMap.front().contains(": attributes: ") && notAMap.front().contains(" is not a map")) << notAMap.front();
+        expect(!printed.contains("attribute attributes")) << "each line names its key once";
+
+        expect(eq(static_cast<std::size_t>(std::ranges::count(printed, '\n')), 3UZ)) << printed;
+#endif
+
+        expect(loader.definitionForBlockName().contains("qa::BadWord")) << "the definition registers regardless";
+        const std::optional<property_map> bad = loader.blockAttributes("qa::BadWord");
+        expect(fatal(bad.has_value()));
+        expect(*bad == gr::block::attributesToMap({.family = "example"}, gr::block::Role::Unknown)) << "resource reads as unknown, so no role is derived";
+        expect(!bad->contains("resource") && !bad->contains("role"));
+
+        const std::optional<property_map> revisedMap = loader.blockAttributes("qa::Revised");
+        expect(revisedMap.has_value() && gr::block::attributesFromMap(*revisedMap).version == gr::block::kDefaultVersion) << "a definition carries version 1 whatever it states";
+        expect(revisedMap.has_value() && gr::block::attributesFromMap(*revisedMap).resource == gr::block::Resource::File) << "the other words stand";
+
+        const std::optional<property_map> notAMapMap = loader.blockAttributes("qa::NotAMap");
+        expect(notAMapMap.has_value() && notAMapMap->empty()) << "a value that is not a map answers an empty map";
+    };
+
+    "a block a definition instantiates carries the definition's attributes, and its stream ports give their role"_test = [] {
+        const AttributesAssetRoot assets;
+        std::string               printed;
+        PluginLoader              loader = loadAttributesRoot(assets, printed);
+
+        using gr::block::Role;
+        const std::array<std::pair<std::string_view, Role>, 3UZ> expectedRoles{{{"qa::RadioSource", Role::Source}, {"qa::RadioSink", Role::Sink}, {"qa::ControlledRadio", Role::Source}}};
+        for (const auto& [name, role] : expectedRoles) {
+            const std::optional<property_map> declared = loader.blockAttributes(name);
+            expect(fatal(declared.has_value())) << name;
+            const std::shared_ptr<BlockModel> instance = loader.instantiate(name);
+            expect(fatal(instance != nullptr)) << name;
+
+            const auto          entry = instance->metaInformation().find(gr::block::kAttributesMetaKey);
+            const property_map* held  = entry == instance->metaInformation().cend() ? nullptr : entry->second.get_if<property_map>();
+            expect(fatal(held != nullptr)) << name << " carries an Attributes entry";
+            expect(*held == *declared) << name << ": the instance's map is the loader's answer";
+            expect(gr::block::attributesOf(*instance) == gr::block::attributesFromMap(*declared)) << name;
+
+            const Role fromPorts = gr::block::roleFrom(gr::block::attributesOf(*instance).resource, holdsStreamPort(instance->dynamicInputPorts()), holdsStreamPort(instance->dynamicOutputPorts()));
+            expect(fromPorts == role) << name << ": the instance's stream ports";
+            expect(*declared == gr::block::attributesToMap(gr::block::attributesFromMap(*declared), fromPorts)) << name << ": the derived role is the ports' role";
+        }
+
+        const std::shared_ptr<BlockModel> plain = loader.instantiate("qa::Plain");
+        expect(fatal(plain != nullptr));
+        expect(!plain->metaInformation().contains(gr::block::kAttributesMetaKey)) << "a definition that declares nothing writes no entry";
     };
 
     "a pin to a version that was never registered names the versions that were"_test = [] {

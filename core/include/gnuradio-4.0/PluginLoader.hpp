@@ -3,8 +3,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -16,6 +18,7 @@
 
 #include "BlockRegistry.hpp"
 
+#include <gnuradio-4.0/BlockAttributes.hpp>
 #include <gnuradio-4.0/PluginMetadata.hpp>
 #include <gnuradio-4.0/YamlPmt.hpp>
 
@@ -84,10 +87,129 @@ inline std::string uriToCacheFilename(std::string_view uri) {
     return std::format("{:016x}", hash);
 }
 
+/**
+ * @brief The role of the block a definition instantiates, from the stream ports its first block entry exports.
+ *
+ * A definition instantiates its first block entry, and that entry's graph lists what the result exports under
+ * `exported_ports`. An exported entry whose direction is `INPUT` is an input and any other direction an output, as
+ * the importer reads them. An entry whose inner port is a message port counts for neither: `registry` creates the
+ * inner block with its default settings, and the port of that name states its kind. An entry that does not resolve
+ * on such an instance counts as a stream port. A resource of `Unknown` or `None` has no role, and no block is created
+ * for it.
+ */
+[[nodiscard]] inline block::Role definitionRole(const property_map& definition, block::Resource resource, const BlockRegistry& registry) {
+    if (resource == block::Resource::Unknown || resource == block::Resource::None) {
+        return block::Role::Unknown;
+    }
+    const auto find = []<typename TValue>(const property_map* map, std::string_view key, std::type_identity<TValue>) -> const TValue* {
+        if (map == nullptr) {
+            return nullptr;
+        }
+        const auto it = map->find(key);
+        return it == map->cend() ? nullptr : it->second.get_if<TValue>();
+    };
+    const auto text = [](const property_map* map, std::string_view key) -> std::string_view {
+        if (map == nullptr) {
+            return {};
+        }
+        const auto it = map->find(key);
+        return it == map->cend() ? std::string_view{} : it->second.value_or(std::string_view{});
+    };
+
+    const property_map* firstEntry = nullptr;
+    if (const auto* blocks = find(&definition, "blocks", std::type_identity<Tensor<pmt::Value>>{}); blocks != nullptr) {
+        for (const pmt::Value& entry : *blocks) {
+            if (firstEntry = entry.get_if<property_map>(); firstEntry != nullptr) {
+                break;
+            }
+        }
+    }
+    const property_map*       graph       = find(firstEntry, "graph", std::type_identity<property_map>{});
+    const Tensor<pmt::Value>* innerBlocks = find(graph, "blocks", std::type_identity<Tensor<pmt::Value>>{});
+
+    // an exported entry names its inner block by `unique_name`, or by `name` in a hand-written file
+    const auto innerTypeOf = [&](std::string_view innerName) -> std::string_view {
+        if (innerBlocks == nullptr) {
+            return {};
+        }
+        for (const pmt::Value& entry : *innerBlocks) {
+            const auto* inner = entry.get_if<property_map>();
+            if (text(inner, "unique_name") == innerName || text(find(inner, "parameters", std::type_identity<property_map>{}), "name") == innerName) {
+                return text(inner, "id");
+            }
+        }
+        return {};
+    };
+    std::map<std::string_view, std::unique_ptr<BlockModel>, std::less<>> created;
+    const auto                                                           isMessagePort = [&](std::string_view innerName, bool isInput, std::string_view portName) {
+        if (innerName.empty() || portName.empty()) {
+            return false;
+        }
+        auto [it, isNew] = created.try_emplace(innerName);
+        if (isNew) {
+            it->second = registry.create(innerTypeOf(innerName), property_map{});
+        }
+        if (it->second == nullptr) {
+            return false;
+        }
+        const std::expected<DynamicPort*, Error> port = isInput ? it->second->dynamicInputPort(portName) : it->second->dynamicOutputPort(portName);
+        return port.has_value() && !port::isStream((*port)->portMaskInfo());
+    };
+
+    bool hasInputs  = false;
+    bool hasOutputs = false;
+    if (const auto* ports = find(graph, "exported_ports", std::type_identity<Tensor<pmt::Value>>{}); ports != nullptr) {
+        for (const pmt::Value& port : *ports) {
+            const auto* fields = port.get_if<Tensor<pmt::Value>>();
+            if (fields == nullptr || fields->size() != 4UZ) {
+                continue;
+            }
+            const bool isInput = (*fields)[1].value_or(std::string_view{}) == "INPUT";
+            if (isMessagePort((*fields)[0].value_or(std::string_view{}), isInput, (*fields)[2].value_or(std::string_view{}))) {
+                continue;
+            }
+            hasInputs  = hasInputs || isInput;
+            hasOutputs = hasOutputs || !isInput;
+        }
+    }
+    return block::roleFrom(resource, hasInputs, hasOutputs);
+}
+
+/**
+ * @brief The attributes map a definition declares under `definition_metadata.attributes`, with the derived role.
+ *
+ * The map is empty when the definition has no `attributes` key or when that key's value is not a map. A map value
+ * reads as `block::attributesFromMap()` reads it, with the role of `definitionRole()`. A definition carries one
+ * revision, so the map states `block::kDefaultVersion`. The loader adds one line to `rejected` for each key the
+ * reader rejects, for an `attributes` value that is not a map and for a `version` other than `kDefaultVersion`.
+ */
+[[nodiscard]] inline property_map definitionAttributes(const property_map& definition, const property_map& definitionMetadata, const BlockRegistry& registry, std::vector<std::string>& rejected) {
+    const auto declaredIt = definitionMetadata.find("attributes");
+    if (declaredIt == definitionMetadata.cend()) {
+        return {};
+    }
+    const auto* declared = declaredIt->second.get_if<property_map>();
+    if (declared == nullptr) {
+        rejected.push_back(std::format("attributes: {} is not a map", declaredIt->second));
+        return {};
+    }
+    std::vector<std::string> rejectedKeys;
+    block::Attributes        attributes = block::attributesFromMap(*declared, rejectedKeys);
+    for (const std::string& line : rejectedKeys) {
+        rejected.push_back(std::format("attribute {}", line));
+    }
+    if (attributes.version != block::kDefaultVersion) {
+        rejected.push_back(std::format("version: {} is not {}, the one revision a definition carries", attributes.version, block::kDefaultVersion));
+        attributes.version = block::kDefaultVersion;
+    }
+    return block::attributesToMap(attributes, definitionRole(definition, attributes.resource, registry));
+}
+
 struct YamlDefinitionsLoader {
     struct Definition {
         gr::property_map   definition;
         gr_plugin_metadata metadata;
+        gr::property_map   attributes{}; ///< see definitionAttributes()
     };
 
     static std::string assetsCacheDir() {
@@ -105,9 +227,9 @@ struct YamlDefinitionsLoader {
 
     [[nodiscard]] std::size_t nSkippedAssets() const noexcept { return _nSkippedAssets; }
 
-    explicit YamlDefinitionsLoader(std::span<const std::string> uris) { loadBlockDefinitions(uris); }
+    explicit YamlDefinitionsLoader(std::span<const std::string> uris, const BlockRegistry& registry) { loadBlockDefinitions(uris, registry); }
 
-    void loadBlockDefinitions(std::span<const std::string> uris) {
+    void loadBlockDefinitions(std::span<const std::string> uris, const BlockRegistry& registry) {
         const auto cacheDir = std::filesystem::path(assetsCacheDir()) / "asset_cache";
         // the directory is made on first use, so a run that reaches no remote asset makes none and
         // says nothing about a cache it never needed
@@ -221,14 +343,34 @@ struct YamlDefinitionsLoader {
                     continue;
                 }
 
+                // a rejected attribute is reported on stderr, and the definition registers regardless
+                std::vector<std::string> rejected;
+                gr::property_map         attributes = definitionAttributes(*blockMap, meta, registry, rejected);
+                for (const std::string& line : rejected) {
+                    std::println(stderr, "warning: block definition {} ({}): {}", metadata.block_type, blockUri, line);
+                }
+
                 auto blockType = metadata.block_type;
-                _definitionForBlockName.insert_or_assign(std::move(blockType), Definition{std::move(*blockMap), std::move(metadata)});
+                _definitionForBlockName.insert_or_assign(std::move(blockType), Definition{std::move(*blockMap), std::move(metadata), std::move(attributes)});
             }
         }
     }
 
     std::optional<Definition> definitionForBlockName(std::string_view name) const { //
         return detail::optionalMapAt<std::optional<Definition>>(_definitionForBlockName, name, std::nullopt);
+    }
+
+    /// the attributes map of the definition registered as `name`, empty when it declares none; nothing when no
+    /// definition carries the name
+    [[nodiscard]] std::optional<property_map> attributesForBlockName(std::string_view name) const {
+        const auto it = _definitionForBlockName.find(std::string(name));
+        return it == _definitionForBlockName.cend() ? std::nullopt : std::optional<property_map>{it->second.attributes};
+    }
+
+    /// the attributes map of `version` of the definition registered as `name`, which holds `block::kDefaultVersion`
+    /// alone
+    [[nodiscard]] std::optional<property_map> attributesForBlockName(std::string_view name, block::Version version) const { //
+        return version == block::kDefaultVersion ? attributesForBlockName(name) : std::nullopt;
     }
 };
 
@@ -434,7 +576,7 @@ private:
     }
 
 public:
-    PluginLoader(BlockRegistry& registry, SchedulerRegistry& scheduler_registry, std::span<const std::string> paths) : _yamlRegistry(paths), _registry(&registry), _schedulerRegistry(&scheduler_registry) {
+    PluginLoader(BlockRegistry& registry, SchedulerRegistry& scheduler_registry, std::span<const std::string> paths) : _yamlRegistry(paths, registry), _registry(&registry), _schedulerRegistry(&scheduler_registry) {
         for (const auto& pathStr : paths) {
             const std::filesystem::path directory(pathStr);
             if (!std::filesystem::is_directory(directory)) {
@@ -558,6 +700,35 @@ public:
         return {};
     }
 
+    /**
+     * @brief The attributes map of the newest version of `name`.
+     *
+     * The registry answers first, then the plugin owning the name, then a YAML definition. The map is empty for a
+     * block that declares no attributes; nothing answers for a name none of them holds.
+     */
+    [[nodiscard]] std::optional<property_map> blockAttributes(std::string_view name) const {
+        if (std::optional<property_map> known = _registry->attributes(name); known.has_value()) {
+            return known;
+        }
+        if (const gr_plugin_base* plugin = pluginForBlockName(name); plugin != nullptr) {
+            const std::vector<block::Version> versions = plugin->blockVersions(name);
+            return versions.empty() ? std::nullopt : plugin->blockAttributes(name, std::ranges::max(versions));
+        }
+        return _yamlRegistry.attributesForBlockName(name);
+    }
+
+    /// the attributes map of that one version of `name`; the first source holding the name answers alone, as
+    /// instantiatePinnedOrError() refuses a version the registry or the plugin lacks
+    [[nodiscard]] std::optional<property_map> blockAttributes(std::string_view name, block::Version version) const {
+        if (_registry->contains(name)) {
+            return _registry->attributes(name, version);
+        }
+        if (const gr_plugin_base* plugin = pluginForBlockName(name); plugin != nullptr) {
+            return plugin->blockAttributes(name, version);
+        }
+        return _yamlRegistry.attributesForBlockName(name, version);
+    }
+
     /// the one version named, from the registry or from the plugin owning the name; the instance records the pin
     std::shared_ptr<gr::BlockModel> instantiatePinned(std::string_view name, block::Version version, const property_map& params = property_map{}) {
         if (auto result = _registry->create(name, version, params)) {
@@ -624,7 +795,7 @@ private:
     SchedulerRegistry*            _schedulerRegistry;
 
 public:
-    PluginLoader(BlockRegistry& registry, SchedulerRegistry& scheduler_registry, std::span<const std::string> paths) : _yamlRegistry(paths), _registry(&registry), _schedulerRegistry(&scheduler_registry) {}
+    PluginLoader(BlockRegistry& registry, SchedulerRegistry& scheduler_registry, std::span<const std::string> paths) : _yamlRegistry(paths, registry), _registry(&registry), _schedulerRegistry(&scheduler_registry) {}
 
     BlockRegistry&     registry() { return *_registry; }
     SchedulerRegistry& schedulerRegistry() { return *_schedulerRegistry; }
@@ -656,6 +827,17 @@ public:
 
     /// see the non-WASM PluginLoader::blockVersions
     [[nodiscard]] std::vector<block::Version> blockVersions(std::string_view name) const { return _registry->versions(name); }
+
+    /// see the non-WASM PluginLoader::blockAttributes; the registry answers, then a YAML definition
+    [[nodiscard]] std::optional<property_map> blockAttributes(std::string_view name) const {
+        std::optional<property_map> known = _registry->attributes(name);
+        return known.has_value() ? known : _yamlRegistry.attributesForBlockName(name);
+    }
+
+    /// see the non-WASM PluginLoader::blockAttributes
+    [[nodiscard]] std::optional<property_map> blockAttributes(std::string_view name, block::Version version) const { //
+        return _registry->contains(name) ? _registry->attributes(name, version) : _yamlRegistry.attributesForBlockName(name, version);
+    }
 
     /// see the non-WASM PluginLoader::instantiatePinned
     std::shared_ptr<gr::BlockModel> instantiatePinned(std::string_view name, block::Version version, const property_map& params = {}) { return _registry->create(name, version, params); }

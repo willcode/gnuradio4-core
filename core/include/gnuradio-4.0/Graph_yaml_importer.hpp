@@ -908,6 +908,11 @@ inline std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> detail::instant
                 }
             }
         }
+        // a definition is the type of the block it instantiates, so the block carries the definition's attributes
+        // as a registered type's instance carries its type's; a definition that declares none writes no entry
+        if (!def.attributes.empty()) {
+            blocks.front()->metaInformation().insert_or_assign(std::pmr::string(block::kAttributesMetaKey), def.attributes);
+        }
         return blocks.front();
     } catch (const gr::exception& e) {
         return std::unexpected(gr::Error{e});

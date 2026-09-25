@@ -23,7 +23,7 @@ struct VersionedFirst : gr::Block<VersionedFirst> {
 struct VersionedSecond : gr::Block<VersionedSecond> {
     using Description = gr::Doc<"the newer revision, which an unpinned create takes">;
 
-    static constexpr gr::block::Attributes attributes{.version = 2U};
+    static constexpr gr::block::Attributes attributes{.resource = gr::block::Resource::Device, .family = "versioned", .version = 2U};
 
     gr::PortIn<float>  in;
     gr::PortOut<float> out;

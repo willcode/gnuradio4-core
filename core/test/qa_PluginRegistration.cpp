@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include <gnuradio-4.0/BlockAttributes.hpp>
 #include <gnuradio-4.0/BlockRegistry.hpp>
 #include <gnuradio-4.0/Graph.hpp>
 #include <gnuradio-4.0/Graph_yaml_importer.hpp>
@@ -90,6 +91,50 @@ const boost::ut::suite<"PluginRegistration"> pluginRegistrationTests = [] {
         expect(fatal(!missing.has_value())) << "a version the plugin does not hold is refused";
         expect(missing.error().message.contains("version 9")) << missing.error().message;
         expect(missing.error().message.contains("1, 2")) << missing.error().message << "the versions the plugin holds are named";
+    };
+
+    "a plugin block's attributes cross the plugin boundary, one map per version"_test = [] {
+        gr::BlockRegistry              registry;
+        gr::SchedulerRegistry          schedulerRegistry;
+        const std::vector<std::string> pluginDirectories{versionedPluginDirectory()};
+        gr::PluginLoader               loader(registry, schedulerRegistry, pluginDirectories);
+        expect(fatal(eq(loader.plugins().size(), 1UZ))) << "the versioned plugin loads";
+        expect(!registry.contains(kVersionedKey)) << "the host's registry does not hold the key, so each answer comes from the plugin";
+
+        const gr::property_map newestExpected = gr::block::attributesToMap({.resource = gr::block::Resource::Device, .family = "versioned", .version = 2U}, gr::block::Role::Transceiver);
+        const gr::property_map olderExpected  = gr::block::attributesToMap({.version = 1U}, gr::block::Role::Unknown);
+        expect(newestExpected != olderExpected) << "the two versions differ in more than the number";
+
+        const std::optional<gr::property_map> newest = loader.blockAttributes(kVersionedKey);
+        expect(fatal(newest.has_value())) << "the plugin holds the name";
+        expect(*newest == newestExpected) << "the newest version's map";
+        expect(eq(newest->at("resource").value_or(std::string_view{}), std::string_view("device")));
+        expect(eq(newest->at("family").value_or(std::string_view{}), std::string_view("versioned")));
+        expect(eq(newest->at("role").value_or(std::string_view{}), std::string_view("transceiver")));
+
+        expect(loader.blockAttributes(kVersionedKey, 2U) == std::optional<gr::property_map>{newestExpected});
+        expect(loader.blockAttributes(kVersionedKey, 1U) == std::optional<gr::property_map>{olderExpected});
+        expect(!loader.blockAttributes(kVersionedKey, 9U).has_value()) << "nothing for a version the plugin does not hold";
+        expect(loader.plugins().front()->blockAttributes(kVersionedKey, 2U) == std::optional<gr::property_map>{newestExpected}) << "the plugin entry itself answers";
+
+        const std::shared_ptr<gr::BlockModel> instance = loader.instantiate(kVersionedKey);
+        expect(fatal(instance != nullptr));
+        const auto* carried = instance->metaInformation().at(std::pmr::string(gr::block::kAttributesMetaKey)).get_if<gr::property_map>();
+        expect(carried != nullptr && *carried == newestExpected) << "an instance carries the map the boundary answers";
+    };
+
+    "a plugin answers no attributes for a name it does not hold"_test = [] {
+        gr::BlockRegistry              registry;
+        gr::SchedulerRegistry          schedulerRegistry;
+        const std::vector<std::string> pluginDirectories{versionedPluginDirectory()};
+        gr::PluginLoader               loader(registry, schedulerRegistry, pluginDirectories);
+        expect(fatal(eq(loader.plugins().size(), 1UZ))) << "the versioned plugin loads";
+        expect(loader.blockAttributes(kVersionedKey).has_value()) << "the same loader answers for a name the plugin holds";
+
+        constexpr std::string_view kAbsentKey = "test::absent";
+        expect(!loader.plugins().front()->blockAttributes(kAbsentKey, gr::block::kDefaultVersion).has_value());
+        expect(!loader.blockAttributes(kAbsentKey).has_value());
+        expect(!loader.blockAttributes(kAbsentKey, gr::block::kDefaultVersion).has_value());
     };
 
     "a plugin block keeps its version across a GRC round trip"_test = [] {
