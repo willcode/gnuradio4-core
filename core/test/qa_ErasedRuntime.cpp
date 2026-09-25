@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <iterator>
 #include <map>
@@ -442,6 +444,44 @@ inline std::map<std::string, property_map> settingsByName(const RuntimeGraph& gr
     }
     return settings;
 }
+
+/**
+ * A definitions root holding one recipe, `qa::LevelRecipe`, written to a temporary directory. Its exported parameter
+ * `level` has no default and is therefore required.
+ */
+struct LevelRecipeRoot {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / "gr4_qa_erased_runtime_recipe";
+
+    LevelRecipeRoot() {
+        std::filesystem::remove_all(path);
+        std::filesystem::create_directories(path);
+        std::ofstream(path / "index.yaml") << "assets:\n  - file: level_recipe.yaml\n    created: \"2024-01-01-00:00:00\"\n    modified: \"2024-01-01-00:00:00\"\n    block_type: qa::LevelRecipe\n";
+        std::ofstream(path / "level_recipe.yaml") << R"yaml(definition_metadata:
+  block_type: qa::LevelRecipe
+blocks:
+  - id: SUBGRAPH
+    parameters:
+      name: level_recipe
+    exported_parameters:
+      - name: level
+        type: float32
+    graph:
+      blocks:
+        - id: "qa::Scale"
+          parameters:
+            name: inner
+            gain: "=level"
+      exported_ports:
+        - [inner, INPUT, in, in]
+        - [inner, OUTPUT, out, out]
+)yaml";
+    }
+
+    LevelRecipeRoot(const LevelRecipeRoot&)            = delete;
+    LevelRecipeRoot& operator=(const LevelRecipeRoot&) = delete;
+
+    ~LevelRecipeRoot() { std::filesystem::remove_all(path); }
+};
 
 } // namespace qa_runtime
 
@@ -1575,6 +1615,25 @@ const boost::ut::suite<"refusals return"> refusalTests = [] {
         expect(!refused.has_value()) << "a nested graph that refused its parameters was added";
         expect(graph.blocks().empty()) << "a refused nested graph stayed in the graph";
         expect(graph.emplaceSubgraph("sub").has_value()) << "a nested graph with no parameters is added";
+    };
+
+    "a recipe that refuses its parameters is reported with its reason, not as an unknown type"_test = [] {
+        registerTestBlocks();
+        std::ignore = gr::registerBuiltinSchedulers();
+        const LevelRecipeRoot root;
+        gr::PluginLoader      loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), std::vector<std::string>{root.path.string()});
+        gr::Graph             flow(loader);
+        auto                  runtime = Runtime::create(std::move(flow));
+        expect(fatal(runtime.has_value())) << (runtime ? std::string{} : runtime.error().message);
+        RuntimeGraph graph = runtime->graph();
+
+        const auto refused = graph.emplace("qa::LevelRecipe", "recipe");
+        expect(fatal(!refused.has_value())) << "a recipe missing a required parameter was built";
+        expect(!refused.error().message.contains("unknown block type")) << refused.error().message;
+        expect(refused.error().message.contains("level")) << refused.error().message;
+        expect(graph.blocks().empty()) << "a refused recipe stayed in the graph";
+
+        expect(graph.emplace("qa::LevelRecipe", "recipe", property_map{{"level", 2.0f}}).has_value()) << "the recipe with its parameter is built";
     };
 
     "a scheduler setting that is misspelled or refused is refused by create()"_test = [] {

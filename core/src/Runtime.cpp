@@ -378,7 +378,13 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplace(std::string_view 
     }
     PluginLoader& loader = loaderFor(*_impl->view);
 
-    std::shared_ptr<BlockModel> model = loader.instantiate(type, parameters);
+    // a type the loader knows but cannot build, such as a recipe missing a required parameter, is an error
+    // with the loader's reason; only a type nothing knows falls through to the scheduler registry
+    std::expected<std::shared_ptr<BlockModel>, gr::Error> built = loader.instantiateOrError(type, parameters);
+    if (!built.has_value()) {
+        return std::unexpected(localError(std::format("block type '{}' could not be built: {}", type, built.error().message), "RuntimeGraph::emplace"));
+    }
+    std::shared_ptr<BlockModel> model = std::move(*built);
     if (!model) {
         // the scheduler registry is the second half of the same lookup Graph::emplaceBlock performs,
         // and it nests a scheduler as a block
