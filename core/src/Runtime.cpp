@@ -29,17 +29,17 @@ static_assert(static_cast<std::uint8_t>(Runtime::State::RequestedStop) == static
 static_assert(static_cast<std::uint8_t>(Runtime::State::Stopped) == static_cast<std::uint8_t>(lifecycle::State::STOPPED));
 static_assert(static_cast<std::uint8_t>(Runtime::State::Error) == static_cast<std::uint8_t>(lifecycle::State::ERROR));
 
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Invalid) == static_cast<std::uint8_t>(message::Command::Invalid));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Get) == static_cast<std::uint8_t>(message::Command::Get));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Set) == static_cast<std::uint8_t>(message::Command::Set));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Partial) == static_cast<std::uint8_t>(message::Command::Partial));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Final) == static_cast<std::uint8_t>(message::Command::Final));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Ready) == static_cast<std::uint8_t>(message::Command::Ready));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Disconnect) == static_cast<std::uint8_t>(message::Command::Disconnect));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Subscribe) == static_cast<std::uint8_t>(message::Command::Subscribe));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Unsubscribe) == static_cast<std::uint8_t>(message::Command::Unsubscribe));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Notify) == static_cast<std::uint8_t>(message::Command::Notify));
-static_assert(static_cast<std::uint8_t>(Runtime::Command::Heartbeat) == static_cast<std::uint8_t>(message::Command::Heartbeat));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Invalid) == static_cast<std::uint8_t>(message::Command::Invalid));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Get) == static_cast<std::uint8_t>(message::Command::Get));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Set) == static_cast<std::uint8_t>(message::Command::Set));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Partial) == static_cast<std::uint8_t>(message::Command::Partial));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Final) == static_cast<std::uint8_t>(message::Command::Final));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Ready) == static_cast<std::uint8_t>(message::Command::Ready));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Disconnect) == static_cast<std::uint8_t>(message::Command::Disconnect));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Subscribe) == static_cast<std::uint8_t>(message::Command::Subscribe));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Unsubscribe) == static_cast<std::uint8_t>(message::Command::Unsubscribe));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Notify) == static_cast<std::uint8_t>(message::Command::Notify));
+static_assert(static_cast<std::uint8_t>(RuntimeCommand::Heartbeat) == static_cast<std::uint8_t>(message::Command::Heartbeat));
 
 namespace {
 
@@ -836,7 +836,7 @@ std::vector<RuntimeEvent> Runtime::pollEvents(std::size_t maxEvents) {
     return events;
 }
 
-std::expected<void, RuntimeError> Runtime::send(Command command, std::string_view serviceName, std::string_view endpoint, property_map payload, std::string_view clientRequestID) {
+std::expected<void, RuntimeError> Runtime::send(RuntimeCommand command, std::string_view serviceName, std::string_view endpoint, property_map payload, std::string_view clientRequestID) {
     if (!_impl) {
         return std::unexpected(localError("runtime handle is empty", "Runtime::send"));
     }
@@ -844,17 +844,17 @@ std::expected<void, RuntimeError> Runtime::send(Command command, std::string_vie
 
     using enum message::Command;
     switch (command) {
-    case Command::Get: sendMessage<Get>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Set: sendMessage<Set>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Partial: sendMessage<Partial>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Final: sendMessage<Final>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Ready: sendMessage<Ready>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Disconnect: sendMessage<Disconnect>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Subscribe: sendMessage<Subscribe>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Unsubscribe: sendMessage<Unsubscribe>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Notify: sendMessage<Notify>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Heartbeat: sendMessage<Heartbeat>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
-    case Command::Invalid: return std::unexpected(localError("Command::Invalid is not sendable", "Runtime::send"));
+    case RuntimeCommand::Get: sendMessage<Get>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Set: sendMessage<Set>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Partial: sendMessage<Partial>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Final: sendMessage<Final>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Ready: sendMessage<Ready>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Disconnect: sendMessage<Disconnect>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Subscribe: sendMessage<Subscribe>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Unsubscribe: sendMessage<Unsubscribe>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Notify: sendMessage<Notify>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Heartbeat: sendMessage<Heartbeat>(port, serviceName, endpoint, std::move(payload), clientRequestID); break;
+    case RuntimeCommand::Invalid: return std::unexpected(localError("Command::Invalid is not sendable", "Runtime::send"));
     }
     return {};
 }
