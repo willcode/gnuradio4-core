@@ -24,6 +24,13 @@ void reportValidationFailure(std::string_view key, const pmt::Value& value) { st
 
 void reportConversionFailure(std::string_view key, std::string_view error) { std::fputs(std::format("Failed to convert key '{}': {}\n", key, error).c_str(), stderr); }
 
+namespace {
+/// whether a key that no setting takes is filed in the block's meta_information
+///
+/// The Attributes entry holds the block type's declaration alone. Every other key is filed.
+[[nodiscard]] bool filedInMetaInformation(std::string_view key) noexcept { return key != block::kAttributesMetaKey; }
+} // namespace
+
 BlockDescriptor::BlockDescriptor(const BlockHooks& blockHooks) : hooks(blockHooks) {
     for (const MemberDescriptor& member : hooks.members) {
         if (member.setParameter != nullptr) {
@@ -661,8 +668,10 @@ property_map CtxSettingsBase::setImpl(const property_map& parameters, SettingsCt
     }
 
     // copy items that could not be matched to the node's meta_information map (if available)
-    if (hooks.metaInformation != nullptr) {
-        updateMaps(ret, hooks.metaInformation(_block));
+    if (hooks.metaInformation != nullptr && !ret.empty()) {
+        property_map filed = ret;
+        std::erase_if(filed, [](const auto& entry) { return !settings::filedInMetaInformation(entry.first); });
+        updateMaps(filed, hooks.metaInformation(_block));
     }
 
     return ret; // N.B. returns those <key:value> parameters that could not be set
@@ -933,9 +942,7 @@ void CtxSettingsBase::loadParametersFromPropertyMap(const property_map& paramete
     for (const auto& [key, value] : parameters) {
         if (_descriptor->writableByName.contains(key) || isDeclaredImpl(key)) {
             newProperties[key] = value;
-        } else if (std::string_view(key) == block::kAttributesMetaKey) {
-            continue; // an instance's Attributes entry is its type's declaration alone
-        } else {
+        } else if (settings::filedInMetaInformation(key)) {
             auto str = ctx.context.value_or(std::string_view{});
             if (str.empty() && _descriptor->hooks.metaInformation != nullptr) { // store meta_information only for default
                 _descriptor->hooks.metaInformation(_block)[key] = value;
