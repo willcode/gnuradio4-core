@@ -579,10 +579,12 @@ std::vector<RuntimePort> RuntimeGraph::inputPorts(const BlockHandle& block) cons
 
 std::vector<RuntimePort> RuntimeGraph::outputPorts(const BlockHandle& block) const { return block.valid() ? portsOf(*modelOf(block._model), false) : std::vector<RuntimePort>{}; }
 
-std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document) {
+std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document) { return fromYaml(document, gr::BlockSettings{}); }
+
+std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document, const std::map<std::string, property_map, std::less<>>& overrides) {
     constexpr std::string_view where = "RuntimeGraph::fromYaml";
     try {
-        gr::meta::indirect<Graph> loaded = gr::loadGrc(gr::globalPluginLoader(), document);
+        gr::meta::indirect<Graph> loaded = gr::loadGrc(gr::globalPluginLoader(), document, overrides);
 
         auto impl   = std::make_unique<Impl>();
         impl->owned = std::make_unique<Graph>(std::move(*loaded));

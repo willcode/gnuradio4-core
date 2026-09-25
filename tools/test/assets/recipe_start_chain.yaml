@@ -1,0 +1,7 @@
+# The graph the recipe start case runs: one composite whose interior block opens the resource the composite's one
+# parameter names. The file names no resource, and the interior block refuses to start without one.
+blocks:
+  - id: qa::StartedChain
+    parameters:
+      name: started
+      device: ""

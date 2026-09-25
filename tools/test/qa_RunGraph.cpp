@@ -64,9 +64,17 @@ struct Result {
 #ifdef GR_TOOLS_CORE_TEST_PLUGINS
 constexpr std::string_view kGraphFile{GR_TOOLS_TEST_ASSETS "/source_to_sink.yaml"};
 constexpr std::string_view kSettingsChainFile{GR_TOOLS_TEST_ASSETS "/settings_chain.yaml"};
+constexpr std::string_view kStartChainFile{GR_TOOLS_TEST_ASSETS "/start_chain.yaml"};
+constexpr std::string_view kUnnamedResourceFile{GR_TOOLS_TEST_ASSETS "/unnamed_resource_chain.yaml"};
 
 // the graph, the plugins that supply its blocks, and a bound short enough for a test
 [[nodiscard]] std::vector<std::string> boundedRun() { return {"--graph", std::string(kGraphFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--seconds", "0.5"}; }
+
+// the same, over the chain whose two middle blocks open a resource when they start
+[[nodiscard]] std::vector<std::string> startChainRun() { return {"--graph", std::string(kStartChainFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--seconds", "0.5"}; }
+
+// the same, over a chain whose middle block names no resource and fails to start
+[[nodiscard]] std::vector<std::string> unnamedResourceRun() { return {"--graph", std::string(kUnnamedResourceFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--seconds", "0.5"}; }
 
 // the same, over the four-block chain the settings cases set a value on
 [[nodiscard]] std::vector<std::string> settingsChainRun() { return {"--graph", std::string(kSettingsChainFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--seconds", "0.5"}; }
@@ -77,6 +85,11 @@ constexpr std::string_view kRecipeDirectory{GR_TOOLS_TEST_ASSETS "/recipes"};
 // the graph of one recipe composite, the plugins its interior blocks come from and the directory its recipe is read
 // from; the graph ends by itself, and the bound only guards a run whose derived count never arrived
 [[nodiscard]] std::vector<std::string> recipeChainRun() { return {"--graph", std::string(kRecipeChainFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--plugin-dir", std::string(kRecipeDirectory), "--seconds", "5"}; }
+
+constexpr std::string_view kRecipeStartFile{GR_TOOLS_TEST_ASSETS "/recipe_start_chain.yaml"};
+
+// the same, over the composite whose interior block opens the resource the composite's parameter names
+[[nodiscard]] std::vector<std::string> recipeStartRun() { return {"--graph", std::string(kRecipeStartFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--plugin-dir", std::string(kRecipeDirectory), "--seconds", "5"}; }
 #endif
 
 } // namespace qa_rungraph
@@ -161,6 +174,56 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         expect(set.output.contains("the graph ended on its own")) << "the bound the setting carries stopped the run" << set.output;
     };
 
+    "--set gives a block the value its start() reads"_test = [] {
+        std::vector<std::string> arguments = startChainRun();
+        arguments.insert(arguments.end(), {"--set", "first.resource=named-on-the-command-line", "--show", "first"});
+
+        const Result started = run(arguments);
+        expect(eq(started.exitCode, 0)) << started.output;
+        expect(started.output.contains(R"(first: resource_at_start = "named-on-the-command-line")")) << "start() read the value the command line set, not the graph file's" << started.output;
+        expect(started.output.contains("the graph was stopped before it ended")) << started.output;
+    };
+
+    "a block whose start fails holds every --set value, and --show reads each back"_test = [] {
+        std::vector<std::string> arguments = unnamedResourceRun();
+        arguments.insert(arguments.end(), {"--set", "first.sample_rate=2000", "--set", "first.gain=0.5", "--set", "source.event_count=1000", "--show", "first", "--show", "source"});
+
+        const Result failed = run(arguments);
+        expect(eq(failed.exitCode, 1)) << failed.output;
+        expect(failed.output.contains("no resource to open")) << "start() failed on the empty resource the graph file gives the block" << failed.output;
+        expect(failed.output.contains("first: sample_rate = 2000")) << failed.output;
+        expect(failed.output.contains("first: gain = 0.5")) << failed.output;
+        expect(failed.output.contains("source: event_count = 1000")) << "the value set on a second block is held as well" << failed.output;
+    };
+
+    // a --set value is read where the graph file's own value is read, so a value the block refuses is refused as the
+    // graph file's would be: a value outside the block's limits by the framework's own line, and a value its
+    // settingsChanged() throws on when the scheduler initializes the block, before start() runs
+    "a --set value the block refuses is refused as the graph file's value would be"_test = [] {
+        std::vector<std::string> outOfLimits = startChainRun();
+        outOfLimits.insert(outOfLimits.end(), {"--set", "first.gain=2", "--show", "first"});
+
+        const Result refusedByLimits = run(outOfLimits);
+        expect(refusedByLimits.output.contains("Failed to validate field 'gain' with value '2.000000'")) << refusedByLimits.output;
+        expect(!refusedByLimits.output.contains("first: gain = 2")) << "the block keeps a value inside its limits" << refusedByLimits.output;
+
+        std::vector<std::string> refusedBySettingsChanged = startChainRun();
+        refusedBySettingsChanged.insert(refusedBySettingsChanged.end(), {"--set", "first.sample_rate=-1"});
+
+        const Result refusedByBlock = run(refusedBySettingsChanged);
+        expect(refusedByBlock.output.contains("init() throws: sample_rate -1 is not positive")) << refusedByBlock.output;
+    };
+
+    "a --set value the block forwards reaches the block downstream in place of the graph file's"_test = [] {
+        std::vector<std::string> arguments = startChainRun();
+        arguments.insert(arguments.end(), {"--set", "first.sample_rate=2000", "--set", "source.event_count=1000", "--show", "second"});
+
+        const Result forwarded = run(arguments);
+        expect(eq(forwarded.exitCode, 0)) << forwarded.output;
+        expect(forwarded.output.contains("second: sample_rate = 2000")) << "the graph file gives the upstream block 1000" << forwarded.output;
+        expect(forwarded.output.contains("the graph ended on its own")) << "the run ended after every sample had passed the downstream block" << forwarded.output;
+    };
+
     "a block, or a block setting, the graph does not hold is refused"_test = [] {
         std::vector<std::string> unknownKey = settingsChainRun();
         unknownKey.emplace_back("-s");
@@ -168,7 +231,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
 
         const Result refusedKey = run(unknownKey);
         expect(eq(refusedKey.exitCode, 1)) << refusedKey.output;
-        expect(refusedKey.output.contains("the block source declares no setting named 'no_such_key'")) << refusedKey.output;
+        expect(refusedKey.output.contains("block 'source' of type 'good::fixed_source<float32>' declares no setting named 'no_such_key'; the nearest are")) << refusedKey.output;
 
         std::vector<std::string> unknownBlock = settingsChainRun();
         unknownBlock.emplace_back("-s");
@@ -176,7 +239,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
 
         const Result refusedBlock = run(unknownBlock);
         expect(eq(refusedBlock.exitCode, 1)) << refusedBlock.output;
-        expect(refusedBlock.output.contains("no block named no_such_block")) << refusedBlock.output;
+        expect(refusedBlock.output.contains("settings are given for block 'no_such_block', and the graph holds no block of that name")) << refusedBlock.output;
     };
 
     // the composite's one parameter derives a pair of interior counts: the sink reports the value of its count-th
@@ -206,6 +269,26 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         expect(set.output.contains("the graph ended on its own")) << "the source's derived count followed it too" << set.output;
     };
 
+    // the graph file names no resource, and the interior block refuses to start without one
+    "--set gives a recipe composite's interior block the derived value its start() reads"_test = [] {
+        std::vector<std::string> arguments = recipeStartRun();
+        arguments.insert(arguments.end(), {"--set", "started.device=named-on-the-command-line", "--show", "started"});
+
+        const Result started = run(arguments);
+        expect(eq(started.exitCode, 0)) << started.output;
+        expect(!started.output.contains("no resource to open")) << "the interior block's start() read the value derived from --set, not the graph file's empty one" << started.output;
+        expect(started.output.contains(R"(started: device = "named-on-the-command-line")")) << started.output;
+        expect(started.output.contains("the graph ended on its own")) << "the interior source ended the run" << started.output;
+    };
+
+    "a derived value a recipe composite's interior block refuses is refused as the graph file's would be"_test = [] {
+        std::vector<std::string> arguments = recipeStartRun();
+        arguments.insert(arguments.end(), {"--set", "started.device=named-on-the-command-line", "--set", "started.level=!!float32 2"});
+
+        const Result refused = run(arguments);
+        expect(refused.output.contains("Failed to validate field 'gain' with value '2")) << "the interior block's limits refuse the derived gain" << refused.output;
+    };
+
     "a recipe composite refuses a name its recipe does not export, and a value its recipe cannot derive from"_test = [] {
         for (const std::string_view key : {"no_such_key", "event_count"}) {
             std::vector<std::string> arguments = recipeChainRun();
@@ -214,7 +297,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
 
             const Result refused = run(arguments);
             expect(eq(refused.exitCode, 1)) << refused.output;
-            expect(refused.output.contains(std::format("the block counted declares no setting named '{}'", key))) << "an interior block's setting is not the composite's" << refused.output;
+            expect(refused.output.contains(std::format("block 'counted' of type 'qa::CountedChain' declares no setting named '{}'", key))) << "an interior block's setting is not the composite's" << refused.output;
         }
 
         std::vector<std::string> text = recipeChainRun();
@@ -223,7 +306,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
 
         const Result underived = run(text);
         expect(eq(underived.exitCode, 1)) << underived.output;
-        expect(underived.output.contains("the settings of block counted could not be applied")) << underived.output;
+        expect(underived.output.contains("Unable to create block 'counted' of type 'qa::CountedChain'")) << underived.output;
         expect(underived.output.contains("recipe_expression_conversion")) << "the refusal names the recipe's reason" << underived.output;
     };
 
@@ -239,7 +322,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
 
         const Result memberRefused = run(member);
         expect(eq(memberRefused.exitCode, 1)) << memberRefused.output;
-        expect(memberRefused.output.contains("the settings of block source could not be applied")) << memberRefused.output;
+        expect(memberRefused.output.contains("Unable to create block 'source'")) << memberRefused.output;
         expect(!memberRefused.output.contains(".cpp:") && !memberRefused.output.contains(".hpp:")) << "a member's refusal names no file and line of the library" << memberRefused.output;
 
         std::vector<std::string> parameter = recipeChainRun();
@@ -248,7 +331,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
 
         const Result parameterRefused = run(parameter);
         expect(eq(parameterRefused.exitCode, 1)) << parameterRefused.output;
-        expect(parameterRefused.output.contains("the settings of block counted could not be applied")) << parameterRefused.output;
+        expect(parameterRefused.output.contains("Unable to create block 'counted'")) << parameterRefused.output;
         expect(!parameterRefused.output.contains(".cpp:") && !parameterRefused.output.contains(".hpp:")) << "nor does an exported parameter's" << parameterRefused.output;
     };
 

@@ -1,0 +1,37 @@
+# A source, a block that opens the resource the exported `device` names when it starts, and a sink. The exported `level`
+# is the block's gain. The source stops the run after a fixed count.
+definition_metadata:
+  block_type: qa::StartedChain
+  plugin_name: RunGraphTestRecipes
+  plugin_author: The GNU Radio Authors
+  plugin_license: MIT
+  plugin_version: "1"
+blocks:
+  - id: SUBGRAPH
+    parameters:
+      name: started_chain
+    exported_parameters:
+      - name: device
+        type: string
+        doc: "resource the interior block opens when it starts"
+      - name: level
+        type: float32
+        default: !!float32 0.5
+        doc: "gain of the interior block"
+    graph:
+      blocks:
+        - id: good::fixed_source<float32>
+          parameters:
+            name: source
+            event_count: 1000
+        - id: good::start_recorder<float32>
+          parameters:
+            name: recorder
+            resource: "=device"
+            gain: "=level"
+        - id: good::cout_sink<float32>
+          parameters:
+            name: sink
+      connections:
+        - [source, out, recorder, in]
+        - [recorder, out, sink, in]
