@@ -66,8 +66,10 @@ public:
     [[nodiscard]] std::string_view uniqueName() const;
     [[nodiscard]] std::string_view typeName() const;
 
-    /// Stages parameters without touching stored settings.
-    [[nodiscard]] property_map setStaged(const property_map& parameters);
+    /// Stages parameters without touching stored settings and returns the pairs the block does not declare. A value
+    /// that does not convert to its setting's type, or one a declared parameter refuses, is an error carrying the
+    /// block's reason, and the call stages nothing.
+    [[nodiscard]] std::expected<property_map, RuntimeError> setStaged(const property_map& parameters);
 
     [[nodiscard]] property_map              get(std::span<const std::string> keys = {}) const;
     [[nodiscard]] std::optional<pmt::Value> get(const std::string& key) const;
@@ -146,7 +148,8 @@ public:
     [[nodiscard]] std::expected<BlockHandle, RuntimeError> emplace(std::string_view type, std::string_view name, property_map parameters = {});
 
     /// Adds a block the caller built, so that a factory can keep its own typed pointer and hand the
-    /// graph the erased one. `name` renames the block when it is not empty. Requires BlockModel.hpp.
+    /// graph the erased one. `name` renames the block when it is not empty. Requires BlockModel.hpp. A block
+    /// whose settings refuse a key or a value's type when the graph initializes it is an error carrying the reason.
     [[nodiscard]] std::expected<BlockHandle, RuntimeError> add(std::shared_ptr<BlockModel> block, std::string_view name = {});
 
     /// Adds a nested graph. The handle names it as a block here; `interior()` opens it for wiring.
@@ -250,7 +253,10 @@ public:
 
     static constexpr std::string_view kDefaultScheduler = "gr::scheduler::Simple<singleThreaded>";
 
-    /// Instantiates scheduler `type`, hands it `graph` and takes ownership of both. `graph` is consumed.
+    /// Instantiates scheduler `type`, hands it `graph` and takes ownership of both; `graph` is consumed when a runtime
+    /// is returned and left as it was on an error. A parameter the scheduler does not declare, or a value its
+    /// constructor refuses, is an error; a value it accepts at construction and rejects later, such as an unknown
+    /// `poolName`, is reported as an error event instead.
     [[nodiscard]] static std::expected<Runtime, RuntimeError> create(RuntimeGraph&& graph, std::string_view type = kDefaultScheduler, property_map schedulerParameters = {});
 
     /// The same, for a graph that was not built through a RuntimeGraph -- one loaded by `gr::loadGrc`, or
