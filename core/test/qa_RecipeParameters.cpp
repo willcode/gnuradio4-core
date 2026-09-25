@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -771,6 +772,21 @@ template<typename TCall>
     return {};
 }
 
+/// the unique names of the graph's blocks in insertion order, comma separated
+[[nodiscard]] std::string blockNames(const gr::Graph& graph) {
+    std::string names;
+    for (const std::shared_ptr<gr::BlockModel>& block : graph.blocks()) {
+        names += std::format("{}{}", names.empty() ? "" : ", ", block->uniqueName());
+    }
+    return names;
+}
+
+/// `disconnect_on_done` of `block` as its settings read it, true when it is missing
+[[nodiscard]] bool disconnectsOnDone(const gr::BlockModel& block) {
+    const std::optional<gr::pmt::Value> value = block.settings().get("disconnect_on_done");
+    return !value.has_value() || value->value_or(true);
+}
+
 } // namespace qa_recipe_definitions
 
 using namespace qa_recipe_definitions;
@@ -1492,6 +1508,72 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
             expect(eq(readNumber(*reply.data, "deviation"), 5000.0f)) << "the reply names the exported parameter at its value in force";
             expect(reply.data->contains("name")) << "and the framework setting, as staged";
         }
+    };
+
+    "a recipe emplaced by name with a setting it refuses stays out of the graph"_test = [] {
+        registerRecipeTestBlock();
+        const HalvingRecipeRoot root;
+        auto                    loader = nestingLoader(root);
+        gr::Graph               flow(loader);
+        std::ignore                     = flow.emplaceBlock("qa::RecipeScale", {{"name", std::string("before")}});
+        const std::size_t nBlocksBefore = flow.blocks().size();
+        const std::string namesBefore   = blockNames(flow);
+
+        const std::string refused = refusalOf([&] { std::ignore = flow.emplaceBlock("qa::HalvingRecipe", {{"name", std::string("halver")}, {"level", 500.0f}, {"compute_domain", 7.0f}}); });
+        expect(refused.contains("'halver'") && refused.contains("qa::HalvingRecipe") && refused.contains("'compute_domain'")) << "the refusal names the block and the key it refuses: " << refused;
+        expect(eq(flow.blocks().size(), nBlocksBefore)) << "the refused recipe stayed in the graph: " << refused;
+        expect(eq(blockNames(flow), namesBefore)) << "the graph holds other blocks after the refusal: " << refused;
+
+        const std::shared_ptr<gr::BlockModel>& accepted = flow.emplaceBlock("qa::HalvingRecipe", {{"name", std::string("halver")}, {"level", 500.0f}, {"disconnect_on_done", false}});
+        expect(eq(flow.blocks().size(), nBlocksBefore + 1UZ)) << "a recipe with settings it takes joins the graph";
+        expect(!disconnectsOnDone(*accepted)) << "a setting the recipe does not export is in force once the recipe is in the graph";
+        expect(eq(readNumber(accepted->settings().get(), "level"), 500.0f)) << "and the exported parameter beside it";
+    };
+
+    "a recipe put in the place of a block with a setting it refuses leaves the block in place"_test = [] {
+        registerRecipeTestBlock();
+        const HalvingRecipeRoot root;
+        auto                    loader = nestingLoader(root);
+        gr::Graph               flow(loader);
+        std::ignore = flow.emplaceBlock("qa::RecipeScale", {{"name", std::string("before")}});
+        const std::string replacedName(flow.emplaceBlock("qa::RecipeScale", {{"name", std::string("scale")}})->uniqueName());
+        const std::size_t nBlocksBefore = flow.blocks().size();
+        const std::string namesBefore   = blockNames(flow);
+
+        const std::string refused = refusalOf([&] { std::ignore = flow.replaceBlock(replacedName, "qa::HalvingRecipe", {{"name", std::string("halver")}, {"level", 500.0f}, {"compute_domain", 7.0f}}); });
+        expect(refused.contains("'halver'") && refused.contains("qa::HalvingRecipe") && refused.contains("'compute_domain'")) << "the refusal names the block and the key it refuses: " << refused;
+        expect(eq(flow.blocks().size(), nBlocksBefore)) << "the graph holds another number of blocks after the refusal: " << refused;
+        expect(eq(blockNames(flow), namesBefore)) << "the block to be replaced must stay in place: " << refused;
+
+        const auto [oldBlock, composite] = flow.replaceBlock(replacedName, "qa::HalvingRecipe", {{"name", std::string("halver")}, {"level", 500.0f}, {"disconnect_on_done", false}});
+        expect(eq(std::string(oldBlock->uniqueName()), replacedName)) << "a recipe with settings it takes replaces the block";
+        expect(eq(flow.blocks().size(), nBlocksBefore));
+        expect(!disconnectsOnDone(*composite)) << "a setting the recipe does not export is in force once the recipe is in the graph";
+    };
+
+    "a graph document naming a recipe with a setting it refuses leaves the recipe out of the graph"_test = [] {
+        registerRecipeTestBlock();
+        const HalvingRecipeRoot root;
+        auto                    loader = nestingLoader(root);
+        gr::Graph               flow(loader);
+        std::ignore                     = flow.emplaceBlock("qa::RecipeScale", {{"name", std::string("before")}});
+        const std::size_t nBlocksBefore = flow.blocks().size();
+        const std::string namesBefore   = blockNames(flow);
+
+        const auto document = [](std::string_view setting) {
+            const auto parsed = gr::pmt::yaml::deserialize(std::format("blocks:\n  - id: qa::HalvingRecipe\n    parameters:\n      name: halver\n      level: !!float32 500\n      {}\n", setting));
+            expect(parsed.has_value()) << "the fixture document must parse";
+            return parsed.has_value() ? *parsed : gr::property_map{};
+        };
+        const std::string refused = refusalOf([&] { std::ignore = gr::detail::loadGraphFromMap(loader, flow, document("compute_domain: 7")); });
+        expect(refused.contains("'halver'") && refused.contains("qa::HalvingRecipe") && refused.contains("'compute_domain'")) << "the refusal names the block and the key it refuses: " << refused;
+        expect(eq(flow.blocks().size(), nBlocksBefore)) << "the refused recipe joined the graph: " << refused;
+        expect(eq(blockNames(flow), namesBefore)) << "the graph holds other blocks after the refusal: " << refused;
+
+        const std::string accepted = refusalOf([&] { std::ignore = gr::detail::loadGraphFromMap(loader, flow, document("disconnect_on_done: false")); });
+        expect(accepted.empty()) << "a recipe with settings it takes loads: " << accepted;
+        expect(fatal(flow.blocks().size() == nBlocksBefore + 1UZ)) << "and joins the graph";
+        expect(!disconnectsOnDone(*flow.blocks().back())) << "a setting the recipe does not export is in force once the recipe is in the graph";
     };
 };
 

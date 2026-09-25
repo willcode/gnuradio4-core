@@ -2,11 +2,13 @@
 #define GNURADIO_RECIPE_INSTANTIATION_HPP
 
 #include <expected>
+#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include <gnuradio-4.0/BlockModel.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
 #include <gnuradio-4.0/RecipeParameters.hpp>
 #include <gnuradio-4.0/Tensor.hpp>
@@ -113,6 +115,16 @@ inline RecipeParameterSplit splitRecipeParameters(PluginLoader& loader, std::str
     }
     split.remaining = std::move(parameters);
     return split;
+}
+
+/// loads a split's `remaining` keys into `block`'s settings; a value the block refuses throws `gr::exception` with the
+/// block's name, its type and the refusal, which names the key
+inline void loadRemainingSettings(BlockModel& block, std::string_view blockName, std::string_view blockType, const property_map& remaining) {
+    try {
+        block.settings().loadParametersFromPropertyMap(remaining);
+    } catch (const gr::exception& refusal) {
+        throw gr::exception(std::format("Unable to create block '{}' of type '{}': {}", blockName, blockType, refusal.message), refusal.sourceLocation);
+    }
 }
 
 } // namespace gr::detail

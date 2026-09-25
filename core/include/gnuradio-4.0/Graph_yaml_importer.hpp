@@ -311,7 +311,7 @@ inline property_map readEntryParameters(const property_map& grcBlock, const Bloc
 
 /// Loads `parameters` and the entry's `ctx_parameters` into the block's settings and activates the default context.
 inline void loadEntrySettings(BlockModel& block, const property_map& grcBlock, const property_map& parameters, const BlockIdentity& identity) {
-    block.settings().loadParametersFromPropertyMap(parameters);
+    loadRemainingSettings(block, identity.name, identity.type, parameters);
 
     if (auto it = grcBlock.find("ctx_parameters"); it != grcBlock.end()) {
         const auto parametersCtx = checked_access_ptr<const Tensor<pmt::Value>, false>{it->second.get_if<Tensor<pmt::Value>>()};
