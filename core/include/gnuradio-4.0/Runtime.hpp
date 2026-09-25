@@ -144,6 +144,7 @@ public:
     RuntimeGraph& operator=(const RuntimeGraph&) = delete;
 
     /// Instantiates `type` from the registry, the loaded plugins or the YAML assets, names it and adds it.
+    /// A known type that cannot be built, such as a recipe missing a required parameter, is an error with its reason.
     /// A parameter the block does not declare or refuses is an error carrying the block's refusal.
     [[nodiscard]] std::expected<BlockHandle, RuntimeError> emplace(std::string_view type, std::string_view name, property_map parameters = {});
 
