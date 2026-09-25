@@ -56,14 +56,15 @@ std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::strin
             return std::unexpected(Error(std::format("Unable to create block '{}' of type '{}': {}", blockName, type, instantiated.error().message)));
         }
         if (*instantiated) {
-            const std::shared_ptr<BlockModel>& newBlock = addBlock(*instantiated);
+            const std::shared_ptr<BlockModel>& newBlock = *instantiated;
             // the label takes setName(), as the reader applies a file's label; the exported parameters are in
-            // force from the instantiation, and the remaining keys load as settings
+            // force from the instantiation, and the remaining keys load as settings before the block joins the
+            // graph: a value the block refuses throws, and the graph holds the blocks it held before the call
             if (!blockName.empty()) {
                 newBlock->setName(std::string(blockName));
             }
-            newBlock->settings().loadParametersFromPropertyMap(split.remaining);
-            return newBlock;
+            detail::loadRemainingSettings(*newBlock, blockName, type, split.remaining);
+            return addBlock(newBlock);
         }
     }
 
@@ -118,7 +119,7 @@ std::expected<std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>
                 if (!blockName.empty()) {
                     newBlock->setName(std::string(blockName));
                 }
-                newBlock->settings().loadParametersFromPropertyMap(split.remaining);
+                detail::loadRemainingSettings(*newBlock, blockName, type, split.remaining);
             }
         }
         if (!newBlock) {

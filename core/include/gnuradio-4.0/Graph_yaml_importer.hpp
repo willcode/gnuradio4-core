@@ -334,7 +334,7 @@ inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGrap
             // This sets the previously read "name" field for the block
             currentBlock->setName(blockName);
 
-            currentBlock->settings().loadParametersFromPropertyMap(split.remaining);
+            loadRemainingSettings(*currentBlock, blockName, blockType, split.remaining);
 
             if (auto it = grcBlock.find("ctx_parameters"); it != grcBlock.end()) {
                 // as with the graph field above, the null tests below are reachable only because the
