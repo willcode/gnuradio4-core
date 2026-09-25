@@ -120,7 +120,7 @@ struct Scale : Block<Scale> {
     Annotated<bool, "enabled">            enabled = true;
     Annotated<std::vector<float>, "taps"> taps    = std::vector<float>{1.0f};
 
-    /// readable but never writable, so it belongs in activeParameters() and not in the writable set
+    /// readable but never writable, so get() lists it and writableMembers() does not
     gr::meta::immutable<gr::Size_t> revision = 7U;
 
     GR_MAKE_REFLECTABLE(Scale, in, out, gain, label, enabled, taps, revision);
@@ -513,7 +513,7 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
 
         expect(graph.inputPortNames(*scale) == std::vector<std::string>{"in"});
         expect(graph.outputPortNames(*scale) == std::vector<std::string>{"out"});
-        expect(graph.portTypeName(*scale, true, "in").find("float") != std::string::npos) << graph.portTypeName(*scale, true, "in");
+        expect(graph.inputPorts(*scale).front().typeName.find("float") != std::string::npos) << graph.inputPorts(*scale).front().typeName;
     };
 
     // a block the caller built is indistinguishable from an emplaced one. A factory therefore keeps
@@ -540,8 +540,8 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
 
         // settings: the same forwards reach the same SettingsBase, and a staged value lands on the
         // caller's own object -- which is the live-control path the handle exists for
-        expect(scale->activeParameters().contains(convert_string_domain(std::string("gain"))));
-        expect(scale->set(property_map{{"taps", std::vector<float>{2.0f}}}).empty());
+        expect(scale->get().contains(convert_string_domain(std::string("gain"))));
+        expect(scale->setStaged(property_map{{"taps", std::vector<float>{2.0f}}}).empty());
         expect(scale->setStaged(property_map{{"label", std::string("adopted")}}).empty());
 
         // connect: an added block is addressable by name like any other
@@ -584,7 +584,7 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(source.has_value() && sum.has_value() && sink.has_value());
 
         expect(graph.inputPortNames(*sum) == std::vector<std::string>{"in#0", "in#1"}) << "the listed names must be the ones connect accepts";
-        expect(graph.portTypeName(*sum, true, "in#0").find("float") != std::string::npos);
+        expect(graph.inputPorts(*sum).front().typeName.find("float") != std::string::npos);
 
         // the base name of a collection resolves to nothing, here and at edge resolution alike
         const auto bare = graph.connect(*source, "out", *sum, "in");
@@ -1209,7 +1209,6 @@ connections:
             expect(fatal(eq(ports.size(), names.size()))) << block.name();
             for (std::size_t i = 0UZ; i < ports.size(); ++i) {
                 expect(eq(ports[i].name, names[i])) << block.name();
-                expect(eq(ports[i].typeName, graph.portTypeName(block, isInput, names[i]))) << names[i];
                 expect(ports[i].isInput == isInput) << names[i];
             }
             return ports;
@@ -1305,7 +1304,7 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         const std::optional<RuntimeError> refused = runtime->start();
         expect(fatal(!refused.has_value())) << (refused ? refused->message : std::string{});
         runtime->wait();
-        expect(!runtime->busy()) << "wait() returned while the run was in progress";
+        expect(runtime->waitFor(0ns)) << "wait() returned while the run was in progress";
         const std::expected<void, RuntimeError> result = runtime->result();
         expect(result.has_value()) << (result ? std::string{} : result.error().message);
         expect(runtime->state() == Runtime::State::Stopped) << "a run that ended by itself settles stopped";
@@ -1352,7 +1351,7 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         expect(fatal(!endless->start().has_value()));
         expect(gt(awaitCountAbove("r4-endless", 0UZ), 0UZ)) << "the endless run delivered nothing";
         endless->stop();
-        expect(!endless->busy()) << "stop() returned before the run ended";
+        expect(endless->waitFor(0ns)) << "stop() returned before the run ended";
         expect(endless->state() == Runtime::State::Stopped);
         endless->stop();
         expect(endless->state() == Runtime::State::Stopped) << "a second stop changed the state";
@@ -1396,7 +1395,7 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         for (std::size_t run = 0UZ; run < 3UZ; ++run) {
             expect(fatal(!runtime->start().has_value()));
             runtime->stop();
-            expect(!runtime->busy()) << std::format("run {}: stop() returned before the run ended", run);
+            expect(runtime->waitFor(0ns)) << std::format("run {}: stop() returned before the run ended", run);
             expect(runtime->state() == Runtime::State::Stopped) << std::format("run {}", run);
             expect(runtime->result().has_value()) << std::format("run {}", run);
         }
@@ -1415,7 +1414,7 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         const std::expected<void, RuntimeError> foreground = runtime->runAndWait();
         expect(fatal(!foreground.has_value())) << "runAndWait() during the run was accepted";
         expect(foreground.error().message.contains("a run is in progress")) << foreground.error().message;
-        expect(runtime->busy()) << "a refused start ended the run in progress";
+        expect(!runtime->waitFor(0ns)) << "a refused start ended the run in progress";
         expect(!runtime->result().has_value()) << "result() reported a run in progress as ended";
 
         runtime->stop();
@@ -1464,7 +1463,7 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         expect(fatal(!runtime->start().has_value()));
         expect(gt(awaitCountAbove("r10-timed-stop", 0UZ), 0UZ)) << "the endless run delivered nothing";
         expect(runtime->stopFor(10s)) << "a timed stop did not end an endless run";
-        expect(!runtime->busy()) << "stopFor() returned true before the run ended";
+        expect(runtime->waitFor(0ns)) << "stopFor() returned true before the run ended";
         expect(runtime->state() == Runtime::State::Stopped);
         expect(runtime->result().has_value()) << "a stopped run is a successful run";
     };
@@ -1477,7 +1476,7 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         expect(gt(awaitCountAbove("r11-zero-timeout", 0UZ), 0UZ)) << "the endless run delivered nothing";
         expect(!runtime->stopFor(0ns)) << "a zero timeout read an endless run as ended";
         expect(runtime->stopFor(10s)) << "the later timed stop did not end the run";
-        expect(!runtime->busy()) << "stopFor() returned true before the run ended";
+        expect(runtime->waitFor(0ns)) << "stopFor() returned true before the run ended";
         expect(runtime->state() == Runtime::State::Stopped);
         expect(runtime->result().has_value()) << "a stopped run is a successful run";
     };
@@ -1514,11 +1513,11 @@ const boost::ut::suite<"background run"> backgroundRunTests = [] {
         const auto beforeLaterCall = std::chrono::steady_clock::now();
         expect(!runtime->stopFor(kTimeout)) << "a later call read the held stop as ended";
         expect(std::chrono::steady_clock::now() - beforeLaterCall < 5s) << "a later call waited for the held stop() past its own timeout";
-        expect(runtime->busy()) << "the run ended while its block was inside stop()";
+        expect(!runtime->waitFor(0ns)) << "the run ended while its block was inside stop()";
 
         openStopGate();
         expect(runtime->stopFor(10s)) << "the run did not end once the block's stop() returned";
-        expect(!runtime->busy()) << "stopFor() returned true before the run ended";
+        expect(runtime->waitFor(0ns)) << "stopFor() returned true before the run ended";
         expect(eq(awaitHeldStops(1UZ), 1UZ)) << "the block's stop() ran more than once";
         expect(runtime->state() == Runtime::State::Stopped);
         expect(runtime->result().has_value()) << "a stopped run is a successful run";

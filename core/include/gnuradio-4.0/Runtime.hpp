@@ -65,32 +65,16 @@ public:
     [[nodiscard]] std::string_view uniqueName() const;
     [[nodiscard]] std::string_view typeName() const;
 
-    /// Stores parameters for `ctx` and returns the key-value pairs that could not be set.
-    [[nodiscard]] property_map set(const property_map& parameters, SettingsCtx ctx = {});
-
     /// Stages parameters without touching stored settings.
     [[nodiscard]] property_map setStaged(const property_map& parameters);
 
     [[nodiscard]] property_map              get(std::span<const std::string> keys = {}) const;
     [[nodiscard]] std::optional<pmt::Value> get(const std::string& key) const;
-    [[nodiscard]] property_map              activeParameters() const;
     [[nodiscard]] property_map              stagedParameters() const;
     [[nodiscard]] property_map              defaultParameters() const;
 
     /// The keys `setStaged()` accepts: the type's writable members and the parameters the block declared.
     [[nodiscard]] std::set<std::string> writableMembers() const;
-
-    [[nodiscard]] std::optional<property_map> getStored(std::span<const std::string> keys = {}, SettingsCtx ctx = {}) const;
-    [[nodiscard]] std::optional<pmt::Value>   getStored(const std::string& key, SettingsCtx ctx = {}) const;
-
-    [[nodiscard]] std::optional<SettingsCtx> activateContext(SettingsCtx ctx = {});
-    [[nodiscard]] SettingsCtx                activeContext() const;
-    [[nodiscard]] bool                       removeContext(SettingsCtx ctx);
-    [[nodiscard]] std::set<std::string>      autoUpdateParameters(SettingsCtx ctx = {});
-
-    void storeDefaults();
-    void resetDefaults();
-    void loadParametersFromPropertyMap(const property_map& parameters, SettingsCtx ctx = {});
 
     [[nodiscard]] property_map metaInformation() const;
     void                       setMetaInformation(property_map information);
@@ -120,7 +104,7 @@ struct GNURADIO_EXPORT RuntimeEdge {
 /// listed.
 struct GNURADIO_EXPORT RuntimePort {
     std::string name;     // the name connect() accepts: "out", or "in#1" for element 1 of a collection
-    std::string typeName; // the value type, spelled as portTypeName() spells it
+    std::string typeName; // the value type, as the port spells it
     bool        isInput       = false;
     bool        isMessage     = false;
     bool        isOptional    = false;
@@ -137,8 +121,8 @@ struct GNURADIO_EXPORT RuntimePort {
  * @brief A flow graph built by name.
  *
  * A RuntimeGraph either owns its graph or views one owned by a subgraph block or a scheduler.
- * `interior()` and `Runtime::graph()` return views; a view does not destroy what it names, and
- * `clear()` on a view clears the viewed graph.
+ * `interior()` and `Runtime::graph()` return views; a view does not destroy what it names, and an
+ * edit through a view edits the viewed graph.
  *
  * From another thread, call edges(), inputPorts() and outputPorts() on a running graph only while no
  * edit is in flight, whether made through a view or by the scheduler's edit messages (quiesce() does
@@ -150,7 +134,6 @@ public:
     enum class Recursive : bool { No = false, Yes = true };
 
     RuntimeGraph();
-    explicit RuntimeGraph(property_map initialSettings);
     ~RuntimeGraph();
     RuntimeGraph(RuntimeGraph&&) noexcept;
     RuntimeGraph& operator=(RuntimeGraph&&) noexcept;
@@ -174,7 +157,6 @@ public:
     [[nodiscard]] std::vector<BlockHandle>                 blocks(Recursive recursive = Recursive::No) const;
     [[nodiscard]] std::expected<BlockHandle, RuntimeError> find(std::string_view uniqueName, Recursive recursive = Recursive::Yes) const;
     [[nodiscard]] std::expected<void, RuntimeError>        remove(const BlockHandle& block);
-    void                                                   clear();
 
     [[nodiscard]] std::expected<void, RuntimeError> connect(const BlockHandle& sourceBlock, std::string_view sourcePort, //
         const BlockHandle& destinationBlock, std::string_view destinationPort, EdgeSpec edge = {});
@@ -187,7 +169,6 @@ public:
 
     [[nodiscard]] std::vector<std::string> inputPortNames(const BlockHandle& block) const;
     [[nodiscard]] std::vector<std::string> outputPortNames(const BlockHandle& block) const;
-    [[nodiscard]] std::string              portTypeName(const BlockHandle& block, bool isInput, std::string_view portName) const;
 
     /// Describes each port `inputPortNames()` and `outputPortNames()` list, in the same order.
     [[nodiscard]] std::vector<RuntimePort> inputPorts(const BlockHandle& block) const;
@@ -290,9 +271,6 @@ public:
     /// run has ended, true without a run in progress. The request stands after a return at the timeout, and a later
     /// call waits for the same stop.
     [[nodiscard]] bool stopFor(std::chrono::nanoseconds timeout);
-
-    /// True from the start of a run, by start() or runAndWait(), until the run has ended.
-    [[nodiscard]] bool busy() const;
 
     /// Returns once no run is in progress.
     void wait() const;
