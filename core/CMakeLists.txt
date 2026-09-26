@@ -16,6 +16,12 @@ if(GR_ENABLE_BLOCK_REGISTRY)
 endif()
 
 add_library(gnuradio4::gnuradio-core ALIAS gnuradio-core)
+# where this installation puts its plugins: gr::installedPluginDirectory() returns it, and the process's plugin loader
+# searches it when GNURADIO4_PLUGIN_DIRECTORIES is not set
+set_property(
+  SOURCE src/PluginLoader.cpp
+  APPEND
+  PROPERTY COMPILE_DEFINITIONS GR_INSTALLED_PLUGIN_DIRECTORY="${CMAKE_INSTALL_FULL_LIBDIR}/gnuradio-4/plugins")
 target_include_directories(
   gnuradio-core
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>

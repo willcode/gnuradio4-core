@@ -29,6 +29,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace gr {
@@ -38,6 +39,9 @@ namespace gr {
 /// block of its own and loads no graph of its own pays nothing for them.
 class BlockModel;
 struct Graph;
+
+/// Declared, never defined here: a program that builds its own loader includes `PluginLoader.hpp` for it.
+class PluginLoader;
 
 struct GNURADIO_EXPORT RuntimeError {
     std::string   message;
@@ -78,6 +82,11 @@ public:
 
     /// The keys `setStaged()` accepts: the type's writable members and the parameters the block declared.
     [[nodiscard]] std::set<std::string> writableMembers() const;
+
+    /// Reads the block's members into the settings `get()` returns. `get()` returns the values of the last settings
+    /// change applied until this call. A member the block writes while it works reads as it was at that change. Call it
+    /// while no scheduler runs the block.
+    void updateActiveParameters();
 
     [[nodiscard]] property_map metaInformation() const;
     void                       setMetaInformation(property_map information);
@@ -120,6 +129,22 @@ struct GNURADIO_EXPORT RuntimePort {
     std::size_t maxSamples = 0;
 };
 
+/// What a plugin loader holds from one directory, as `RuntimeGraph::loadPlugins()` reports it.
+struct GNURADIO_EXPORT RuntimePluginDirectory {
+    struct BlockLibrary {
+        std::string file;
+        std::size_t nBlockRegistrations = 0; // block registrations the file made when it loaded
+    };
+
+    std::string                                      directory;      // as the caller named it
+    std::vector<std::string>                         plugins;        // the files that loaded as plugins
+    std::vector<BlockLibrary>                        blockLibraries; // the files that registered blocks without being plugins
+    std::vector<std::pair<std::string, std::string>> failed;         // each file that did not load, with the loader's reason
+    std::vector<std::string>                         skipped;        // the entries named like a shared object that were not opened
+    std::vector<std::string>                         blockTypes;     // the block types these files supplied before any other file, sorted
+    std::string                                      error;          // why the directory could not be read, empty when it was read
+};
+
 /**
  * @brief A flow graph built by name.
  *
@@ -136,7 +161,14 @@ class GNURADIO_EXPORT RuntimeGraph {
 public:
     enum class Recursive : bool { No = false, Yes = true };
 
+    /// An empty graph whose blocks come from the process's plugin loader, `gr::globalPluginLoader()`.
     RuntimeGraph();
+
+    /// An empty graph whose blocks and scheduler come from `loader`, the process's loader when it is null. The graph
+    /// and a Runtime created from it share ownership of the loader. A BlockHandle does not, so a handle to a block from
+    /// a plugin is used only while its graph or its Runtime exists.
+    explicit RuntimeGraph(std::shared_ptr<PluginLoader> loader);
+
     ~RuntimeGraph();
     RuntimeGraph(RuntimeGraph&&) noexcept;
     RuntimeGraph& operator=(RuntimeGraph&&) noexcept;
@@ -159,9 +191,14 @@ public:
     /// A non-owning view of a subgraph's interior, or of a nested scheduler's graph.
     [[nodiscard]] std::expected<RuntimeGraph, RuntimeError> interior(const BlockHandle& block) const;
 
-    [[nodiscard]] std::vector<BlockHandle>                 blocks(Recursive recursive = Recursive::No) const;
-    [[nodiscard]] std::expected<BlockHandle, RuntimeError> find(std::string_view uniqueName, Recursive recursive = Recursive::Yes) const;
-    [[nodiscard]] std::expected<void, RuntimeError>        remove(const BlockHandle& block);
+    [[nodiscard]] std::vector<BlockHandle> blocks(Recursive recursive = Recursive::No) const;
+
+    /// The block whose unique name is `name`, else the one block whose name is `name`. A block `fromYaml()` read from a
+    /// document entry that carries a `unique_name` also answers to that name. A name no block carries and a name two
+    /// blocks share are errors.
+    [[nodiscard]] std::expected<BlockHandle, RuntimeError> find(std::string_view name, Recursive recursive = Recursive::Yes) const;
+
+    [[nodiscard]] std::expected<void, RuntimeError> remove(const BlockHandle& block);
 
     [[nodiscard]] std::expected<void, RuntimeError> connect(const BlockHandle& sourceBlock, std::string_view sourcePort, //
         const BlockHandle& destinationBlock, std::string_view destinationPort, EdgeSpec edge = {});
@@ -189,15 +226,22 @@ public:
     [[nodiscard]] property_map exportedInputPorts() const;
     [[nodiscard]] property_map exportedOutputPorts() const;
 
-    /// Loads a graph document through `gr::loadGrc` and the global plugin loader into a graph this
-    /// RuntimeGraph owns. A document the reader refuses is an error carrying the reader's message. For a
-    /// document that does not parse, the message is the reader's sentence headed by the line and column.
+    /// Loads a graph document as `gr::loadGrc` does, through `loader`, into a graph this RuntimeGraph owns. The graph
+    /// holds the loader as the constructor that takes one does, and a null `loader` selects the process's loader. A
+    /// document the reader refuses is an error carrying the reader's message, and a block type the loader does not
+    /// know is one naming the type. For a document that does not parse, the message is the reader's sentence headed by
+    /// the line and column.
+    ///
+    /// `overrides` puts the caller's settings in place of the document's: each key names a block at the document's top
+    /// level by its `unique_name` or name, and its values replace those of the block's parameters before the block
+    /// reads them, as `gr::loadGrc` with a `gr::BlockSettings` does. A name no block carries, a name two blocks share
+    /// and a key a block does not declare are errors.
+    [[nodiscard]] static std::expected<RuntimeGraph, RuntimeError> fromYaml(std::shared_ptr<PluginLoader> loader, std::string_view document, const std::map<std::string, property_map, std::less<>>& overrides = {});
+
+    /// `fromYaml` through the process's loader.
     [[nodiscard]] static std::expected<RuntimeGraph, RuntimeError> fromYaml(std::string_view document);
 
-    /// `fromYaml` with the caller's settings in place of the document's: each key names a block at the document's top
-    /// level by its unique name or name, and its values replace those of the block's parameters before the block reads
-    /// them, as `gr::loadGrc` with a `gr::BlockSettings` does. A name no block carries, a name two blocks share and a
-    /// key a block does not declare are errors.
+    /// `fromYaml` through the process's loader, with the caller's settings in place of the document's.
     [[nodiscard]] static std::expected<RuntimeGraph, RuntimeError> fromYaml(std::string_view document, const std::map<std::string, property_map, std::less<>>& overrides);
 
     /// Writes the graph as a graph document through `gr::saveGrc`, on an owning graph or a view. Call it
@@ -207,6 +251,28 @@ public:
 
     [[nodiscard]] static std::vector<std::string> availableBlockTypes();
     [[nodiscard]] static std::vector<std::string> availableSchedulerTypes();
+
+    /**
+     * @brief Searches each directory for YAML block definitions, plugins and block libraries with `loader`, and reports
+     * what the loader holds from each directory, in the order given.
+     *
+     * A directory the loader searched before, at its construction or in an earlier call, is not searched again, and its
+     * report lists what the first search found. A directory that does not exist reports nothing. A directory the file
+     * system does not let the search read reports why in `error`, and the search goes on with the next one.
+     *
+     * A graph built through the loader takes a block type from the block registry first, then from the plugins, then
+     * from the YAML definitions. Of two plugins that supply one type, the first loaded supplies it. Of two block
+     * libraries, the last loaded supplies it, because a registration replaces the one before it. The files of one
+     * directory load in the order the file system lists them.
+     *
+     * The loader holds no lock. Call this while no other thread uses the loader, a running scheduler whose graph came
+     * through it included.
+     */
+    [[nodiscard]] static std::vector<RuntimePluginDirectory> loadPlugins(PluginLoader& loader, std::span<const std::string> directories);
+
+    /// `loadPlugins` with the process's loader, the one `fromYaml()` and `emplace()` use when given none. That loader
+    /// searched the directories of `GNURADIO4_PLUGIN_DIRECTORIES` at its construction.
+    [[nodiscard]] static std::vector<RuntimePluginDirectory> loadPlugins(std::span<const std::string> directories);
 
 private:
     friend class Runtime;
@@ -224,7 +290,8 @@ struct GNURADIO_EXPORT RuntimeEvent {
     std::string    source;   // the reporting block's unique name
     std::string    endpoint; // the property endpoint it reported on
     bool           isError = false;
-    std::string    text;                              // the rendered error text when isError
+    std::string    text;                              // the error's message when isError
+    std::string    where;                             // the rendered source location of the error when isError
     property_map   data;                              // the message payload when not an error
     std::uint64_t  time    = 0;                       // ns since epoch when the error was raised, 0 otherwise
     RuntimeCommand command = RuntimeCommand::Invalid; // Final for the reply to a request, Notify for a notification
@@ -252,14 +319,16 @@ public:
 
     static constexpr std::string_view kDefaultScheduler = "gr::scheduler::Simple<singleThreaded>";
 
-    /// Instantiates scheduler `type`, hands it `graph` and takes ownership of both; `graph` is consumed when a runtime
-    /// is returned and left as it was on an error. A parameter the scheduler does not declare, or a value its
+    /// Instantiates scheduler `type` through the plugin loader `graph` holds, hands it `graph` and takes ownership of
+    /// both and of the graph's share of the loader; `graph` is consumed when a runtime is returned and left as it was
+    /// on an error. A parameter the scheduler does not declare, or a value its
     /// constructor refuses, is an error; a value it accepts at construction and rejects later, such as an unknown
     /// `poolName`, is reported as an error event instead.
     [[nodiscard]] static std::expected<Runtime, RuntimeError> create(RuntimeGraph&& graph, std::string_view type = kDefaultScheduler, property_map schedulerParameters = {});
 
     /// The same, for a graph that was not built through a RuntimeGraph -- one loaded by `gr::loadGrc`, or
-    /// one built with the typed API. A caller that has a `gr::Graph` to pass has `Graph.hpp` already.
+    /// one built with the typed API. A caller that has a `gr::Graph` to pass has `Graph.hpp` already. The scheduler
+    /// comes from the loader the graph names, which the caller keeps alive until the Runtime is destroyed.
     [[nodiscard]] static std::expected<Runtime, RuntimeError> create(gr::Graph&& graph, std::string_view type = kDefaultScheduler, property_map schedulerParameters = {});
 
     ~Runtime();

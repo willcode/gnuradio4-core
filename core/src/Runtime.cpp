@@ -13,8 +13,12 @@
 #include <algorithm>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <format>
+#include <iterator>
+#include <map>
 #include <mutex>
+#include <ranges>
 #include <system_error>
 #include <thread>
 
@@ -55,16 +59,15 @@ RuntimeError toRuntimeError(const Error& error) { return RuntimeError{.message =
 
 RuntimeError localError(std::string message, std::string_view where) { return RuntimeError{.message = std::move(message), .where = std::string(where), .time = 0ULL}; }
 
-// loadGrc ends its message for a document that does not parse with a newline and the document itself
-std::string_view withoutDocument(std::string_view message, std::string_view document) {
-    const std::size_t appended = document.size() + 1UZ;
-    if (message.size() < appended || !message.ends_with(document) || message[message.size() - appended] != '\n') {
-        return message;
-    }
-    return message.substr(0UZ, message.size() - appended);
-}
-
 PluginLoader& loaderFor(const Graph& graph) { return graph._pluginLoader != nullptr ? *graph._pluginLoader : gr::globalPluginLoader(); }
+
+// the loader given, or the process's own, which lives as long as the process and is held without ownership
+std::shared_ptr<PluginLoader> loaderOrGlobal(std::shared_ptr<PluginLoader> loader) {
+    if (loader != nullptr) {
+        return loader;
+    }
+    return std::shared_ptr<PluginLoader>(std::shared_ptr<void>{}, std::addressof(gr::globalPluginLoader()));
+}
 
 // a collection is listed element by element, as "base#index", because that is the spelling
 // dynamicPortFromName resolves and the only one an edge to a collection can carry
@@ -168,12 +171,16 @@ std::expected<void, RuntimeError> checkPortExists(BlockModel& model, bool isInpu
 } // namespace
 
 struct RuntimeGraph::Impl {
-    std::unique_ptr<Graph> owned;          // set when this RuntimeGraph owns the graph
-    Graph*                 view = nullptr; // the graph in use, owned or not
-    std::shared_ptr<void>  ownerModel;     // the BlockModel that owns a viewed graph, for port export
+    std::shared_ptr<PluginLoader> loader;         // set with `owned`; declared first so that it outlives the blocks it made
+    std::unique_ptr<Graph>        owned;          // set when this RuntimeGraph owns the graph
+    Graph*                        view = nullptr; // the graph in use, owned or not
+    std::shared_ptr<void>         ownerModel;     // the BlockModel that owns a viewed graph, for port export
+
+    std::map<std::string, std::weak_ptr<BlockModel>, std::less<>> documentUniqueNames; // the document's `unique_name` of each top-level block fromYaml() read
 };
 
 struct Runtime::Impl {
+    std::shared_ptr<PluginLoader>   loader;   // the graph's share; declared first so that it outlives the scheduler and the blocks
     MsgPortIn                       events;   // declared first so that it outlives the scheduler writing to it
     MsgPortOut                      commands; // feeds the scheduler's msgIn
     std::mutex                      mutex;
@@ -300,12 +307,13 @@ struct Runtime::Impl {
     void drainLocked() {
         ReaderSpanLike auto messages = events.streamReader().get();
         for (const Message& message : messages) {
-            RuntimeEvent event{.source = message.serviceName, .endpoint = message.endpoint, .isError = !message.data.has_value(), .text = {}, .data = {}, .time = 0ULL, .command = static_cast<RuntimeCommand>(message.cmd), .clientRequestID = message.clientRequestID};
+            RuntimeEvent event{.source = message.serviceName, .endpoint = message.endpoint, .isError = !message.data.has_value(), .text = {}, .where = {}, .data = {}, .time = 0ULL, .command = static_cast<RuntimeCommand>(message.cmd), .clientRequestID = message.clientRequestID};
             if (message.data.has_value()) {
                 event.data = message.data.value();
             } else {
-                event.text = std::format("{} at {}", message.data.error().message, message.data.error().srcLoc());
-                event.time = toNanoseconds(message.data.error().errorTime);
+                event.text  = message.data.error().message;
+                event.where = message.data.error().srcLoc();
+                event.time  = toNanoseconds(message.data.error().errorTime);
             }
             pending.push_back(std::move(event));
         }
@@ -351,6 +359,12 @@ property_map BlockHandle::defaultParameters() const { return _model ? modelOf(_m
 
 std::set<std::string> BlockHandle::writableMembers() const { return _model ? modelOf(_model)->settings().writableMembers() : std::set<std::string>{}; }
 
+void BlockHandle::updateActiveParameters() {
+    if (_model) {
+        modelOf(_model)->settings().updateActiveParameters();
+    }
+}
+
 property_map BlockHandle::metaInformation() const { return _model ? modelOf(_model)->metaInformation() : property_map{}; }
 
 void BlockHandle::setMetaInformation(property_map information) {
@@ -359,9 +373,12 @@ void BlockHandle::setMetaInformation(property_map information) {
     }
 }
 
-RuntimeGraph::RuntimeGraph() : _impl(std::make_unique<Impl>()) {
-    _impl->owned = std::make_unique<Graph>();
-    _impl->view  = _impl->owned.get();
+RuntimeGraph::RuntimeGraph() : RuntimeGraph(std::shared_ptr<PluginLoader>{}) {}
+
+RuntimeGraph::RuntimeGraph(std::shared_ptr<PluginLoader> loader) : _impl(std::make_unique<Impl>()) {
+    _impl->loader = loaderOrGlobal(std::move(loader));
+    _impl->owned  = std::make_unique<Graph>(*_impl->loader);
+    _impl->view   = _impl->owned.get();
 }
 
 RuntimeGraph::RuntimeGraph(std::unique_ptr<Impl> impl) noexcept : _impl(std::move(impl)) {}
@@ -521,13 +538,29 @@ std::vector<BlockHandle> RuntimeGraph::blocks(Recursive recursive) const {
     return handles;
 }
 
-std::expected<BlockHandle, RuntimeError> RuntimeGraph::find(std::string_view uniqueName, Recursive recursive) const {
-    for (const BlockHandle& handle : blocks(recursive)) {
-        if (handle.uniqueName() == uniqueName) {
-            return handle;
+std::expected<BlockHandle, RuntimeError> RuntimeGraph::find(std::string_view name, Recursive recursive) const {
+    const std::vector<BlockHandle> candidates = blocks(recursive);
+    if (const auto byUniqueName = std::ranges::find(candidates, name, &BlockHandle::uniqueName); byUniqueName != candidates.end()) {
+        return *byUniqueName;
+    }
+    if (_impl) {
+        // a document name answers only while its block is in the graph
+        if (const auto named = _impl->documentUniqueNames.find(name); named != _impl->documentUniqueNames.end()) {
+            const std::shared_ptr<void> block = named->second.lock();
+            if (const auto held = std::ranges::find(candidates, block, [](const BlockHandle& handle) { return handle._model; }); block != nullptr && held != candidates.end()) {
+                return *held;
+            }
         }
     }
-    return std::unexpected(localError(std::format("no block named '{}' in this graph", uniqueName), "RuntimeGraph::find"));
+    const auto        byName = std::ranges::find(candidates, name, &BlockHandle::name);
+    const std::size_t nNamed = static_cast<std::size_t>(std::ranges::count(candidates, name, &BlockHandle::name));
+    if (nNamed > 1UZ) {
+        return std::unexpected(localError(std::format("'{}' is the name of {} blocks in this graph; address one by its unique name", name, nNamed), "RuntimeGraph::find"));
+    }
+    if (byName != candidates.end()) {
+        return *byName;
+    }
+    return std::unexpected(localError(std::format("no block named '{}' in this graph", name), "RuntimeGraph::find"));
 }
 
 std::expected<void, RuntimeError> RuntimeGraph::remove(const BlockHandle& block) {
@@ -610,22 +643,33 @@ std::vector<RuntimePort> RuntimeGraph::inputPorts(const BlockHandle& block) cons
 
 std::vector<RuntimePort> RuntimeGraph::outputPorts(const BlockHandle& block) const { return block.valid() ? portsOf(*modelOf(block._model), false) : std::vector<RuntimePort>{}; }
 
-std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document) { return fromYaml(document, gr::BlockSettings{}); }
+std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document) { return fromYaml(nullptr, document, gr::BlockSettings{}); }
 
-std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document, const std::map<std::string, property_map, std::less<>>& overrides) {
+std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::string_view document, const std::map<std::string, property_map, std::less<>>& overrides) { return fromYaml(nullptr, document, overrides); }
+
+std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::shared_ptr<PluginLoader> loader, std::string_view document, const std::map<std::string, property_map, std::less<>>& overrides) {
     constexpr std::string_view where = "RuntimeGraph::fromYaml";
     try {
-        gr::meta::indirect<Graph> loaded = gr::loadGrc(gr::globalPluginLoader(), document, overrides);
+        const auto parsed = pmt::yaml::deserialize(document);
+        if (!parsed.has_value()) {
+            return std::unexpected(localError(std::format("line {}, column {}: {}", parsed.error().line, parsed.error().column, parsed.error().message), where));
+        }
 
-        auto impl   = std::make_unique<Impl>();
-        impl->owned = std::make_unique<Graph>(std::move(*loaded));
-        impl->view  = impl->owned.get();
+        // the steps of gr::loadGrc with a BlockSettings, keeping the names the document gives its top-level blocks
+        auto impl    = std::make_unique<Impl>();
+        impl->loader = loaderOrGlobal(std::move(loader));
+        impl->owned  = std::make_unique<Graph>(*impl->loader);
+        impl->view   = impl->owned.get();
+
+        detail::OverrideUse        use{overrides};
+        const detail::LoadedBlocks loaded = detail::loadGraphFromMap(*impl->loader, *impl->owned, *parsed, std::addressof(use));
+        use.checkAllTaken(loaded.byName | std::views::keys | std::ranges::to<std::vector<std::string>>());
+        for (const auto& [uniqueName, block] : loaded.byUniqueName) {
+            impl->documentUniqueNames.emplace(uniqueName, block);
+        }
         return RuntimeGraph(std::move(impl));
     } catch (const gr::exception& error) {
-        // loadGrc's message gives the line of a document that does not parse. The parser's own error gives
-        // the column. The same parse returned normally inside loadGrc, and here only an allocation can fail.
-        const auto parsed = pmt::yaml::deserialize(document);
-        return std::unexpected(localError(parsed.has_value() ? error.message : std::format("line {}, column {}: {}", parsed.error().line, parsed.error().column, withoutDocument(error.message, document)), where));
+        return std::unexpected(localError(error.message, where));
     } catch (const gr::Error& error) {
         return std::unexpected(localError(error.message, where));
     } catch (const std::exception& error) {
@@ -660,6 +704,56 @@ std::vector<std::string> RuntimeGraph::availableSchedulerTypes() {
     return gr::globalPluginLoader().availableSchedulers();
 }
 
+std::vector<RuntimePluginDirectory> RuntimeGraph::loadPlugins(std::span<const std::string> directories) { return loadPlugins(gr::globalPluginLoader(), directories); }
+
+std::vector<RuntimePluginDirectory> RuntimeGraph::loadPlugins(PluginLoader& loader, std::span<const std::string> directories) {
+    std::vector<RuntimePluginDirectory> reports;
+    reports.reserve(directories.size());
+    for (const std::string& directory : directories) {
+        RuntimePluginDirectory report{.directory = directory, .plugins = {}, .blockLibraries = {}, .failed = {}, .skipped = {}, .blockTypes = {}, .error = {}};
+        try {
+            loader.loadDirectories(std::span(std::addressof(directory), 1UZ));
+        } catch (const std::exception& error) {
+            report.error = error.what();
+        } catch (...) {
+            report.error = "the search threw an exception of unknown type";
+        }
+#ifdef INTERNAL_ENABLE_BLOCK_PLUGINS
+        if (const auto unread = loader.failedDirectories().find(directory); report.error.empty() && unread != loader.failedDirectories().end()) {
+            report.error = unread->second;
+        }
+        // the loader names each file by its directory as given, joined to the file name
+        const std::filesystem::path searched = (std::filesystem::path(directory) / "").lexically_normal();
+        const auto                  isHere   = [&searched](std::string_view file) { return (std::filesystem::path(file).parent_path() / "").lexically_normal() == searched; };
+
+        for (const PluginLoader::PluginFile& plugin : loader.pluginFiles()) {
+            if (isHere(plugin.file)) {
+                report.plugins.push_back(plugin.file);
+                std::ranges::copy(plugin.blockTypes, std::back_inserter(report.blockTypes));
+            }
+        }
+        for (const PluginLoader::BlockLibrary& library : loader.blockLibraries()) {
+            if (isHere(library.file)) {
+                report.blockLibraries.push_back({.file = library.file, .nBlockRegistrations = library.nBlockRegistrations});
+                std::ranges::copy(library.blockTypes, std::back_inserter(report.blockTypes));
+            }
+        }
+        for (const auto& [file, reason] : loader.failedPlugins()) {
+            if (isHere(file)) {
+                report.failed.emplace_back(file, reason);
+            }
+        }
+        std::ranges::copy_if(loader.skippedFiles(), std::back_inserter(report.skipped), isHere);
+
+        std::ranges::sort(report.failed);
+        std::ranges::sort(report.blockTypes);
+        report.blockTypes.erase(std::ranges::unique(report.blockTypes).begin(), report.blockTypes.end());
+#endif
+        reports.push_back(std::move(report));
+    }
+    return reports;
+}
+
 Runtime::Runtime(std::unique_ptr<Impl> impl) noexcept : _impl(std::move(impl)) {}
 
 Runtime::Runtime(Runtime&&) noexcept = default;
@@ -675,6 +769,7 @@ std::expected<Runtime, RuntimeError> Runtime::create(RuntimeGraph&& graph, std::
     // the inner create moves the graph out only as its last step, so a refused call leaves the caller's graph intact
     std::expected<Runtime, RuntimeError> runtime = create(std::move(*graph._impl->owned), type, std::move(schedulerParameters));
     if (runtime.has_value()) {
+        runtime->_impl->loader = std::move(graph._impl->loader);
         graph._impl.reset();
     }
     return runtime;

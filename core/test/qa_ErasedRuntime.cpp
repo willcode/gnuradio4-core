@@ -251,6 +251,24 @@ struct CountingSink : Block<CountingSink> {
     }
 };
 
+/// counts the samples it consumes in a readable member, which the block writes while it runs
+struct TallySink : Block<TallySink> {
+    PortIn<float> in;
+
+    Annotated<gr::Size_t, "n_consumed", Doc<"samples consumed">> n_consumed = 0U;
+
+    GR_MAKE_REFLECTABLE(TallySink, in, n_consumed);
+
+    explicit TallySink(property_map init = {}) : Block<TallySink>(std::move(init)) {}
+
+    work::Status processBulk(InputSpanLike auto& inSpan) {
+        const std::size_t n = inSpan.size();
+        n_consumed          = n_consumed.value + static_cast<gr::Size_t>(n);
+        std::ignore         = inSpan.consume(n);
+        return work::Status::OK;
+    }
+};
+
 /// a source whose start() throws, so every run of its graph fails
 struct FailingStartSource : Block<FailingStartSource> {
     PortOut<float> out;
@@ -262,6 +280,21 @@ struct FailingStartSource : Block<FailingStartSource> {
     void start() { throw gr::exception("the source refused to start"); }
 
     work::Status processBulk(OutputSpanLike auto& outSpan) {
+        outSpan.publish(0UZ);
+        return work::Status::DONE;
+    }
+};
+
+/// a source that reports an error on the message plane once and ends
+struct ReportingSource : Block<ReportingSource> {
+    PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(ReportingSource, out);
+
+    explicit ReportingSource(property_map init = {}) : Block<ReportingSource>(std::move(init)) {}
+
+    work::Status processBulk(OutputSpanLike auto& outSpan) {
+        this->emitErrorMessage("processBulk", "the source reports a fault");
         outSpan.publish(0UZ);
         return work::Status::DONE;
     }
@@ -305,10 +338,11 @@ struct GatedStopSink : Block<GatedStopSink> {
 inline void registerTestBlocks() {
     static const bool registered = [] {
         BlockRegistry& registry = globalBlockRegistry();
-        return registry.insert<RampSource>("=qa::RampSource") && registry.insert<Scale>("=qa::Scale")                        //
-               && registry.insert<RecordingSink>("=qa::RecordingSink") && registry.insert<SumInputs>("=qa::SumInputs")       //
-               && registry.insert<EndlessSource>("=qa::EndlessSource") && registry.insert<CountingSink>("=qa::CountingSink") //
-               && registry.insert<FailingStartSource>("=qa::FailingStartSource");
+        return registry.insert<RampSource>("=qa::RampSource") && registry.insert<Scale>("=qa::Scale")                            //
+               && registry.insert<RecordingSink>("=qa::RecordingSink") && registry.insert<SumInputs>("=qa::SumInputs")           //
+               && registry.insert<EndlessSource>("=qa::EndlessSource") && registry.insert<CountingSink>("=qa::CountingSink")     //
+               && registry.insert<FailingStartSource>("=qa::FailingStartSource") && registry.insert<TallySink>("=qa::TallySink") //
+               && registry.insert<ReportingSource>("=qa::ReportingSource");
     }();
     expect(registered) << "the test blocks must reach the global registry";
 }
@@ -1134,6 +1168,97 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         }
         expect(outliving.valid()) << "a scheduler handle outlives its Runtime";
         expect(timeoutOf(outliving) == timeoutWhileOwned) << "a scheduler handle reads the same settings after its Runtime is destroyed";
+    };
+
+    "find() takes a unique name or a name, and refuses a name two blocks share"_test = [] {
+        registerTestBlocks();
+        RuntimeGraph graph;
+        auto         scale  = graph.emplace("qa::Scale", "gain-stage");
+        auto         first  = graph.emplace("qa::RecordingSink", "twin");
+        auto         second = graph.emplace("qa::RecordingSink", "twin");
+        expect(fatal(scale.has_value() && first.has_value() && second.has_value()));
+
+        const auto byName = graph.find("gain-stage");
+        expect(fatal(byName.has_value())) << "a name one block carries is not found";
+        expect(eq(byName->uniqueName(), scale->uniqueName()));
+        const auto byUniqueName = graph.find(second->uniqueName());
+        expect(byUniqueName.has_value() && byUniqueName->uniqueName() == second->uniqueName()) << "a unique name does not find its block among blocks sharing a name";
+
+        const auto shared = graph.find("twin");
+        expect(fatal(!shared.has_value())) << "a name two blocks share found one of them";
+        expect(shared.error().message.contains("'twin'")) << shared.error().message;
+        const auto absent = graph.find("absent");
+        expect(fatal(!absent.has_value())) << "a name no block carries found a block";
+        expect(absent.error().message.contains("'absent'")) << absent.error().message;
+
+        auto outer = graph.emplaceSubgraph("outer");
+        expect(fatal(outer.has_value()));
+        auto interior = graph.interior(*outer);
+        expect(fatal(interior.has_value()));
+        expect(fatal(interior->emplace("qa::Scale", "inner").has_value()));
+        expect(graph.find("inner").has_value()) << "the default search does not descend into a subgraph";
+        expect(!graph.find("inner", RuntimeGraph::Recursive::No).has_value()) << "a search of the top level descends into a subgraph";
+    };
+
+    "find() takes the unique_name a document gives a block, until the block is removed"_test = [] {
+        registerTestBlocks();
+        constexpr std::string_view document = "blocks:\n"
+                                              "  - id: qa::Scale\n    unique_name: left\n    parameters:\n      name: twin\n"
+                                              "  - id: qa::Scale\n    unique_name: right\n    parameters:\n      name: twin\n";
+        auto                       loaded   = RuntimeGraph::fromYaml(document);
+        expect(fatal(loaded.has_value())) << (loaded ? std::string{} : loaded.error().message);
+
+        const auto left  = loaded->find("left");
+        const auto right = loaded->find("right");
+        expect(fatal(left.has_value() && right.has_value())) << "a document's unique_name does not find its block";
+        expect(left->uniqueName() != right->uniqueName()) << "two document names found one block";
+        expect(eq(left->name(), std::string_view("twin")));
+        expect(!loaded->find("twin").has_value()) << "a name two blocks share found one of them";
+        expect(eq(loaded->find(left->uniqueName())->uniqueName(), left->uniqueName())) << "the framework's unique name no longer finds the block";
+
+        expect(fatal(loaded->remove(*left).has_value()));
+        expect(!loaded->find("left").has_value()) << "a removed block still answers to its document name";
+        expect(loaded->find("twin").has_value()) << "the name the remaining block carries alone does not find it";
+    };
+
+    "an error event carries the block's message, and the source location apart from it"_test = [] {
+        registerTestBlocks();
+        RuntimeGraph graph;
+        auto         source = graph.emplace("qa::ReportingSource", "reporting");
+        auto         sink   = graph.emplace("qa::RecordingSink", "e11-reporting");
+        expect(fatal(source.has_value() && sink.has_value()));
+        expect(graph.connect(*source, "out", *sink, "in").has_value());
+        const std::string sourceName(source->uniqueName());
+        auto              runtime = Runtime::create(std::move(graph));
+        expect(fatal(runtime.has_value()));
+        std::ignore = runtime->runAndWait();
+
+        const std::vector<RuntimeEvent> events   = runtime->pollEvents();
+        const auto                      reported = std::ranges::find_if(events, [&sourceName](const RuntimeEvent& event) { return event.isError && event.source == sourceName; });
+        expect(fatal(reported != events.end())) << "the block's error reached no event";
+        expect(eq(reported->text, std::string("the source reports a fault")));
+        expect(eq(reported->endpoint, std::string("processBulk")));
+        expect(!reported->where.empty()) << "the event carries no source location";
+        std::ignore = takeCollected("e11-reporting");
+    };
+
+    "a member a block writes while it runs is read once updateActiveParameters() refreshes the settings"_test = [] {
+        registerTestBlocks();
+        constexpr gr::Size_t kSamples = 1000U;
+        RuntimeGraph         graph;
+        auto                 source = graph.emplace("qa::RampSource", "source", {{"n_samples", kSamples}});
+        auto                 tally  = graph.emplace("qa::TallySink", "tally");
+        expect(fatal(source.has_value() && tally.has_value()));
+        expect(graph.connect(*source, "out", *tally, "in").has_value());
+        BlockHandle handle  = *tally;
+        auto        runtime = Runtime::create(std::move(graph));
+        expect(fatal(runtime.has_value()));
+        const std::expected<void, RuntimeError> ran = runtime->runAndWait();
+        expect(fatal(ran.has_value())) << (ran ? std::string{} : ran.error().message);
+
+        expect(handle.get(std::string("n_consumed")) == std::optional<pmt::Value>(gr::Size_t{0U})) << "the settings hold what the last settings change put there until they are refreshed";
+        handle.updateActiveParameters();
+        expect(handle.get(std::string("n_consumed")) == std::optional<pmt::Value>(kSamples)) << "the refreshed settings do not hold the count the block wrote";
     };
 
     "a graph lists its edges by the port names connect() accepts"_test = [] {
