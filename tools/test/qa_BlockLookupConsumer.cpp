@@ -32,6 +32,20 @@ const boost::ut::suite<"BlockLookupConsumer"> blockLookupConsumerTests = [] {
         }
     };
 
+    "an empty installation directory adds no directory, and the named directories are searched alone"_test = [] {
+        expect(fatal(::setenv("GNURADIO4_PLUGIN_DIRECTORIES", "/environment/only", 1) == 0));
+        const std::vector<std::string> fromCommandLine{"/command/line"};
+
+        const std::vector<gr::tools::Directory> withInstallation = gr::tools::searchDirectories(fromCommandLine, "/installation");
+        expect(fatal(eq(withInstallation.size(), 3UZ))) << "the instrument: a named installation directory is searched";
+        expect(eq(withInstallation.back().origin, std::string("installation")));
+
+        const std::vector<gr::tools::Directory> alone = gr::tools::searchDirectories(fromCommandLine, "");
+        expect(fatal(eq(alone.size(), 2UZ)));
+        expect(eq(alone[0].origin, std::string("option")));
+        expect(eq(alone[1].origin, std::string("environment")));
+    };
+
     "a declared role the stream ports contradict yields a note, and one they agree with yields none"_test = [] {
         expect(gr::tools::roleNote("source", "consumer").has_value());
         expect(!gr::tools::roleNote("source", "generator").has_value());

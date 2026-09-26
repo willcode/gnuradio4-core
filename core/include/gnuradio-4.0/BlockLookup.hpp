@@ -40,8 +40,9 @@ struct Directory {
  * @brief The directories a tool searches for blocks, in the order it searches them.
  *
  * The command line comes first, then the colon-separated list in GNURADIO4_PLUGIN_DIRECTORIES,
- * then `installed`, which is the plugin directory of the installation the caller was built for and
- * is always searched. A directory named twice is searched once.
+ * then `installed`, the plugin directory of the installation the caller was built for. An empty
+ * `installed` adds no directory, and the search then covers the named directories alone. A
+ * directory named twice is searched once.
  */
 [[nodiscard]] inline std::vector<Directory> searchDirectories(std::span<const std::string> fromCommandLine, std::string_view installed) {
     std::vector<Directory> directories;
