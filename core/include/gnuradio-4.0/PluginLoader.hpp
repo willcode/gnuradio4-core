@@ -6,11 +6,14 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -583,18 +586,28 @@ public:
      * mapped for the lifetime of the process because those entries point into its code.
      */
     struct BlockLibrary {
-        std::string file;
-        std::size_t nBlockRegistrations     = 0UZ;
-        std::size_t nSchedulerRegistrations = 0UZ;
+        std::string              file;
+        std::size_t              nBlockRegistrations     = 0UZ;
+        std::size_t              nSchedulerRegistrations = 0UZ;
+        std::vector<std::string> blockTypes{}; ///< the keys it added to the block registries, sorted; a key it replaced is not among them
+    };
+
+    /// A shared object that loaded as a plugin.
+    struct PluginFile {
+        std::string              file;
+        std::vector<std::string> blockTypes{}; ///< the keys no registry and no earlier plugin held when it loaded, sorted
     };
 
 private:
     detail::YamlDefinitionsLoader                _yamlRegistry;
     std::vector<PluginHandler>                   _pluginHandlers;
+    std::vector<PluginFile>                      _pluginFiles; // one entry for each entry of _pluginHandlers
     std::vector<BlockLibrary>                    _blockLibraries;
     std::vector<std::string>                     _skippedFiles;
     std::unordered_map<std::string, std::string> _failedPlugins;
     std::unordered_set<std::string>              _loadedPluginFiles;
+    std::unordered_set<std::string>              _searchedDirectories;
+    std::map<std::string, std::string>           _failedDirectories;
 
     std::unordered_map<std::string, gr_plugin_base*> _pluginForBlockName;
     std::unordered_map<std::string, gr_plugin_base*> _pluginForSchedulerName;
@@ -625,19 +638,56 @@ private:
         return {blockGeneration, schedulerGeneration};
     }
 
+    /// the keys of the block registries a load can reach, sorted and without repeats
+    [[nodiscard]] std::vector<std::string> registryKeys() const {
+        std::vector<std::string> keys = _registry->keys();
+        if (BlockRegistry& global = gr::globalBlockRegistry(); &global != _registry) {
+            std::ranges::copy(global.keys(), std::back_inserter(keys));
+        }
+        std::ranges::sort(keys);
+        keys.erase(std::ranges::unique(keys).begin(), keys.end());
+        return keys;
+    }
+
 public:
-    PluginLoader(BlockRegistry& registry, SchedulerRegistry& scheduler_registry, std::span<const std::string> paths) : _yamlRegistry(paths, registry), _registry(&registry), _schedulerRegistry(&scheduler_registry) {
-        for (const auto& pathStr : paths) {
-            const std::filesystem::path directory(pathStr);
-            if (!std::filesystem::is_directory(directory)) {
+    PluginLoader(BlockRegistry& registry, SchedulerRegistry& scheduler_registry, std::span<const std::string> paths) : _yamlRegistry({}, registry), _registry(&registry), _schedulerRegistry(&scheduler_registry) { loadDirectories(paths); }
+
+    /// Searches each directory for YAML block definitions and then for shared objects. A directory searched before, by
+    /// the constructor or an earlier call, is not searched again, and a file opened before is not opened again. A
+    /// directory the file system does not let the search read is recorded in failedDirectories(), and the search goes
+    /// on with the next one.
+    void loadDirectories(std::span<const std::string> paths) {
+        std::vector<std::string> unsearched;
+        for (const std::string& path : paths) {
+            if (_searchedDirectories.insert(path).second) {
+                unsearched.push_back(path);
+            }
+        }
+        _yamlRegistry.loadBlockDefinitions(unsearched, *_registry);
+
+        for (const auto& pathStr : unsearched) {
+            const std::filesystem::path        directory(pathStr);
+            std::error_code                    error;
+            const std::filesystem::file_status status = std::filesystem::status(directory, error);
+            if (status.type() == std::filesystem::file_type::not_found) {
+                continue;
+            }
+            if (error) {
+                _failedDirectories[pathStr] = error.message();
+                continue;
+            }
+            if (!std::filesystem::is_directory(status)) {
                 continue;
             }
 
-            for (const auto& file : std::filesystem::directory_iterator{directory}) {
-                const std::filesystem::path& path     = file.path();
-                const std::string            fileName = path.filename().string();
+            std::filesystem::directory_iterator entries(directory, error);
+            for (; !error && entries != std::filesystem::directory_iterator{}; entries.increment(error)) {
+                const std::filesystem::directory_entry& file     = *entries;
+                const std::filesystem::path&            path     = file.path();
+                const std::string                       fileName = path.filename().string();
 
-                if (!file.is_regular_file() || !std::ranges::contains(kLibraryExtensions, path.extension().string())) {
+                std::error_code typeError;
+                if (!file.is_regular_file(typeError) || !std::ranges::contains(kLibraryExtensions, path.extension().string())) {
                     if (std::ranges::any_of(kLibraryExtensions, [&fileName](std::string_view extension) { return fileName.contains(extension); })) {
                         _skippedFiles.push_back(path.string());
                     }
@@ -651,17 +701,23 @@ public:
                 _loadedPluginFiles.insert(fileString);
 
                 const auto [blockGenerationBefore, schedulerGenerationBefore] = registryGenerations();
+                const std::vector<std::string> keysBefore                     = registryKeys();
 
                 if (PluginHandler handler(fileString); handler) {
+                    PluginFile loaded{.file = fileString};
                     for (std::string_view blockName : handler->availableBlocks()) {
-                        _pluginForBlockName.emplace(std::string(blockName), handler.operator->());
+                        if (_pluginForBlockName.emplace(std::string(blockName), handler.operator->()).second && !std::ranges::binary_search(keysBefore, blockName)) {
+                            loaded.blockTypes.emplace_back(blockName);
+                        }
                     }
+                    std::ranges::sort(loaded.blockTypes);
 
                     for (std::string_view schedulerName : handler->availableSchedulers()) {
                         _pluginForSchedulerName.emplace(std::string(schedulerName), handler.operator->());
                     }
 
                     _pluginHandlers.push_back(std::move(handler));
+                    _pluginFiles.push_back(std::move(loaded));
 
                 } else {
                     const auto [blockGenerationAfter, schedulerGenerationAfter] = registryGenerations();
@@ -670,11 +726,16 @@ public:
 
                     if (handler.isLoaded() && (blockRegistrations != 0UZ || schedulerRegistrations != 0UZ)) {
                         handler.keepMapped();
-                        _blockLibraries.push_back({.file = fileString, .nBlockRegistrations = blockRegistrations, .nSchedulerRegistrations = schedulerRegistrations});
+                        std::vector<std::string> added;
+                        std::ranges::set_difference(registryKeys(), keysBefore, std::back_inserter(added));
+                        _blockLibraries.push_back({.file = fileString, .nBlockRegistrations = blockRegistrations, .nSchedulerRegistrations = schedulerRegistrations, .blockTypes = std::move(added)});
                     } else {
                         _failedPlugins[fileString] = handler.status();
                     }
                 }
+            }
+            if (error) {
+                _failedDirectories[pathStr] = error.message();
             }
         }
     }
@@ -683,6 +744,12 @@ public:
     SchedulerRegistry& schedulerRegistry() { return *_schedulerRegistry; }
 
     const auto& plugins() const { return _pluginHandlers; }
+
+    /// the file each entry of plugins() was loaded from, and the block types it made available, in the same order
+    const std::vector<PluginFile>& pluginFiles() const { return _pluginFiles; }
+
+    /// the directories a search could not read, each with the file system's reason
+    const std::map<std::string, std::string>& failedDirectories() const { return _failedDirectories; }
 
     /// the shared objects that registered blocks or schedulers without being plugins
     const std::vector<BlockLibrary>& blockLibraries() const { return _blockLibraries; }
@@ -863,6 +930,10 @@ private:
 public:
     PluginLoader(BlockRegistry& registry, SchedulerRegistry& scheduler_registry, std::span<const std::string> paths) : _yamlRegistry(paths, registry), _registry(&registry), _schedulerRegistry(&scheduler_registry) {}
 
+    /// Reads the YAML block definitions in each directory. This form opens no shared object, and it reads a directory
+    /// again each time the directory is named.
+    void loadDirectories(std::span<const std::string> paths) { _yamlRegistry.loadBlockDefinitions(paths, *_registry); }
+
     BlockRegistry&     registry() { return *_registry; }
     SchedulerRegistry& schedulerRegistry() { return *_schedulerRegistry; }
 
@@ -933,6 +1004,11 @@ public:
 };
 #endif
 
+/// The plugin directory of the installation this library was built for, `<libdir>/gnuradio-4/plugins` under its prefix.
+[[nodiscard]] std::string_view installedPluginDirectory() noexcept;
+
+/// The process's own loader, built on first use over the colon-separated directories of GNURADIO4_PLUGIN_DIRECTORIES,
+/// or over installedPluginDirectory() when the variable is not set.
 PluginLoader& globalPluginLoader();
 
 } // namespace gr

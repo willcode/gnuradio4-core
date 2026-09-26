@@ -1,14 +1,15 @@
 #include <gnuradio-4.0/PluginLoader.hpp>
 
 namespace gr {
+std::string_view installedPluginDirectory() noexcept { return GR_INSTALLED_PLUGIN_DIRECTORY; }
+
 PluginLoader& globalPluginLoader() {
     auto pluginPaths = [] {
         std::vector<std::string> result;
 
         auto* envpath = ::getenv("GNURADIO4_PLUGIN_DIRECTORIES");
         if (envpath == nullptr) {
-            // TODO choose proper paths when we get the system GR installation done
-            result.emplace_back("core/test/plugins");
+            result.emplace_back(installedPluginDirectory());
 
         } else {
             std::string_view paths(envpath);

@@ -206,6 +206,19 @@ if(GR_ENABLE_BLOCK_REGISTRY AND INTERNAL_ENABLE_BLOCK_PLUGINS)
 
   add_app_test(qa_PluginAbiVersion)
   add_dependencies(qa_PluginAbiVersion abi_probe_plugin abi_probe_plugin_v1)
+
+  # RuntimeGraph::loadPlugins and fromYaml over the test plugins, the block libraries and a directory of skipped names,
+  # through the process's loader and a loader of the test's own
+  add_app_test(qa_RuntimePlugins)
+  add_dependencies(
+    qa_RuntimePlugins
+    GoodBasePlugin
+    good_math_plugin
+    bad_plugin
+    block_library
+    block_library_second)
+  target_compile_definitions(
+    qa_RuntimePlugins PRIVATE GR_TEST_INSTALLED_PLUGIN_DIRECTORY="${CMAKE_INSTALL_FULL_LIBDIR}/gnuradio-4/plugins")
 endif()
 
 if(GR_ENABLE_BLOCK_REGISTRY AND INTERNAL_ENABLE_BLOCK_PLUGINS)
