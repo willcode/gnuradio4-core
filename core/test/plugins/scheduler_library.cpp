@@ -22,7 +22,7 @@ using LibraryScheduler = gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::s
 std::unique_ptr<gr::SchedulerModel> makeLibraryScheduler(gr::property_map parameters) { return std::make_unique<gr::SchedulerWrapper<LibraryScheduler>>(std::move(parameters)); }
 
 #if defined(SCHEDULER_LIBRARY_ABI_VERSION)
-const bool registered [[maybe_unused]] = gr::globalSchedulerRegistry().insert("test::library_scheduler_v1", "", makeLibraryScheduler, {}, SCHEDULER_LIBRARY_ABI_VERSION);
+const bool registered [[maybe_unused]] = gr::globalSchedulerRegistry().insert("test::library_scheduler_v1", "", makeLibraryScheduler, {}, {}, SCHEDULER_LIBRARY_ABI_VERSION);
 #elif defined(SCHEDULER_LIBRARY_UNVERSIONED)
 // a registry without versions takes the entry and counts the registration, and holds no version for it
 const bool registered [[maybe_unused]] = [] {

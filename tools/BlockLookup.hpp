@@ -145,47 +145,8 @@ private:
     }
 };
 
-/// the attribute keys in the order a tool prints them: the version comes before the status because a block type that
-/// declares nothing prints its version and its status in that order
-inline constexpr std::array<std::string_view, 7UZ> kAttributeKeys{block::detail::kResourceKey, block::detail::kFamilyKey, block::detail::kEmitsKey, block::detail::kComputeKey, block::detail::kRoleKey, block::detail::kVersionKey, block::detail::kStatusKey};
-
-/// one attribute a block type declares: its key, and its value as a tool prints it
-struct AttributeText {
-    std::string key;
-    std::string value;
-};
-
 /**
- * @brief The attributes `map` holds, in the order of `kAttributeKeys`.
- *
- * A word prints as itself, the status as its flags joined by ", " and the version as its number. A key the map does
- * not hold has no entry, so a block type that declares nothing yields an empty list.
- */
-[[nodiscard]] inline std::vector<AttributeText> attributeTexts(const property_map& map) {
-    std::vector<AttributeText> texts;
-    for (const std::string_view key : kAttributeKeys) {
-        const auto entry = map.find(key);
-        if (entry == map.cend()) {
-            continue;
-        }
-        std::string value;
-        if (const auto* words = entry->second.get_if<Tensor<pmt::Value>>(); words != nullptr) {
-            for (const pmt::Value& word : *words) {
-                value += value.empty() ? "" : ", ";
-                value += word.value_or(std::string_view{});
-            }
-        } else if (entry->second.is_string()) {
-            value = entry->second.value_or(std::string_view{});
-        } else {
-            value = pmt::to_string(entry->second);
-        }
-        texts.push_back({.key = std::string(key), .value = std::move(value)});
-    }
-    return texts;
-}
-
-/**
- * @brief Whether the revision of `blockType` a graph entry takes declares `resource: device`.
+ * @brief Whether the revision of `blockType` a graph entry takes carries `holds/device`.
  *
  * `pinnedVersion` is the entry's `version` as the file spells it. An empty `pinnedVersion` selects the newest revision.
  * A `pinnedVersion` that is not a revision number yields false. The function reads the attributes the type registered
@@ -203,7 +164,7 @@ struct AttributeText {
         }
         attributes = loader.blockAttributes(blockType, version);
     }
-    return attributes.has_value() && block::attributesFromMap(*attributes).resource == block::Resource::Device;
+    return attributes.has_value() && block::attributesFromMap(*attributes).has(block::labels::holds::device);
 }
 
 } // namespace gr::tools

@@ -9,8 +9,10 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <gnuradio-4.0/config.hpp>
 #include <gnuradio-4.0/meta/utils.hpp>
@@ -56,8 +58,9 @@
 // crosses the boundary too. `SchedulerModel::start()` returns the refusal of a start as a `std::expected`, and a host
 // reads it from a plugin's scheduler. `gr_plugin_base` ends with `blockVersions()` and `createPinnedBlock()`, through
 // which a host reaches a plugin's block at a pinned version. `BlockModel` carries no `version()` or `status()`
-// virtual: both read the block's attributes from its meta information.
-#define GR_PLUGIN_CURRENT_ABI_VERSION 12
+// virtual: both read the block's attributes from its meta information. A block registration carries the labels of
+// its type, and the attributes cross the boundary in their map form.
+#define GR_PLUGIN_CURRENT_ABI_VERSION 13
 
 namespace gr {
 
@@ -71,15 +74,18 @@ using BlockFactory = std::unique_ptr<BlockModel> (*)(property_map);
  *
  * `name` and `alias` are the strings the typed `insert<TBlock>()` path would have derived for the
  * same block, so a declaration-only registration unit can hand them to `insertBlockFactory()`
- * without naming the type. `attributes` is read in `makeBlockRegistration<TBlock>()`, where the type
- * is still named, so the unit that carries it names none either. It is the map form of what the type
- * declares, version included, and empty for a type that declares nothing.
+ * without naming the type. `attributes` and `labels` are read in `makeBlockRegistration<TBlock>()`,
+ * where the type is still named, so the unit that carries them names none either. `attributes` is the
+ * map form of what the type declares, version included, and empty for a type that declares nothing.
+ * `labels` views the type's declared labels, with their meanings, in the definition unit's static
+ * storage; the registry copies them into its vocabulary.
  */
 struct BlockRegistration {
-    std::string  name;
-    std::string  alias;
-    BlockFactory factory = nullptr;
-    property_map attributes{};
+    std::string                   name;
+    std::string                   alias;
+    BlockFactory                  factory = nullptr;
+    property_map                  attributes{};
+    std::span<const block::Label> labels{};
 };
 
 /// The registry alias for a block registered as `alias` with template parameters `aliasParameters`.
@@ -133,6 +139,7 @@ class GeneralRegistry {
     std::map<std::string, TTypeHandler, std::less<>>       _blockTypeHandlers;
     std::size_t                                            _generation = 0UZ;
     std::map<std::string, RecordedAbiVersion, std::less<>> _abiVersions;
+    block::Vocabulary                                      _vocabulary = block::coreVocabulary();
 
     [[nodiscard]] const TTypeHandler* handlerFor(std::string_view blockName) const {
         const auto it = _blockTypeHandlers.find(blockName);
@@ -159,22 +166,26 @@ public:
     GeneralRegistry(const this_t& other)            = delete;
     GeneralRegistry& operator=(const this_t& other) = delete;
 
-    GeneralRegistry(this_t&& other) noexcept : _blockTypeHandlers(std::exchange(other._blockTypeHandlers, {})), _abiVersions(std::exchange(other._abiVersions, {})) {}
+    GeneralRegistry(this_t&& other) noexcept : _blockTypeHandlers(std::exchange(other._blockTypeHandlers, {})), _abiVersions(std::exchange(other._abiVersions, {})), _vocabulary(std::exchange(other._vocabulary, {})) {}
     GeneralRegistry& operator=(this_t&& other) noexcept {
         auto tmp = std::move(other);
         std::swap(_blockTypeHandlers, tmp._blockTypeHandlers);
         std::swap(_abiVersions, tmp._abiVersions);
+        std::swap(_vocabulary, tmp._vocabulary);
         return *this;
     }
     ~GeneralRegistry() = default;
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
     /// Adds an entry a generated definition unit already produced: nothing here names the block type. The entry is
-    /// filed under the version `attributes` states, `block::kDefaultVersion` when it states none, and records
-    /// `abiVersion`. Its default argument is evaluated at the call site. The entry therefore records the
-    /// `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever copy of this function runs.
-    /// Reports whether it added anything: a key, or a version under an existing key.
-    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, property_map attributes = {}, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
+    /// filed under the version `attributes` states, `block::kDefaultVersion` when it states none, `labels` join the
+    /// vocabulary, and the entry records `abiVersion`. Its default argument is evaluated at the call site. The entry
+    /// therefore records the `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever copy of
+    /// this function runs. Reports whether it added anything: a key, or a version under an existing key.
+    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, property_map attributes = {}, std::span<const block::Label> labels = {}, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
+        for (const block::Label& label : labels) {
+            _vocabulary.add(label);
+        }
         const block::Version  version = block::attributesFromMap(attributes).version;
         const TVersionHandler entry{.createFunction = factory, .attributes = std::move(attributes)};
 
@@ -201,10 +212,10 @@ public:
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
     bool insert(std::string_view alias = "", std::string_view aliasParameters = "", std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
-        return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, block::detail::declaredAttributesMap<TBlock>(), abiVersion);
+        return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, block::detail::declaredAttributesMap<TBlock>(), block::attributesOf<TBlock>().labels, abiVersion);
     }
 #else
-    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] property_map attributes = {}, [[maybe_unused]] std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) { return false; }
+    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] property_map attributes = {}, [[maybe_unused]] std::span<const block::Label> labels = {}, [[maybe_unused]] std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) { return false; }
 
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
@@ -271,11 +282,23 @@ public:
         return entry == nullptr ? std::nullopt : std::optional<property_map>{entry->attributes};
     }
 
-    /// the status flags that one registration declares; nothing when the key or the version is not registered
-    [[nodiscard]] std::optional<block::Status> status(std::string_view blockName, block::Version version) const {
+    /// the words of the class `status` that one registration declares; nothing when the key or the version is not
+    /// registered
+    [[nodiscard]] std::optional<std::vector<std::string>> status(std::string_view blockName, block::Version version) const {
         const TVersionHandler* entry = versionHandlerFor(blockName, version);
-        return entry == nullptr ? std::nullopt : std::optional<block::Status>{block::attributesFromMap(entry->attributes).status};
+        if (entry == nullptr) {
+            return std::nullopt;
+        }
+        const block::AttributesRead read = block::attributesFromMap(entry->attributes, _vocabulary);
+        std::vector<std::string>    words;
+        for (const std::string_view word : read.words(block::LabelClass::Status)) {
+            words.emplace_back(word);
+        }
+        return words;
     }
+
+    /// core's words and the words of every registration, with their meanings
+    [[nodiscard]] const block::Vocabulary& vocabulary() const noexcept { return _vocabulary; }
 
     [[nodiscard]] std::vector<std::string> keys() const {
         auto view = _blockTypeHandlers | std::views::keys;
@@ -336,6 +359,7 @@ public:
 
         _blockTypeHandlers.insert(anotherRegistry._blockTypeHandlers.cbegin(), anotherRegistry._blockTypeHandlers.cend());
         _abiVersions.insert(anotherRegistry._abiVersions.cbegin(), anotherRegistry._abiVersions.cend());
+        _vocabulary.merge(anotherRegistry._vocabulary);
     }
 };
 
@@ -361,12 +385,12 @@ template<typename TBlock, meta::fixed_string OverrideName = "">
     constexpr auto name     = refl::class_name<TBlock>;
     constexpr auto longname = refl::type_name<TBlock>;
     if constexpr (OverrideName != "") {
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(OverrideName, {}), factory, block::detail::declaredAttributesMap<TBlock>()};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(OverrideName, {}), factory, block::detail::declaredAttributesMap<TBlock>(), block::attributesOf<TBlock>().labels};
     } else if constexpr (name != longname) {
         constexpr auto tmpl = longname.substring(name.size + 1_cw, longname.size - 2_cw - name.size);
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, tmpl), factory, block::detail::declaredAttributesMap<TBlock>()};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, tmpl), factory, block::detail::declaredAttributesMap<TBlock>(), block::attributesOf<TBlock>().labels};
     } else {
-        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, {}), factory, block::detail::declaredAttributesMap<TBlock>()};
+        return {gr::meta::type_name<TBlock>(), makeRegistryAlias(name, {}), factory, block::detail::declaredAttributesMap<TBlock>(), block::attributesOf<TBlock>().labels};
     }
 }
 
