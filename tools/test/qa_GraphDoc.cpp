@@ -269,6 +269,21 @@ constexpr std::string_view kDeviceGraph = R"(blocks:
             name: pinned_new
 )";
 
+/// two antennas of the versioned plugin: one feeds the radio, and one is fed by a block the graph lacks
+constexpr std::string_view kAntennaGraph = R"(blocks:
+  - id: test::versioned
+    parameters:
+      name: radio
+  - id: test::antenna
+    parameters:
+      name: antenna
+      feeds: radio
+  - id: test::antenna
+    parameters:
+      name: spare
+      fed_by: missing
+)";
+
 /// the same plugin's types with no revision that declares a device
 constexpr std::string_view kNoDeviceGraph = R"(blocks:
   - id: good::VersionedFirst
@@ -651,23 +666,47 @@ const boost::ut::suite<"GraphDoc"> graphDocTests = [] {
     };
 
 #ifdef GR_TOOLS_VERSIONED_PLUGIN
-    "the summary names the blocks whose type holds a device, in document order"_test = [] {
+    "the needs line names the blocks of each holds word, and the block table shows each type's labels"_test = [] {
         const std::string pluginDirectory = std::format("--plugin-dir \"{}\"", GR_TOOLS_VERSIONED_PLUGIN);
         const Run         devices         = describe("device_graph.yaml", kDeviceGraph, pluginDirectory);
         expect(eq(devices.exitCode, 0)) << devices.output;
-        expect(devices.output.contains("- **Blocks holding a device**: radio (test::versioned), nested_radio (good::VersionedSecond), pinned_new (test::versioned)\n")) << "the newest revision, or the one the entry pins" << devices.output;
+        const std::string_view kRadios = "radio (test::versioned), nested_radio (good::VersionedSecond), pinned_new (test::versioned)";
+        expect(devices.output.contains(std::format("- **Needs**: holds/device: {}; holds/testbus: {}\n", kRadios, kRadios))) << "one entry per holds word, for the newest revision or the one the entry pins" << devices.output;
+        expect(devices.output.contains("[family/versioned, holds/device, holds/testbus, status/experimental]")) << "the labels under the type" << devices.output;
         expect(!devices.output.contains("plain (")) << devices.output;
         expect(!devices.output.contains("pinned_old (")) << "the pinned revision declares nothing" << devices.output;
 
         const Run none = describe("no_device_graph.yaml", kNoDeviceGraph, pluginDirectory);
         expect(eq(none.exitCode, 0)) << none.output;
         expect(none.output.contains("pinned_old")) << "the instrument: the document was written" << none.output;
-        expect(!none.output.contains("Blocks holding a device")) << "no line where no block declares a device" << none.output;
+        expect(!none.output.contains("**Needs**")) << "no line where no block holds anything" << none.output;
+        expect(!none.output.contains("[family/") && !none.output.contains("[status/")) << "a type that declares no label adds nothing to its cell" << none.output;
 
         const Run fixtureDocument = describe("nested_graph_copy.yaml", fixture(), pluginDirectory);
         expect(eq(fixtureDocument.exitCode, 0)) << fixtureDocument.output;
         expect(fixtureDocument.output.contains("\n### Subgraph: front_end / inner_chain\n")) << "the instrument: the whole document was written" << fixtureDocument.output;
-        expect(!fixtureDocument.output.contains("Blocks holding a device")) << "the fixture graph declares none" << fixtureDocument.output;
+        expect(!fixtureDocument.output.contains("**Needs**")) << "the fixture graph declares none" << fixtureDocument.output;
+    };
+
+    "a notation block is drawn dashed to the block it feeds, and a name the graph lacks is drawn unresolved"_test = [] {
+        const std::string pluginDirectory = std::format("--plugin-dir \"{}\"", GR_TOOLS_VERSIONED_PLUGIN);
+        const Run         drawn           = describe("antenna_graph.yaml", kAntennaGraph, pluginDirectory);
+        expect(eq(drawn.exitCode, 0)) << drawn.output;
+        expect(drawn.output.contains("    gb1 -.-> gb0\n")) << "the antenna feeds the radio" << drawn.output;
+        expect(drawn.output.contains("    gx0 -.-> gb2\n")) << "a block the graph lacks feeds the second antenna" << drawn.output;
+        expect(drawn.output.contains("gx0(\"missing<br/>(unresolved)\"):::unresolved")) << drawn.output;
+        expect(drawn.output.contains("[plane/notation]")) << "the notation block's label under its type" << drawn.output;
+        expect(eq(occurrences(drawn.output, "-.->"), 2UZ)) << drawn.output;
+
+        auto level = graphdoc::read(kAntennaGraph);
+        expect(fatal(level.has_value()));
+        const std::string undrawn = graphdoc::svgOf(*level, "g");
+        expect(!undrawn.contains("stroke-dasharray")) << "without labels no block is a notation block" << undrawn;
+        graphdoc::resolveLabels(*level, [](std::string_view type, std::string_view) { return type == "test::antenna" ? std::vector<std::string>{"plane/notation"} : std::vector<std::string>{}; });
+        const std::string svg = graphdoc::svgOf(*level, "g");
+        expect(eq(occurrences(svg, "stroke-dasharray=\"5 4\""), 2UZ)) << svg;
+        expect(eq(occurrences(svg, "<path class=\"edge\""), 2UZ)) << "the two lines, and no stream connection" << svg;
+        expect(svg.contains("unresolved")) << svg;
     };
 #endif
 

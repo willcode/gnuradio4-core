@@ -40,17 +40,20 @@ importer would refuse is refused here too, with a message of this program's own.
 
 The connection table names the type each connection carries. That column
 comes from the blocks themselves: the tool constructs the source block of a
-connection and reads the type off the named output port. The summary names the
-blocks whose type declares that it holds a device, read from the attributes the
-type registers with, for the version the entry pins or else the newest one; no
-block is constructed for that line. Blocks come from the registry linked into
-this program, from the directories named by --plugin-dir, from the
-colon-separated list in GNURADIO4_PLUGIN_DIRECTORIES, and from the plugin
-directory of this installation, which is always searched. A block no registry
-holds and a port a block does not declare leave the column blank, and a block
-no registry holds is not named on the device line. Everything else in the
-document is read from the file alone, so a graph whose blocks this build does
-not provide is still described.
+connection and reads the type off the named output port. The labels of each
+block's type are read from the attributes the type registers with, for the
+version the entry pins or else the newest one, and no block is constructed for
+them. The block table lists them under the type. The summary's needs line names
+the blocks of each holds/ word. A plane/notation block, such as an antenna, is
+drawn with a dashed line to the block its feeds or fed_by parameter names, and a
+name the graph lacks is drawn as an unresolved block. Blocks come from the
+registry linked into this program, from the directories named by --plugin-dir,
+from the colon-separated list in GNURADIO4_PLUGIN_DIRECTORIES, and from the
+plugin directory of this installation, which is always searched. A block no
+registry holds and a port a block does not declare leave the column blank, and
+a block no registry holds carries no label. Everything else in the document is
+read from the file alone, so a graph whose blocks this build does not provide
+is still described.
 
 The HTML is a single self-contained page: its style sheet is embedded, it loads
 nothing over the network, and it draws every diagram itself as an inline SVG.
@@ -152,7 +155,13 @@ int main(int argc, char** argv) {
     gr::PluginLoader loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), paths);
     OutputPortTypes  outputPortTypes(loader);
     graphdoc::resolveConnectionTypes(*level, [&outputPortTypes](std::string_view blockType, std::string_view port) { return outputPortTypes(blockType, port); });
-    graphdoc::resolveDeviceBlocks(*level, [&loader](std::string_view blockType, std::string_view pinnedVersion) { return holdsDevice(loader, blockType, pinnedVersion); });
+    graphdoc::resolveLabels(*level, [&loader](std::string_view blockType, std::string_view pinnedVersion) {
+        std::vector<std::string> labels;
+        for (const gr::block::LabelRead& label : gr::block::attributesFromMap(attributesAt(loader, blockType, pinnedVersion).value_or(gr::property_map{})).labels) {
+            labels.push_back(label.text());
+        }
+        return labels;
+    });
 #endif
 
     if (options.title.empty()) {

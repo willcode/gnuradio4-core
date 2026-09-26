@@ -330,6 +330,20 @@ const boost::ut::suite<"RegistryDoc"> registryDocTests = [] {
     };
 #endif
 
+    "a tool marks a label outside the loaded vocabulary and an emits word read as physical"_test = [] {
+        const gr::property_map                  attributes{{"version", gr::block::Version{1U}}, {"labels", std::vector<std::string>{"holds/device", "holds/gpib", "emits/rf", "emits/storage", "emits/tachyon"}}};
+        const std::vector<gr::tools::LabelText> texts = gr::tools::labelTexts(attributes, gr::block::coreVocabulary());
+        expect(fatal(eq(texts.size(), 5UZ)));
+        expect(eq(gr::tools::meaningText(texts[0]), std::string("Opens a hardware unit attached to the host.")));
+        expect(eq(gr::tools::meaningText(texts[1]), std::string("(outside the loaded vocabulary)")));
+        expect(eq(gr::tools::meaningText(texts[2]), std::string("Radio-frequency energy, radiated or conducted. (physical)")));
+        expect(eq(gr::tools::meaningText(texts[3]), std::string("Data at rest in a file, a disk or a database."))) << "a medium that is not physical";
+        expect(eq(gr::tools::meaningText(texts[4]), std::string("(outside the loaded vocabulary) (physical)"))) << "an unknown emits word reads as physical";
+        expect(!texts[1].known && texts[0].known);
+        expect(!texts[1].physical) << "the physical reading is given for an emits or ingests word alone";
+        expect(texts[2].physical && !texts[3].physical && texts[4].physical) << "the vocabulary's reading of each emits word";
+    };
+
     "a block that declares nothing has no attribute fact"_test = [] {
         const std::string document = fixture().document(Format::Markdown);
         for (const std::string_view key : {std::string_view("doc::scale"), std::string_view("doc::combiner"), kVersionedKey}) {

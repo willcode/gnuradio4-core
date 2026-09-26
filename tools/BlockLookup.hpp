@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <map>
 #include <memory>
 #include <optional>
@@ -145,26 +146,101 @@ private:
     }
 };
 
+/// one label a block type carries, with what the loaded vocabulary says of it
+struct LabelText {
+    block::LabelClass        cls{};
+    std::string              label;    ///< `class/word`
+    std::vector<std::string> meanings; ///< empty for a word outside the loaded vocabulary or declared without a meaning
+    bool                     known    = false;
+    bool                     physical = false; ///< the vocabulary's reading of an `emits` or `ingests` word, true for one it lacks
+};
+
+/// whether `cls` names a medium, the one kind of word the vocabulary reads as physical or not
+[[nodiscard]] constexpr bool isMedium(block::LabelClass cls) noexcept { return cls == block::LabelClass::Emits || cls == block::LabelClass::Ingests; }
+
+/// the labels `attributes` carries, in the order of the map, each read against `vocabulary`
+[[nodiscard]] inline std::vector<LabelText> labelTexts(const property_map& attributes, const block::Vocabulary& vocabulary) {
+    std::vector<LabelText> texts;
+    for (const block::LabelRead& label : block::attributesFromMap(attributes, vocabulary).labels) {
+        const block::VocabularyEntry* entry = vocabulary.find(label.cls, label.word);
+        texts.push_back({.cls = label.cls, .label = label.text(), .meanings = entry == nullptr ? std::vector<std::string>{} : entry->meanings, .known = label.known, .physical = isMedium(label.cls) && vocabulary.physical(label.cls, label.word)});
+    }
+    return texts;
+}
+
 /**
- * @brief Whether the revision of `blockType` a graph entry takes carries `holds/device`.
+ * @brief The text a tool prints beside a label: its meanings, and a mark for what a reader must not miss.
+ *
+ * Several meanings are joined by "; ". A word outside the loaded vocabulary reads "(outside the loaded vocabulary)",
+ * and an `emits` word the vocabulary reads as physical ends in "(physical)", an unknown one included.
+ */
+[[nodiscard]] inline std::string meaningText(const LabelText& text) {
+    std::string meaning;
+    for (const std::string& one : text.meanings) {
+        meaning += meaning.empty() ? one : std::format("; {}", one);
+    }
+    if (!text.known) {
+        meaning += meaning.empty() ? "(outside the loaded vocabulary)" : " (outside the loaded vocabulary)";
+    }
+    if (text.physical && text.cls == block::LabelClass::Emits) {
+        meaning += " (physical)";
+    }
+    return meaning;
+}
+
+/// the role the stream ports of `block` read; `isNotation` states whether its labels hold `plane/notation`
+[[nodiscard]] inline std::optional<block::Label> portRoleOf(BlockModel& block, bool isNotation) {
+    const auto holdsStream = [](BlockModel::DynamicPorts& ports) {
+        const auto isStream = [](const DynamicPort& port) { return port::isStream(port.portMaskInfo()); };
+        return std::ranges::any_of(ports, [&isStream](const BlockModel::DynamicPortOrCollection& portOrCollection) {
+            if (const auto* port = std::get_if<DynamicPort>(&portOrCollection); port != nullptr) {
+                return isStream(*port);
+            }
+            return std::ranges::any_of(std::get<BlockModel::NamedPortCollection>(portOrCollection).ports, isStream);
+        });
+    };
+    return block::roleFromPorts(holdsStream(block.dynamicInputPorts()), holdsStream(block.dynamicOutputPorts()), isNotation);
+}
+
+/**
+ * @brief The note a tool prints when a declared role contradicts the role the stream ports read, else nothing.
+ *
+ * A `source` whose ports read `consumer`, a `sink` whose ports read `generator`, and a declared `generator`,
+ * `processor`, `consumer` or `notation` the ports read otherwise each contradict them. Nothing is refused.
+ */
+[[nodiscard]] inline std::optional<std::string> roleNote(std::string_view declared, std::string_view read) {
+    namespace role           = block::labels::role;
+    const bool readWord      = declared == role::generator.word || declared == role::processor.word || declared == role::consumer.word || declared == role::notation.word;
+    const bool contradiction = (declared == role::source.word && read == role::consumer.word) || (declared == role::sink.word && read == role::generator.word) || (readWord && declared != read);
+    if (!contradiction) {
+        return std::nullopt;
+    }
+    return std::format("{} declared; the stream ports read {}", block::Label{block::LabelClass::Role, declared}.text(), read.empty() ? std::string_view("no role") : read);
+}
+
+/// the declared role word among `attributes`' labels, empty when it declares none
+[[nodiscard]] inline std::string declaredRole(const property_map& attributes) {
+    const std::vector<std::string_view> roles = block::attributesFromMap(attributes).words(block::LabelClass::Role);
+    return roles.empty() ? std::string{} : std::string(roles.front());
+}
+
+/**
+ * @brief The attributes map of the revision of `blockType` a graph entry takes.
  *
  * `pinnedVersion` is the entry's `version` as the file spells it. An empty `pinnedVersion` selects the newest revision.
- * A `pinnedVersion` that is not a revision number yields false. The function reads the attributes the type registered
- * with and makes no instance of the block. A type or a revision that the loader does not hold yields false.
+ * A `pinnedVersion` that is not a revision number, and a type or a revision the loader does not hold, yield nothing.
+ * The function reads the attributes the type registered with and makes no instance of the block.
  */
-[[nodiscard]] inline bool holdsDevice(const PluginLoader& loader, std::string_view blockType, std::string_view pinnedVersion) {
-    std::optional<property_map> attributes;
+[[nodiscard]] inline std::optional<property_map> attributesAt(const PluginLoader& loader, std::string_view blockType, std::string_view pinnedVersion) {
     if (pinnedVersion.empty()) {
-        attributes = loader.blockAttributes(blockType);
-    } else {
-        block::Version version = 0U;
-        const char*    end     = pinnedVersion.data() + pinnedVersion.size();
-        if (const auto [after, failed] = std::from_chars(pinnedVersion.data(), end, version); failed != std::errc{} || after != end) {
-            return false;
-        }
-        attributes = loader.blockAttributes(blockType, version);
+        return loader.blockAttributes(blockType);
     }
-    return attributes.has_value() && block::attributesFromMap(*attributes).has(block::labels::holds::device);
+    block::Version version = 0U;
+    const char*    end     = pinnedVersion.data() + pinnedVersion.size();
+    if (const auto [after, failed] = std::from_chars(pinnedVersion.data(), end, version); failed != std::errc{} || after != end) {
+        return std::nullopt;
+    }
+    return loader.blockAttributes(blockType, version);
 }
 
 } // namespace gr::tools

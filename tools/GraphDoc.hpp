@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include <gnuradio-4.0/BlockAttributes.hpp>
 #include <gnuradio-4.0/Tag.hpp>
 #include <gnuradio-4.0/Value.hpp>
 #include <gnuradio-4.0/YamlPmt.hpp>
@@ -177,7 +178,11 @@ struct Block {
 
     std::shared_ptr<Level> interior; ///< the nested graph of a SUBGRAPH entry
 
-    bool holdsDevice = false; ///< whether the revision of `type` the entry takes declares a device; set by resolveDeviceBlocks()
+    std::vector<std::string> labels; ///< the labels of the revision of `type` the entry takes, `class/word`; set by resolveLabels()
+    std::string              feeds;  ///< the block a notation block feeds, from its `feeds` parameter
+    std::string              fedBy;  ///< the block that feeds a notation block, from its `fed_by` parameter
+
+    [[nodiscard]] bool isNotation() const { return std::ranges::contains(labels, gr::block::labels::plane::notation.text()); }
 
     [[nodiscard]] bool isSubgraph() const noexcept { return interior != nullptr; }
 };
@@ -343,6 +348,12 @@ enum class LevelKind { Root, Subgraph };
     if (parameters != nullptr) {
         block.parameters = mapLines(*parameters);
         read.add("parameters");
+        if (const pmt::Value* feeds = entryOf(*parameters, "feeds"); feeds != nullptr) {
+            block.feeds = stringOf(*feeds).value_or(std::string{});
+        }
+        if (const pmt::Value* fedBy = entryOf(*parameters, "fed_by"); fedBy != nullptr) {
+            block.fedBy = stringOf(*fedBy).value_or(std::string{});
+        }
     }
     if (subgraph) {
         if (parameters != nullptr) {
@@ -612,38 +623,72 @@ inline void resolveConnectionTypes(Level& level, const ConnectionTypeResolver& t
     }
 }
 
-/// Answers whether the revision of a block type a graph entry takes declares that it holds a device, given the
-/// registry key and the entry's pinned version as the file spells it, empty where the entry pins none.
-using DeviceResolver = std::function<bool(std::string_view blockType, std::string_view pinnedVersion)>;
+/// Answers the labels of the revision of a block type a graph entry takes, as `class/word`, given the registry key and
+/// the entry's pinned version as the file spells it, empty where the entry pins none. A type nobody holds has none.
+using LabelResolver = std::function<std::vector<std::string>(std::string_view blockType, std::string_view pinnedVersion)>;
 
-/// Marks every block of `level` and of every level below it whose type holds a device. A subgraph entry is passed
-/// over, and the blocks of its interior are marked.
-inline void resolveDeviceBlocks(Level& level, const DeviceResolver& holdsDevice) {
-    if (!holdsDevice) {
+/// Sets the labels of every block of `level` and of every level below it. A subgraph entry is passed over, and the
+/// blocks of its interior are resolved.
+inline void resolveLabels(Level& level, const LabelResolver& labelsOf) {
+    if (!labelsOf) {
         return;
     }
     for (Block& block : level.blocks) {
         if (block.isSubgraph()) {
-            resolveDeviceBlocks(*block.interior, holdsDevice);
+            resolveLabels(*block.interior, labelsOf);
         } else {
-            block.holdsDevice = holdsDevice(block.type, block.pinnedVersion);
+            block.labels = labelsOf(block.type, block.pinnedVersion);
         }
     }
 }
 
-/// `name (type)` for every marked block, in the order the document lists them: the blocks of a level, then the
-/// blocks of each of its subgraphs in turn
-inline void collectDeviceBlocks(const Level& level, std::vector<std::string>& out) {
+/// `name (type)` for every block that carries a `holds` label, per label in the order the labels are first met: the
+/// blocks of a level, then the blocks of each of its subgraphs in turn
+inline void collectNeeds(const Level& level, std::vector<std::pair<std::string, std::vector<std::string>>>& needs) {
     for (const Block& block : level.blocks) {
-        if (block.holdsDevice) {
-            out.push_back(std::format("{} ({})", block.name, block.type));
+        for (const std::string& label : block.labels) {
+            const auto parsed = gr::block::parseLabel(label);
+            if (!parsed.has_value() || parsed->first != gr::block::LabelClass::Holds) {
+                continue;
+            }
+            auto it = std::ranges::find(needs, label, &std::pair<std::string, std::vector<std::string>>::first);
+            if (it == needs.end()) {
+                it = needs.insert(needs.end(), {label, {}});
+            }
+            it->second.push_back(std::format("{} ({})", block.name, block.type));
         }
     }
     for (const Block& block : level.blocks) {
         if (block.isSubgraph()) {
-            collectDeviceBlocks(*block.interior, out);
+            collectNeeds(*block.interior, needs);
         }
     }
+}
+
+/// The dashed lines a level draws for its notation blocks: from a notation block to the block its `feeds` names, and
+/// from the block its `fed_by` names to it. Each line holds the index of the notation block, the name at the other end
+/// and its direction.
+struct NotationLine {
+    std::size_t block = 0UZ;
+    std::string other;
+    bool        feeds = true; ///< the line runs from the notation block; false where it runs to it
+};
+
+[[nodiscard]] inline std::vector<NotationLine> notationLinesOf(const Level& level) {
+    std::vector<NotationLine> lines;
+    for (std::size_t i = 0UZ; i < level.blocks.size(); ++i) {
+        const Block& block = level.blocks[i];
+        if (!block.isNotation()) {
+            continue;
+        }
+        if (!block.feeds.empty()) {
+            lines.push_back({.block = i, .other = block.feeds, .feeds = true});
+        }
+        if (!block.fedBy.empty()) {
+            lines.push_back({.block = i, .other = block.fedBy, .feeds = false});
+        }
+    }
+    return lines;
 }
 
 /// The kind a block is counted under: the category the entry states, SUBGRAPH for a nested graph,
@@ -784,6 +829,11 @@ inline constexpr std::array<std::string_view, 12> kSimpleItemTypes{"int8", "int1
         const std::string destination = idOf(connection.destinationBlock);
         edges += std::format("    {} -- \"{} to {}\" --> {}\n", source, mermaidLabel(connection.sourcePort), mermaidLabel(connection.destinationPort), destination);
     }
+    for (const NotationLine& line : notationLinesOf(level)) {
+        const std::string notation = std::format("{}b{}", prefix, line.block);
+        const std::string other    = idOf(line.other);
+        edges += line.feeds ? std::format("    {} -.-> {}\n", notation, other) : std::format("    {} -.-> {}\n", other, notation);
+    }
 
     std::string diagram = "flowchart LR\n";
     diagram += nodes;
@@ -855,6 +905,7 @@ inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a n
         std::size_t to   = 0UZ;
         std::string fromPort;
         std::string toPort;
+        bool        notation = false; ///< drawn dashed, between a notation block and the block it names
     };
 
     std::vector<Node>                               nodes;
@@ -886,6 +937,10 @@ inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a n
         const std::size_t from = indexOf(connection.sourceBlock);
         const std::size_t to   = indexOf(connection.destinationBlock);
         edges.push_back({.from = from, .to = to, .fromPort = connection.sourcePort, .toPort = connection.destinationPort});
+    }
+    for (const NotationLine& line : notationLinesOf(level)) {
+        const std::size_t other = indexOf(line.other);
+        edges.push_back({.from = line.feeds ? line.block : other, .to = line.feeds ? other : line.block, .fromPort = {}, .toPort = {}, .notation = true});
     }
 
     const std::size_t                     nodeCount = nodes.size();
@@ -980,7 +1035,7 @@ inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a n
         const double x2    = to.x;
         const double y2    = to.y + kNodeHeight / 2.0;
         const double reach = std::max(kRankGap / 2.0, (x2 - x1) * 0.45);
-        body += std::format("<path class=\"edge\" marker-end=\"url(#{}-arrow)\" d=\"M {} {} C {} {}, {} {}, {} {}\"/>\n", prefix, coordinate(x1), coordinate(y1), coordinate(x1 + reach), coordinate(y1), coordinate(x2 - reach), coordinate(y2), coordinate(x2), coordinate(y2));
+        body += std::format("<path class=\"edge\"{} marker-end=\"url(#{}-arrow)\" d=\"M {} {} C {} {}, {} {}, {} {}\"/>\n", edge.notation ? " stroke-dasharray=\"5 4\"" : "", prefix, coordinate(x1), coordinate(y1), coordinate(x1 + reach), coordinate(y1), coordinate(x2 - reach), coordinate(y2), coordinate(x2), coordinate(y2));
         if (!edge.fromPort.empty()) {
             body += std::format("<text class=\"port\" x=\"{}\" y=\"{}\">{}</text>\n", coordinate(x1 + 5.0), coordinate(y1 - 5.0), svgText(fitLabel(edge.fromPort, kLabelCharacters)));
         }
@@ -1036,7 +1091,17 @@ inline constexpr std::size_t kLabelCharacters = 28UZ;  ///< the widest label a n
     if (!block.pinnedVersion.empty()) {
         add(std::format("version {} pinned", block.pinnedVersion));
     }
-    return kind.empty() ? cell : std::format("{}\n({})", cell, kind);
+    if (!kind.empty()) {
+        cell = std::format("{}\n({})", cell, kind);
+    }
+    if (!block.labels.empty()) {
+        std::string labels;
+        for (const std::string& label : block.labels) {
+            labels += labels.empty() ? label : std::format(", {}", label);
+        }
+        cell = std::format("{}\n[{}]", cell, labels);
+    }
+    return cell;
 }
 
 inline void writeNamedTable(DocWriter& writer, std::string_view firstColumn, std::string_view secondColumn, const std::vector<NamedText>& entries) {
@@ -1204,14 +1269,18 @@ inline void writeSubgraphs(DocWriter& writer, const Level& level, std::size_t de
         }
         summary.push_back(writer.labeled("Schedulers", names));
     }
-    std::vector<std::string> deviceBlocks;
-    collectDeviceBlocks(level, deviceBlocks);
-    if (!deviceBlocks.empty()) {
-        std::string names;
-        for (std::size_t i = 0UZ; i < deviceBlocks.size(); ++i) {
-            names += (i == 0UZ ? "" : ", ") + deviceBlocks[i];
+    std::vector<std::pair<std::string, std::vector<std::string>>> needs;
+    collectNeeds(level, needs);
+    if (!needs.empty()) {
+        std::string text;
+        for (const auto& [label, blocks] : needs) {
+            std::string names;
+            for (const std::string& name : blocks) {
+                names += names.empty() ? name : std::format(", {}", name);
+            }
+            text += std::format("{}{}: {}", text.empty() ? "" : "; ", label, names);
         }
-        summary.push_back(writer.labeled("Blocks holding a device", names));
+        summary.push_back(writer.labeled("Needs", text));
     }
     writer.rawBullets(summary);
 
