@@ -1,0 +1,5 @@
+# One block of the rungraph fixture plugin, which names the build of the plugin it came from and ends the run at once.
+blocks:
+  - id: test::origin
+    parameters:
+      name: origin
