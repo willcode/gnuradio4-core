@@ -116,7 +116,7 @@ struct LoaderCanary : gr::Block<LoaderCanary> {
 
 // the older revision of a block registered twice, so a message can pin one of the two
 struct VersionedV1 : gr::Block<VersionedV1> {
-    static constexpr gr::block::Attributes attributes{.status = {.deprecated = true}, .version = 1U};
+    static constexpr auto attributes = gr::block::describe(1U, gr::block::labels::status::deprecated);
 
     gr::PortIn<float>  in;
     gr::PortOut<float> out;
@@ -127,7 +127,7 @@ struct VersionedV1 : gr::Block<VersionedV1> {
 };
 
 struct VersionedV2 : gr::Block<VersionedV2> {
-    static constexpr gr::block::Attributes attributes{.version = 2U};
+    static constexpr auto attributes = gr::block::describe(2U);
 
     gr::PortIn<float>  in;
     gr::PortOut<float> out;

@@ -17,6 +17,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -156,7 +157,7 @@ struct RecordingSink : Block<RecordingSink> {
 
 /// the older revision of a block registered twice, so a file can pin one of the two
 struct GainV1 : Block<GainV1> {
-    static constexpr gr::block::Attributes attributes{.status = {.deprecated = true}, .version = 1U};
+    static constexpr auto attributes = gr::block::describe(1U, gr::block::labels::status::deprecated);
 
     PortIn<float>  in;
     PortOut<float> out;
@@ -169,7 +170,7 @@ struct GainV1 : Block<GainV1> {
 };
 
 struct GainV2 : Block<GainV2> {
-    static constexpr gr::block::Attributes attributes{.version = 2U};
+    static constexpr auto attributes = gr::block::describe(2U);
 
     PortIn<float>  in;
     PortOut<float> out;
@@ -193,11 +194,22 @@ struct ControlledSource : Block<ControlledSource> {
     [[nodiscard]] constexpr float processOne() const noexcept { return 0.0f; }
 };
 
+/// an antenna drawn in the graph: no port, and a work() that answers DONE on its first call
+struct Antenna : Block<Antenna> {
+    static constexpr auto attributes = gr::block::describe(1U, gr::block::labels::plane::notation);
+
+    Annotated<std::string, "feeds", Doc<"the block the antenna feeds">> feeds;
+
+    GR_MAKE_REFLECTABLE(Antenna, feeds);
+
+    [[nodiscard]] constexpr work::Status processBulk() const noexcept { return work::Status::DONE; }
+};
+
 /// two revisions of one alias, each also its own type-name key
 template<typename TBlock>
 inline bool insertGainVersion(BlockRegistry& registry) {
     const BlockRegistration declared = makeBlockRegistration<TBlock>(+[](property_map params) -> std::unique_ptr<BlockModel> { return std::make_unique<BlockWrapper<TBlock>>(std::move(params)); });
-    return registry.insert(gr::meta::type_name<TBlock>(), "qa::Gain", declared.factory, declared.attributes);
+    return registry.insert(gr::meta::type_name<TBlock>(), "qa::Gain", declared.factory, declared.attributes, declared.labels);
 }
 
 inline void registerTestBlocks() {
@@ -205,7 +217,7 @@ inline void registerTestBlocks() {
         BlockRegistry& registry = globalBlockRegistry();
         return registry.insert<RampSource>("=qa::RampSource") && registry.insert<Scale>("=qa::Scale")                  //
                && registry.insert<SumInputs>("=qa::SumInputs") && registry.insert<RecordingSink>("=qa::RecordingSink") //
-               && insertGainVersion<GainV1>(registry) && insertGainVersion<GainV2>(registry);
+               && insertGainVersion<GainV1>(registry) && insertGainVersion<GainV2>(registry) && registry.insert<Antenna>("=qa::Antenna");
     }();
     expect(registered) << "the test blocks must reach the global registry";
 }
@@ -422,10 +434,14 @@ struct StderrCapture {
 /**
  * A definitions root whose definitions declare attributes under `definition_metadata`.
  *
- * `qa::RadioSource` exports one output and `qa::RadioSink` two inputs, so the two derive opposite roles.
- * `qa::ControlledRadio` exports a message input and a stream output. `qa::BadWord` states a `resource` outside the set,
- * `qa::Revised` a second revision, `qa::NotAMap` an `attributes` value that is not a map, and `qa::Plain` nothing.
- * `qa::Gain` is a key the loader's registry holds at version 2.
+ * `qa::RadioSource` exports one output and `qa::RadioSink` two inputs, so their ports read generator and consumer
+ * beside their declared roles; `qa::RadioSource` brings the word `family/example` with its meaning.
+ * `qa::ControlledRadio` exports a message input and a stream output. `qa::BadWord` lists a label under no class, one
+ * under a class outside the eight and a malformed word beside an unknown word of a known class, `qa::Revised` states a
+ * second revision, `qa::NotAMap` an `attributes` value that is not a map, and `qa::Plain` nothing. `qa::BadVocabulary`
+ * lists a vocabulary entry that is not a map and one with a malformed `label` beside a well-formed one, and
+ * `qa::VocabularyNotAList` a `vocabulary` value that is not a list. `qa::Gain` is a key the loader's registry holds at
+ * version 2.
  */
 struct AttributesAssetRoot {
     std::filesystem::path path = std::filesystem::temp_directory_path() / "gr4_qa_grc_attributes";
@@ -441,14 +457,16 @@ struct AttributesAssetRoot {
             asset << std::format("definition_metadata:\n  block_type: {}\n{}blocks:\n  - id: SUBGRAPH\n    parameters:\n      name: composite\n    graph:\n      blocks:\n        - id: \"{}\"\n          parameters:\n            name: inner\n      exported_ports:\n{}", blockType, attributes, innerType, exportedPorts);
         };
         constexpr std::string_view kOutput = "        - [inner, OUTPUT, out, out]\n";
-        write("radio_source.yaml", "qa::RadioSource", "  attributes: {resource: device, family: example, emits: none, status: [experimental]}\n", kOutput);
-        write("radio_sink.yaml", "qa::RadioSink", "  attributes: {resource: device, family: example, emits: rf}\n", "        - [inner, INPUT, \"in#0\", in0]\n        - [inner, INPUT, \"in#1\", in1]\n");
-        write("controlled_radio.yaml", "qa::ControlledRadio", "  attributes: {resource: device, family: example}\n", "        - [inner, INPUT, command, command]\n" + std::string(kOutput), "qa::ControlledSource");
-        write("bad_word.yaml", "qa::BadWord", "  attributes: {resource: radio, family: example}\n", kOutput);
-        write("revised.yaml", "qa::Revised", "  attributes: {resource: file, version: 2}\n", kOutput);
+        write("radio_source.yaml", "qa::RadioSource", "  attributes: {labels: [family/example, role/source, holds/device, ingests/rf, status/experimental]}\n  vocabulary:\n    - {label: family/example, meaning: \"Example radios of the definition suite.\"}\n", kOutput);
+        write("radio_sink.yaml", "qa::RadioSink", "  attributes: {labels: [family/example, role/sink, holds/device, emits/rf]}\n", "        - [inner, INPUT, \"in#0\", in0]\n        - [inner, INPUT, \"in#1\", in1]\n");
+        write("controlled_radio.yaml", "qa::ControlledRadio", "  attributes: {labels: [family/example, holds/device]}\n", "        - [inner, INPUT, command, command]\n" + std::string(kOutput), "qa::ControlledSource");
+        write("bad_word.yaml", "qa::BadWord", "  attributes: {labels: [family/example, radio, shade/red, emits/RF, emits/tachyon]}\n", kOutput);
+        write("revised.yaml", "qa::Revised", "  attributes: {version: 2, labels: [holds/storage]}\n", kOutput);
         write("not_a_map.yaml", "qa::NotAMap", "  attributes: 3\n", kOutput);
-        write("gain.yaml", "qa::Gain", "  attributes: {resource: file, family: shadow}\n", kOutput);
+        write("gain.yaml", "qa::Gain", "  attributes: {labels: [family/shadow]}\n", kOutput);
         write("plain.yaml", "qa::Plain", "", kOutput);
+        write("bad_vocabulary.yaml", "qa::BadVocabulary", "  attributes: {labels: [holds/bus]}\n  vocabulary:\n    - 3\n    - {label: rf, meaning: \"A word under no class.\"}\n    - {label: holds/bus, meaning: \"A bus the definition suite names.\"}\n", kOutput);
+        write("vocabulary_not_a_list.yaml", "qa::VocabularyNotAList", "  vocabulary: 3\n", kOutput);
     }
 
     AttributesAssetRoot(const AttributesAssetRoot&)            = delete;
@@ -863,7 +881,7 @@ connections:
         const std::shared_ptr<BlockModel>& block = loaded->blocks().front();
         expect(eq(block->version(), gr::block::Version{1U}));
         expect(block->pinnedVersion() == std::optional<gr::block::Version>{1U});
-        expect(block->status().deprecated) << "reported, and nothing refused it";
+        expect(block->status() == std::vector<std::string>{"deprecated"}) << "reported, and nothing refused it";
         const auto* declared = block->metaInformation().at(std::pmr::string(gr::block::kAttributesMetaKey)).get_if<property_map>();
         expect(declared != nullptr && gr::block::attributesFromMap(*declared).version == gr::block::Version{1U});
 
@@ -879,37 +897,37 @@ connections:
         registerTestBlocks();
         PluginLoader& loader = gr::globalPluginLoader();
 
-        const auto undeclared = gr::loadGrc(loader, "blocks:\n  - id: qa::Scale\n    parameters:\n      name: scale\n    meta_information:\n      note: kept\n      Attributes: {version: 7, status: [deprecated]}\n");
+        const auto undeclared = gr::loadGrc(loader, "blocks:\n  - id: qa::Scale\n    parameters:\n      name: scale\n    meta_information:\n      note: kept\n      Attributes: {version: 7, labels: [status/deprecated]}\n");
         expect(fatal(eq(undeclared->blocks().size(), 1UZ)));
         const std::shared_ptr<BlockModel>& scale = undeclared->blocks().front();
         expect(scale->metaInformation().contains(std::string_view("note"))) << "the file's other meta_information is restored";
         expect(!scale->metaInformation().contains(gr::block::kAttributesMetaKey)) << "a type that declares nothing carries no Attributes entry";
         expect(eq(scale->version(), gr::block::kDefaultVersion));
-        expect(scale->status() == gr::block::Status{});
+        expect(scale->status().empty());
 
-        const auto declared = gr::loadGrc(loader, "blocks:\n  - id: qa::Gain\n    parameters:\n      name: gain\n    meta_information:\n      Attributes: {resource: device, version: 1, status: [deprecated]}\n");
+        const auto declared = gr::loadGrc(loader, "blocks:\n  - id: qa::Gain\n    parameters:\n      name: gain\n    meta_information:\n      Attributes: {version: 1, labels: [holds/device, status/deprecated]}\n");
         expect(fatal(eq(declared->blocks().size(), 1UZ)));
         const std::shared_ptr<BlockModel>& gain = declared->blocks().front();
         expect(eq(gain->version(), gr::block::Version{2U})) << "the newest registered type answers its own declaration";
-        expect(gain->status() == gr::block::Status{});
+        expect(gain->status().empty());
         const auto* entry = gain->metaInformation().at(std::pmr::string(gr::block::kAttributesMetaKey)).get_if<property_map>();
-        expect(entry != nullptr && *entry == gr::block::attributesToMap(gr::block::attributesOf<GainV2>(), gr::block::roleOf<GainV2>()));
+        expect(entry != nullptr && *entry == gr::block::detail::declaredAttributesMap<GainV2>());
     };
 
     "a file's parameters cannot set an instance's Attributes entry"_test = [] {
         registerTestBlocks();
         PluginLoader& loader = gr::globalPluginLoader();
 
-        const auto loaded = gr::loadGrc(loader, "blocks:\n  - id: qa::Scale\n    parameters: {name: s, note: kept, Attributes: {version: 7, status: [deprecated]}}\n");
+        const auto loaded = gr::loadGrc(loader, "blocks:\n  - id: qa::Scale\n    parameters: {name: s, note: kept, Attributes: {version: 7, labels: [status/deprecated]}}\n");
         expect(fatal(eq(loaded->blocks().size(), 1UZ)));
         const std::shared_ptr<BlockModel>& scale = loaded->blocks().front();
         expect(scale->metaInformation().contains(std::string_view("note"))) << "an undeclared parameter still reaches meta_information";
         expect(!scale->metaInformation().contains(gr::block::kAttributesMetaKey));
         expect(eq(scale->version(), gr::block::kDefaultVersion));
-        expect(scale->status() == gr::block::Status{});
+        expect(scale->status().empty());
     };
 
-    "a definition's attributes are its declared words and the role its exported ports derive"_test = [] {
+    "a definition's attributes are its declared labels and the role its exported ports read"_test = [] {
         const AttributesAssetRoot assets;
         std::string               printed;
         PluginLoader              loader = loadAttributesRoot(assets, printed);
@@ -919,21 +937,16 @@ connections:
         expect(!printed.contains("qa::RadioSource") && !printed.contains("qa::RadioSink")) << printed;
 #endif
 
-        using gr::block::Resource;
-        using gr::block::Role;
-        const property_map sourceExpected = gr::block::attributesToMap({.resource = Resource::Device, .family = "example", .emits = gr::block::Emits::None, .status = {.experimental = true}}, Role::Source);
-        const property_map sinkExpected   = gr::block::attributesToMap({.resource = Resource::Device, .family = "example", .emits = gr::block::Emits::Rf}, Role::Sink);
+        const property_map sourceExpected{{"version", gr::block::Version{1U}}, {"labels", std::vector<std::string>{"family/example", "role/source", "holds/device", "ingests/rf", "status/experimental"}}, {"role", std::string("generator")}};
+        const property_map sinkExpected{{"version", gr::block::Version{1U}}, {"labels", std::vector<std::string>{"family/example", "role/sink", "holds/device", "emits/rf"}}, {"role", std::string("consumer")}};
 
         const std::optional<property_map> source = loader.blockAttributes("qa::RadioSource");
         expect(fatal(source.has_value()));
-        expect(*source == sourceExpected) << "the declared words and the derived role";
-        expect(eq(source->at("role").value_or(std::string_view{}), std::string_view("source")));
-        expect(eq(source->at("family").value_or(std::string_view{}), std::string_view("example")));
+        expect(*source == sourceExpected) << "the declared labels and the role the exported output reads";
 
         const std::optional<property_map> sink = loader.blockAttributes("qa::RadioSink");
         expect(fatal(sink.has_value()));
-        expect(*sink == sinkExpected) << "exported inputs alone make a sink";
-        expect(eq(sink->at("role").value_or(std::string_view{}), std::string_view("sink")));
+        expect(*sink == sinkExpected) << "exported inputs alone read consumer";
 
         expect(loader.blockAttributes("qa::RadioSource", gr::block::kDefaultVersion) == source) << "a definition carries version 1";
         expect(!loader.blockAttributes("qa::RadioSource", 2U).has_value()) << "and no other";
@@ -941,17 +954,22 @@ connections:
         const std::optional<property_map> plain = loader.blockAttributes("qa::Plain");
         expect(plain.has_value() && plain->empty()) << "a definition that declares nothing answers an empty map";
         expect(!loader.blockAttributes("qa::Absent").has_value()) << "nothing for a name nobody holds";
+
+        const gr::block::Vocabulary vocabulary = loader.vocabulary();
+        const auto*                 family     = vocabulary.find(gr::block::LabelClass::Family, "example");
+        expect(fatal(family != nullptr)) << "a definition's vocabulary joins the loader's";
+        expect(family->meanings == std::vector<std::string>{"Example radios of the definition suite."});
+        expect(std::ranges::all_of(gr::block::attributesFromMap(*source, vocabulary).labels, &gr::block::LabelRead::known));
     };
 
-    "an exported message input counts for no role, so beside a stream output it leaves a source"_test = [] {
+    "an exported message input counts for no role, so beside a stream output the ports read generator"_test = [] {
         const AttributesAssetRoot assets;
         std::string               printed;
         PluginLoader              loader = loadAttributesRoot(assets, printed);
 
         const std::optional<property_map> controlled = loader.blockAttributes("qa::ControlledRadio");
         expect(fatal(controlled.has_value()));
-        expect(*controlled == gr::block::attributesToMap({.resource = gr::block::Resource::Device, .family = "example"}, gr::block::Role::Source)) << "the message input is left out";
-        expect(eq(controlled->at("role").value_or(std::string_view{}), std::string_view("source"))) << "not transceiver";
+        expect(eq(controlled->at("role").value_or(std::string_view{}), std::string_view("generator"))) << "the message input is left out";
     };
 
     "a definition under a key the registry holds answers nothing for a version the registry lacks"_test = [] {
@@ -961,7 +979,7 @@ connections:
 
         expect(fatal(loader.definitionForBlockName().contains("qa::Gain"))) << "the definition registers under the key";
         const property_map& definitionMap = loader.definitionForBlockName().at("qa::Gain").attributes;
-        expect(eq(definitionMap.at("family").value_or(std::string_view{}), std::string_view("shadow"))) << "the definition declares a map of its own";
+        expect(gr::block::attributesFromMap(definitionMap).has(gr::block::LabelClass::Family, "shadow")) << "the definition declares a map of its own";
         expect(loader.blockVersions("qa::Gain") == std::vector<gr::block::Version>{2U}) << "the registry holds the key at version 2";
 
         expect(!loader.blockAttributes("qa::Gain", gr::block::kDefaultVersion).has_value()) << "the registry's answer for its key is final";
@@ -973,7 +991,7 @@ connections:
         expect(*registered != definitionMap);
     };
 
-    "a definition's word outside the set reads as unknown, and the load prints one line naming it"_test = [] {
+    "a definition's label under no class or with a malformed word is skipped, and the load prints one line for each"_test = [] {
         const AttributesAssetRoot assets;
         std::string               printed;
         PluginLoader              loader = loadAttributesRoot(assets, printed);
@@ -991,10 +1009,11 @@ connections:
         };
 
         const std::vector<std::string> badWord = linesNaming("qa::BadWord");
-        expect(fatal(eq(badWord.size(), 1UZ))) << printed;
-        expect(badWord.front().contains("bad_word.yaml")) << badWord.front();
-        expect(badWord.front().contains(": attribute resource: 'radio' is not one of")) << badWord.front();
-        expect(badWord.front().contains("none, device, file, network")) << badWord.front() << "the words allowed";
+        expect(fatal(eq(badWord.size(), 3UZ))) << printed;
+        expect(badWord[0].contains("bad_word.yaml")) << badWord[0];
+        expect(badWord[0].ends_with(": attribute labels: 'radio' is not class/word with a class of family, role, plane, holds, emits, ingests, compute, status")) << badWord[0];
+        expect(badWord[1].ends_with(": attribute labels: 'shade/red' is not class/word with a class of family, role, plane, holds, emits, ingests, compute, status")) << badWord[1];
+        expect(badWord[2].ends_with(": attribute labels: 'emits/RF' is not class/word with a word of a lower-case letter, then lower-case letters and digits")) << badWord[2];
 
         const std::vector<std::string> revised = linesNaming("qa::Revised");
         expect(fatal(eq(revised.size(), 1UZ))) << printed;
@@ -1005,30 +1024,68 @@ connections:
         expect(notAMap.front().contains(": attributes: ") && notAMap.front().contains(" is not a map")) << notAMap.front();
         expect(!printed.contains("attribute attributes")) << "each line names its key once";
 
-        expect(eq(static_cast<std::size_t>(std::ranges::count(printed, '\n')), 3UZ)) << printed;
+        expect(eq(static_cast<std::size_t>(std::ranges::count(printed, '\n')), 8UZ)) << "one line per rejected entry of the root" << printed;
 #endif
 
         expect(loader.definitionForBlockName().contains("qa::BadWord")) << "the definition registers regardless";
         const std::optional<property_map> bad = loader.blockAttributes("qa::BadWord");
         expect(fatal(bad.has_value()));
-        expect(*bad == gr::block::attributesToMap({.family = "example"}, gr::block::Role::Unknown)) << "resource reads as unknown, so no role is derived";
-        expect(!bad->contains("resource") && !bad->contains("role"));
+        const gr::block::AttributesRead badRead = gr::block::attributesFromMap(*bad, loader.vocabulary());
+        const std::vector<std::string>  kept    = badRead.labels | std::views::transform(&gr::block::LabelRead::text) | std::ranges::to<std::vector>();
+        expect(kept == std::vector<std::string>{"family/example", "emits/tachyon"}) << "the well-formed labels stand";
+        expect(fatal(eq(badRead.labels.size(), 2UZ)));
+        expect(!badRead.labels[1].known) << "an unknown word under a known class is carried and marked";
+        expect(loader.vocabulary().physical(gr::block::LabelClass::Emits, "tachyon")) << "and reads as physical";
 
         const std::optional<property_map> revisedMap = loader.blockAttributes("qa::Revised");
         expect(revisedMap.has_value() && gr::block::attributesFromMap(*revisedMap).version == gr::block::kDefaultVersion) << "a definition carries version 1 whatever it states";
-        expect(revisedMap.has_value() && gr::block::attributesFromMap(*revisedMap).resource == gr::block::Resource::File) << "the other words stand";
+        expect(revisedMap.has_value() && gr::block::attributesFromMap(*revisedMap).has(gr::block::labels::holds::storage)) << "the labels stand";
 
         const std::optional<property_map> notAMapMap = loader.blockAttributes("qa::NotAMap");
         expect(notAMapMap.has_value() && notAMapMap->empty()) << "a value that is not a map answers an empty map";
     };
 
-    "a block a definition instantiates carries the definition's attributes, and its stream ports give their role"_test = [] {
+    "a definition's malformed vocabulary entry is skipped, and the load prints one line for each"_test = [] {
         const AttributesAssetRoot assets;
         std::string               printed;
         PluginLoader              loader = loadAttributesRoot(assets, printed);
 
-        using gr::block::Role;
-        const std::array<std::pair<std::string_view, Role>, 3UZ> expectedRoles{{{"qa::RadioSource", Role::Source}, {"qa::RadioSink", Role::Sink}, {"qa::ControlledRadio", Role::Source}}};
+#if !defined(__EMSCRIPTEN__)
+        const auto linesNaming = [&printed](std::string_view blockType) {
+            std::vector<std::string> lines;
+            std::istringstream       stream(printed);
+            for (std::string line; std::getline(stream, line);) {
+                if (line.contains(blockType)) {
+                    lines.push_back(line);
+                }
+            }
+            return lines;
+        };
+
+        const std::vector<std::string> badEntries = linesNaming("qa::BadVocabulary");
+        expect(fatal(eq(badEntries.size(), 2UZ))) << printed;
+        expect(badEntries[0].contains("bad_vocabulary.yaml") && badEntries[0].ends_with(": vocabulary: 3 is not a map of label, meaning and physical")) << badEntries[0];
+        expect(badEntries[1].ends_with(": vocabulary: 'rf' is not class/word with a class of family, role, plane, holds, emits, ingests, compute, status")) << badEntries[1];
+
+        const std::vector<std::string> notAList = linesNaming("qa::VocabularyNotAList");
+        expect(fatal(eq(notAList.size(), 1UZ))) << printed;
+        expect(notAList.front().ends_with(": vocabulary: 3 is not a list")) << notAList.front();
+#endif
+
+        expect(loader.definitionForBlockName().contains("qa::BadVocabulary")) << "the definition registers regardless";
+        expect(loader.definitionForBlockName().contains("qa::VocabularyNotAList"));
+        const gr::block::Vocabulary       vocabulary = loader.vocabulary();
+        const gr::block::VocabularyEntry* bus        = vocabulary.find(gr::block::LabelClass::Holds, "bus");
+        expect(fatal(bus != nullptr)) << "the well-formed entry beside the skipped ones stands";
+        expect(bus->meanings == std::vector<std::string>{"A bus the definition suite names."});
+    };
+
+    "a block a definition instantiates carries the definition's attributes, and its stream ports read their role"_test = [] {
+        const AttributesAssetRoot assets;
+        std::string               printed;
+        PluginLoader              loader = loadAttributesRoot(assets, printed);
+
+        const std::array<std::pair<std::string_view, std::string_view>, 3UZ> expectedRoles{{{"qa::RadioSource", "generator"}, {"qa::RadioSink", "consumer"}, {"qa::ControlledRadio", "generator"}}};
         for (const auto& [name, role] : expectedRoles) {
             const std::optional<property_map> declared = loader.blockAttributes(name);
             expect(fatal(declared.has_value())) << name;
@@ -1039,16 +1096,34 @@ connections:
             const property_map* held  = entry == instance->metaInformation().cend() ? nullptr : entry->second.get_if<property_map>();
             expect(fatal(held != nullptr)) << name << " carries an Attributes entry";
             expect(*held == *declared) << name << ": the instance's map is the loader's answer";
-            expect(gr::block::attributesOf(*instance) == gr::block::attributesFromMap(*declared)) << name;
 
-            const Role fromPorts = gr::block::roleFrom(gr::block::attributesOf(*instance).resource, holdsStreamPort(instance->dynamicInputPorts()), holdsStreamPort(instance->dynamicOutputPorts()));
-            expect(fromPorts == role) << name << ": the instance's stream ports";
-            expect(*declared == gr::block::attributesToMap(gr::block::attributesFromMap(*declared), fromPorts)) << name << ": the derived role is the ports' role";
+            const std::optional<gr::block::Label> fromPorts = gr::block::roleFromPorts(holdsStreamPort(instance->dynamicInputPorts()), holdsStreamPort(instance->dynamicOutputPorts()), false);
+            expect(fatal(fromPorts.has_value())) << name;
+            expect(eq(fromPorts->word, role)) << name << ": the instance's stream ports";
+            expect(eq(gr::block::attributesOf(*instance).readRole, std::string(role))) << name << ": the read role is the ports' role";
         }
 
         const std::shared_ptr<BlockModel> plain = loader.instantiate("qa::Plain");
         expect(fatal(plain != nullptr));
         expect(!plain->metaInformation().contains(gr::block::kAttributesMetaKey)) << "a definition that declares nothing writes no entry";
+    };
+
+    "a notation block answers DONE at once, and the chain beside it runs to its end"_test = [] {
+        registerTestBlocks();
+        PluginLoader& loader = gr::globalPluginLoader();
+
+        auto chain = gr::loadGrc(loader, "blocks:\n  - id: qa::RampSource\n    parameters: {name: ramp, n_samples: 64}\n  - id: qa::RecordingSink\n    parameters: {name: beside-antenna}\n  - id: qa::Antenna\n    parameters: {name: antenna, feeds: ramp}\nconnections:\n  - [ramp, out, beside-antenna, in]\n");
+        expect(fatal(eq(chain->blocks().size(), 3UZ)));
+        gr::scheduler::Simple<> scheduler;
+        expect(scheduler.exchange(std::move(chain)).has_value());
+        expect(scheduler.runAndWait().has_value());
+        expect(eq(takeCollected("beside-antenna").size(), 64UZ)) << "the notation block leaves the chain to run";
+
+        auto alone = gr::loadGrc(loader, "blocks:\n  - id: qa::Antenna\n    parameters: {name: first}\n  - id: qa::Antenna\n    parameters: {name: second, feeds: first}\n");
+        expect(fatal(eq(alone->blocks().size(), 2UZ)));
+        gr::scheduler::Simple<> notationOnly;
+        expect(notationOnly.exchange(std::move(alone)).has_value());
+        expect(notationOnly.runAndWait().has_value()) << "a graph of notation blocks alone ends";
     };
 
     "a pin to a version that was never registered names the versions that were"_test = [] {

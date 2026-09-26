@@ -69,7 +69,7 @@ struct DocCombiner : Block<DocCombiner> {
 struct DocFilterV1 : Block<DocFilterV1> {
     using Description = Doc<"the first revision of the filter">;
 
-    static constexpr gr::block::Attributes attributes{.status = {.deprecated = true, .experimental = true}, .version = 1U};
+    static constexpr auto attributes = gr::block::describe(1U, gr::block::labels::status::deprecated, gr::block::labels::status::experimental);
 
     PortIn<float>  in;
     PortOut<float> out;
@@ -84,7 +84,7 @@ struct DocFilterV1 : Block<DocFilterV1> {
 struct DocFilterV2 : Block<DocFilterV2> {
     using Description = Doc<"the second revision of the filter">;
 
-    static constexpr gr::block::Attributes attributes{.version = 2U};
+    static constexpr auto attributes = gr::block::describe(2U);
 
     PortIn<float>  in;
     PortOut<float> out;
@@ -96,9 +96,11 @@ struct DocFilterV2 : Block<DocFilterV2> {
     [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
 };
 
+inline constexpr gr::block::Label kDocFamily = gr::block::labels::family("docradio", "Radios of the registry document suite.");
+
 /// two revisions of a block that holds a device: a source, and a sink that also emits and runs on an FPGA
 struct DocRadioV1 : Block<DocRadioV1> {
-    static constexpr gr::block::Attributes attributes{.resource = gr::block::Resource::Device, .family = "docradio"};
+    static constexpr auto attributes = gr::block::describe(1U, kDocFamily, gr::block::labels::role::source, gr::block::labels::holds::device);
 
     PortOut<float> out;
 
@@ -110,7 +112,7 @@ struct DocRadioV1 : Block<DocRadioV1> {
 };
 
 struct DocRadioV2 : Block<DocRadioV2> {
-    static constexpr gr::block::Attributes attributes{.resource = gr::block::Resource::Device, .family = "docradio", .emits = gr::block::Emits::Rf, .compute = gr::block::Compute::Fpga, .status = {.experimental = true}, .version = 2U};
+    static constexpr auto attributes = gr::block::describe(2U, kDocFamily, gr::block::labels::role::sink, gr::block::labels::holds::device, gr::block::labels::emits::rf, gr::block::labels::compute::fpga, gr::block::labels::status::experimental);
 
     PortIn<float> in;
 
@@ -159,8 +161,8 @@ struct Fixture {
 
         const BlockRegistration olderRadio = makeBlockRegistration<DocRadioV1>(&makeDocBlock<DocRadioV1>);
         const BlockRegistration newerRadio = makeBlockRegistration<DocRadioV2>(&makeDocBlock<DocRadioV2>);
-        std::ignore                        = registry.insert(kRadioKey, "", olderRadio.factory, olderRadio.attributes);
-        std::ignore                        = registry.insert(kRadioKey, "", newerRadio.factory, newerRadio.attributes);
+        std::ignore                        = registry.insert(kRadioKey, "", olderRadio.factory, olderRadio.attributes, olderRadio.labels);
+        std::ignore                        = registry.insert(kRadioKey, "", newerRadio.factory, newerRadio.attributes, newerRadio.labels);
     }
 
     [[nodiscard]] std::string document(gr::tools::Format format) {
@@ -180,8 +182,8 @@ struct Fixture {
     return document.substr(begin, end == std::string_view::npos ? std::string_view::npos : end - begin);
 }
 
-/// the labels a section gives the declared words other than the version and the status
-constexpr std::array<std::string_view, 5> kAttributeLabels{"**Resource**", "**Family**", "**Emits**", "**Compute**", "**Role**"};
+/// the label a section gives the declared labels other than the status words
+constexpr std::array<std::string_view, 1> kAttributeLabels{"**Labels**"};
 
 /// one fixture for the whole binary: the plugins are opened once
 [[nodiscard]] Fixture& fixture() {
@@ -291,7 +293,7 @@ const boost::ut::suite<"RegistryDoc"> registryDocTests = [] {
         const std::string      document = fixture().document(Format::Markdown);
         const std::string_view section  = sectionOf(document, kRadioKey);
         expect(fatal(!section.empty())) << document;
-        const std::array<std::string_view, 7> facts{"- **UI category**: ", "- **Resource**: device\n", "- **Family**: docradio\n", "- **Emits**: rf\n", "- **Compute**: fpga\n", "- **Role**: sink\n", "- **Version**: 2\n"};
+        const std::array<std::string_view, 3> facts{"- **UI category**: ", "- **Labels**: family/docradio, role/sink, holds/device, emits/rf, compute/fpga\n", "- **Version**: 2\n"};
         std::size_t                           previous = 0UZ;
         for (const std::string_view fact : facts) {
             const std::size_t at = section.find(fact);
@@ -304,9 +306,9 @@ const boost::ut::suite<"RegistryDoc"> registryDocTests = [] {
     "each version of a key that declares attributes has its words in the version table"_test = [] {
         const std::string      document = fixture().document(Format::Markdown);
         const std::string_view radio    = sectionOf(document, kRadioKey);
-        expect(radio.contains("| Version | Status | Attributes | Taken by default |")) << radio;
-        expect(radio.contains("| 1 | none declared | resource: device, family: docradio, role: source |  |")) << "the older revision is a source" << radio;
-        expect(radio.contains("| 2 | experimental | resource: device, family: docradio, emits: rf, compute: fpga, role: sink | newest |")) << radio;
+        expect(radio.contains("| Version | Status | Labels | Taken by default |")) << radio;
+        expect(radio.contains("| 1 | none declared | family/docradio, role/source, holds/device |  |")) << "the older revision is a source" << radio;
+        expect(radio.contains("| 2 | experimental | family/docradio, role/sink, holds/device, emits/rf, compute/fpga | newest |")) << radio;
 
         const std::string_view filter = sectionOf(document, kVersionedKey);
         expect(filter.contains("| 1 | deprecated, experimental |  |  |")) << "a version that declares no word has an empty cell" << filter;
@@ -319,10 +321,10 @@ const boost::ut::suite<"RegistryDoc"> registryDocTests = [] {
         const std::string      document = plugin.document(Format::Markdown);
         const std::string_view section  = sectionOf(document, kPluginVersionedKey);
         expect(fatal(section.contains("- **UI category**: "))) << "the instrument: the section and its facts are found" << document;
-        expect(section.contains("| Version | Status | Attributes | Taken by default |")) << section;
+        expect(section.contains("| Version | Status | Labels | Taken by default |")) << section;
         expect(section.contains("| 1 | none declared |  |  |")) << "the older revision declares no word" << section;
-        expect(section.contains("| 2 | experimental | resource: device, family: versioned, role: transceiver | newest |")) << section;
-        expect(section.contains("- **Resource**: device\n")) << "the facts state the newest revision's words" << section;
+        expect(section.contains("| 2 | experimental | family/versioned, holds/device, holds/testbus | newest |")) << section;
+        expect(section.contains("- **Labels**: family/versioned, holds/device, holds/testbus\n")) << "the facts state the newest revision's labels" << section;
         expect(section.contains("- **Status**: experimental\n")) << section;
         expect(!section.contains("\n| Attributes |")) << "no meta entry repeats the declared words" << section;
     };

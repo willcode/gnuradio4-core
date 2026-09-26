@@ -510,14 +510,14 @@ public:
     [[nodiscard]] virtual UICategory uiCategory() const { return UICategory::None; }
 
     /**
-     * @brief The revision of the block type this instance is, and the status flags the type declares.
+     * @brief The revision of the block type this instance is, and the words of the class `status` the type declares.
      *
-     * Both read `block::attributesOf(*this)`. Reported, never acted on. A type that declares no attributes is version
-     * `block::kDefaultVersion` with every flag false.
+     * Both read the instance's `block::kAttributesMetaKey` entry. Reported, never acted on. A type that declares no
+     * attributes is version `block::kDefaultVersion` with no status word.
      */
     [[nodiscard]] block::Version version() const noexcept;
 
-    [[nodiscard]] block::Status status() const noexcept;
+    [[nodiscard]] std::vector<std::string> status() const;
 
     /// The version the caller asked for by name, when it pinned one; nothing when it took the newest.
     [[nodiscard]] std::optional<block::Version> pinnedVersion() const noexcept { return _pinnedVersion; }
@@ -592,20 +592,36 @@ public:
 
 namespace block {
 
-/// The attributes an instance carries under `kAttributesMetaKey` in its meta_information, every field at its default
-/// when it carries none. The returned `family` views the instance's meta_information.
-[[nodiscard]] inline Attributes attributesOf(const BlockModel& model) noexcept {
+/// The attributes an instance carries under `kAttributesMetaKey` in its meta_information, read against `vocabulary`;
+/// version 1 and no label when it carries none.
+[[nodiscard]] inline AttributesRead attributesOf(const BlockModel& model, const Vocabulary& vocabulary = coreVocabulary()) {
     const property_map& meta     = model.metaInformation();
     const auto          entry    = meta.find(kAttributesMetaKey);
     const property_map* declared = entry == meta.cend() ? nullptr : entry->second.get_if<property_map>();
-    return declared == nullptr ? Attributes{} : attributesFromMap(*declared);
+    return declared == nullptr ? AttributesRead{} : attributesFromMap(*declared, vocabulary);
 }
 
 } // namespace block
 
-inline block::Version BlockModel::version() const noexcept { return block::attributesOf(*this).version; }
+inline block::Version BlockModel::version() const noexcept {
+    const property_map& meta     = metaInformation();
+    const auto          entry    = meta.find(block::kAttributesMetaKey);
+    const property_map* declared = entry == meta.cend() ? nullptr : entry->second.get_if<property_map>();
+    if (declared == nullptr) {
+        return block::kDefaultVersion;
+    }
+    const auto version = declared->find(block::kVersionKey);
+    return version == declared->cend() ? block::kDefaultVersion : block::detail::versionFrom(version->second).value_or(block::kDefaultVersion);
+}
 
-inline block::Status BlockModel::status() const noexcept { return block::attributesOf(*this).status; }
+inline std::vector<std::string> BlockModel::status() const {
+    const block::AttributesRead read = block::attributesOf(*this);
+    std::vector<std::string>    words;
+    for (const std::string_view word : read.words(block::LabelClass::Status)) {
+        words.emplace_back(word);
+    }
+    return words;
+}
 
 // two edges may name one and the same output port by index, by name, or — across a subgraph
 // boundary — through the subgraph's exported alias of an interior port, so differing

@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <format>
@@ -76,41 +75,28 @@ inline constexpr std::array<std::string_view, 6> kSettingMetaSuffixes{"::descrip
 
 [[nodiscard]] inline std::string yesNo(bool value) { return value ? "yes" : "no"; }
 
-/// the qualities a block declares, named; a block that declares none reads as plain, which is the common case
-[[nodiscard]] inline std::string statusText(block::Status status) {
-    std::vector<std::string> set;
-    if (status.deprecated) {
-        set.emplace_back("deprecated");
-    }
-    if (status.experimental) {
-        set.emplace_back("experimental");
-    }
-    return set.empty() ? "none declared" : joined(set, ", ");
-}
+/// the status words a block declares, named; a block that declares none reads as plain, which is the common case
+[[nodiscard]] inline std::string statusText(const std::vector<std::string>& status) { return status.empty() ? "none declared" : joined(status, ", "); }
 
-/// the words `attributes` declares other than the version and the status, which the document states on their own
-[[nodiscard]] inline std::vector<AttributeText> declaredWords(const property_map& attributes) {
-    std::vector<AttributeText> words = attributeTexts(attributes);
-    std::erase_if(words, [](const AttributeText& word) { return word.key == block::detail::kVersionKey || word.key == block::detail::kStatusKey; });
+/// the status words `attributes` declares
+[[nodiscard]] inline std::vector<std::string> statusWords(const property_map& attributes) {
+    std::vector<std::string> words;
+    for (const std::string_view word : block::attributesFromMap(attributes).words(block::LabelClass::Status)) {
+        words.emplace_back(word);
+    }
     return words;
 }
 
-/// the label a declared word is stated under: its key with the first letter capitalized
-[[nodiscard]] inline std::string attributeLabel(std::string_view key) {
-    std::string label(key);
-    if (!label.empty()) {
-        label.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(label.front())));
+/// the labels `attributes` declares other than the status words, which the document states on their own, as
+/// `class/word` joined by ", "; empty for a version that declares none
+[[nodiscard]] inline std::string labelsCell(const property_map& attributes) {
+    std::vector<std::string> texts;
+    for (const block::LabelRead& label : block::attributesFromMap(attributes).labels) {
+        if (label.cls != block::LabelClass::Status) {
+            texts.push_back(label.text());
+        }
     }
-    return label;
-}
-
-/// the declared words of one version as one table cell, `key: word` joined by ", "; empty for a version that declares none
-[[nodiscard]] inline std::string attributesCell(const property_map& attributes) {
-    std::vector<std::string> pairs;
-    for (const AttributeText& word : declaredWords(attributes)) {
-        pairs.push_back(std::format("{}: {}", word.key, word.value));
-    }
-    return joined(pairs, ", ");
+    return joined(texts, ", ");
 }
 
 /// the sample-count bound a port declares; the largest representable count means "no bound"
@@ -209,16 +195,16 @@ inline void writeBlock(DocWriter& writer, std::string_view key, std::string_view
     facts.push_back(writer.labeled("Block category", std::format("{}", instance->blockCategory())));
     facts.push_back(writer.labeled("UI category", std::format("{}", instance->uiCategory())));
 
-    // The declared words are those of the version documented, the version the instance was made at.
-    for (const AttributeText& word : declaredWords(loader.blockAttributes(key, instance->version()).value_or(property_map{}))) {
-        facts.push_back(writer.labeled(attributeLabel(word.key), word.value));
+    // The declared labels are those of the version documented, the version the instance was made at.
+    if (const std::string labels = labelsCell(loader.blockAttributes(key, instance->version()).value_or(property_map{})); !labels.empty()) {
+        facts.push_back(writer.labeled("Labels", labels));
     }
     const std::vector<block::Version> registeredVersions = loader.blockVersions(key);
-    const block::Status               declaredStatus     = instance->status();
+    const std::vector<std::string>    declaredStatus     = instance->status();
     if (instance->version() != block::kDefaultVersion || registeredVersions.size() > 1UZ) {
         facts.push_back(writer.labeled("Version", std::to_string(instance->version())));
     }
-    if (declaredStatus.any()) {
+    if (!declaredStatus.empty()) {
         facts.push_back(writer.labeled("Status", statusText(declaredStatus)));
     }
     if (!settingsFailure.empty()) {
@@ -232,9 +218,9 @@ inline void writeBlock(DocWriter& writer, std::string_view key, std::string_view
         versionRows.reserve(registeredVersions.size());
         for (const block::Version version : registeredVersions) {
             const property_map attributes = loader.blockAttributes(key, version).value_or(property_map{});
-            versionRows.push_back({std::to_string(version), statusText(block::attributesFromMap(attributes).status), attributesCell(attributes), version == registeredVersions.back() ? "newest" : ""});
+            versionRows.push_back({std::to_string(version), statusText(statusWords(attributes)), labelsCell(attributes), version == registeredVersions.back() ? "newest" : ""});
         }
-        const std::array<std::string_view, 4> versionHeaders{"Version", "Status", "Attributes", "Taken by default"};
+        const std::array<std::string_view, 4> versionHeaders{"Version", "Status", "Labels", "Taken by default"};
         writer.table(versionHeaders, versionRows);
     }
 

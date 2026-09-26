@@ -859,7 +859,7 @@ public:
             ret.insert_or_assign("Drawable", info);
         }
         if constexpr (block::HasDeclaredAttributes<Derived>) {
-            ret.insert_or_assign(std::pmr::string(block::kAttributesMetaKey), block::attributesToMap(block::attributesOf<Derived>(), block::roleOf<Derived>()));
+            ret.insert_or_assign(std::pmr::string(block::kAttributesMetaKey), block::detail::declaredAttributesMap<Derived>());
         }
         return ret;
     }

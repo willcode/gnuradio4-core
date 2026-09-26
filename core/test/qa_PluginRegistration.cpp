@@ -101,16 +101,13 @@ const boost::ut::suite<"PluginRegistration"> pluginRegistrationTests = [] {
         expect(fatal(eq(loader.plugins().size(), 1UZ))) << "the versioned plugin loads";
         expect(!registry.contains(kVersionedKey)) << "the host's registry does not hold the key, so each answer comes from the plugin";
 
-        const gr::property_map newestExpected = gr::block::attributesToMap({.resource = gr::block::Resource::Device, .family = "versioned", .status = {.experimental = true}, .version = 2U}, gr::block::Role::Transceiver);
-        const gr::property_map olderExpected  = gr::block::attributesToMap({.version = 1U}, gr::block::Role::Unknown);
+        const gr::property_map newestExpected{{"version", gr::block::Version{2U}}, {"labels", std::vector<std::string>{"family/versioned", "holds/device", "holds/testbus", "status/experimental"}}, {"role", std::string("processor")}};
+        const gr::property_map olderExpected{{"version", gr::block::Version{1U}}, {"role", std::string("processor")}};
         expect(newestExpected != olderExpected) << "the two versions differ in more than the number";
 
         const std::optional<gr::property_map> newest = loader.blockAttributes(kVersionedKey);
         expect(fatal(newest.has_value())) << "the plugin holds the name";
         expect(*newest == newestExpected) << "the newest version's map";
-        expect(eq(newest->at("resource").value_or(std::string_view{}), std::string_view("device")));
-        expect(eq(newest->at("family").value_or(std::string_view{}), std::string_view("versioned")));
-        expect(eq(newest->at("role").value_or(std::string_view{}), std::string_view("transceiver")));
 
         expect(loader.blockAttributes(kVersionedKey, 2U) == std::optional<gr::property_map>{newestExpected});
         expect(loader.blockAttributes(kVersionedKey, 1U) == std::optional<gr::property_map>{olderExpected});

@@ -94,13 +94,10 @@ inline std::string uriToCacheFilename(std::string_view uri) {
  * `exported_ports`. An exported entry whose direction is `INPUT` is an input and any other direction an output, as
  * the importer reads them. An entry whose inner port is a message port counts for neither: `registry` creates the
  * inner block with its default settings, and the port of that name states its kind. An entry that does not resolve
- * on such an instance counts as a stream port. A resource of `Unknown` or `None` has no role, and no block is created
- * for it.
+ * on such an instance counts as a stream port. The role is `block::roleFromPorts()` of the two port kinds, with
+ * `isNotation` for a definition that declares `plane/notation`.
  */
-[[nodiscard]] inline block::Role definitionRole(const property_map& definition, block::Resource resource, const BlockRegistry& registry) {
-    if (resource == block::Resource::Unknown || resource == block::Resource::None) {
-        return block::Role::Unknown;
-    }
+[[nodiscard]] inline std::optional<block::Label> definitionRole(const property_map& definition, bool isNotation, const BlockRegistry& registry) {
     const auto find = []<typename TValue>(const property_map* map, std::string_view key, std::type_identity<TValue>) -> const TValue* {
         if (map == nullptr) {
             return nullptr;
@@ -172,15 +169,15 @@ inline std::string uriToCacheFilename(std::string_view uri) {
             hasOutputs = hasOutputs || !isInput;
         }
     }
-    return block::roleFrom(resource, hasInputs, hasOutputs);
+    return block::roleFromPorts(hasInputs, hasOutputs, isNotation);
 }
 
 /**
- * @brief The attributes map a definition declares under `definition_metadata.attributes`, with the derived role.
+ * @brief The attributes map a definition declares under `definition_metadata.attributes`, with the role its ports read.
  *
  * The map is empty when the definition has no `attributes` key or when that key's value is not a map. A map value
- * reads as `block::attributesFromMap()` reads it, with the role of `definitionRole()`. A definition carries one
- * revision, so the map states `block::kDefaultVersion`. The loader adds one line to `rejected` for each key the
+ * reads as `block::attributesFromMap()` reads it, and the role is that of `definitionRole()`. A definition carries one
+ * revision, so the map states `block::kDefaultVersion`. The loader adds one line to `rejected` for each entry the
  * reader rejects, for an `attributes` value that is not a map and for a `version` other than `kDefaultVersion`.
  */
 [[nodiscard]] inline property_map definitionAttributes(const property_map& definition, const property_map& definitionMetadata, const BlockRegistry& registry, std::vector<std::string>& rejected) {
@@ -193,16 +190,56 @@ inline std::string uriToCacheFilename(std::string_view uri) {
         rejected.push_back(std::format("attributes: {} is not a map", declaredIt->second));
         return {};
     }
-    std::vector<std::string> rejectedKeys;
-    block::Attributes        attributes = block::attributesFromMap(*declared, rejectedKeys);
-    for (const std::string& line : rejectedKeys) {
+    std::vector<std::string> rejectedEntries;
+    block::AttributesRead    read = block::attributesFromMap(*declared, registry.vocabulary(), rejectedEntries);
+    for (const std::string& line : rejectedEntries) {
         rejected.push_back(std::format("attribute {}", line));
     }
-    if (attributes.version != block::kDefaultVersion) {
-        rejected.push_back(std::format("version: {} is not {}, the one revision a definition carries", attributes.version, block::kDefaultVersion));
-        attributes.version = block::kDefaultVersion;
+    if (read.version != block::kDefaultVersion) {
+        rejected.push_back(std::format("version: {} is not {}, the one revision a definition carries", read.version, block::kDefaultVersion));
+        read.version = block::kDefaultVersion;
     }
-    return block::attributesToMap(attributes, definitionRole(definition, attributes.resource, registry));
+    const std::optional<block::Label> role = definitionRole(definition, read.has(block::labels::plane::notation), registry);
+    read.readRole                          = role.has_value() ? std::string(role->word) : std::string{};
+    return block::attributesToMap(read);
+}
+
+/**
+ * @brief The words a definition brings under `definition_metadata.vocabulary`.
+ *
+ * The value is a list of maps, each with `label` (a `class/word`), `meaning` (a string) and `physical` (a bool, false
+ * when absent). The loader adds one line to `rejected` for a value that is not a list, an entry that is not a map and
+ * a `label` that is not a well-formed `class/word`, and skips each.
+ */
+[[nodiscard]] inline block::Vocabulary definitionVocabulary(const property_map& definitionMetadata, std::vector<std::string>& rejected) {
+    block::Vocabulary vocabulary;
+    const auto        declaredIt = definitionMetadata.find("vocabulary");
+    if (declaredIt == definitionMetadata.cend()) {
+        return vocabulary;
+    }
+    const auto* entries = declaredIt->second.get_if<Tensor<pmt::Value>>();
+    if (entries == nullptr) {
+        rejected.push_back(std::format("vocabulary: {} is not a list", declaredIt->second));
+        return vocabulary;
+    }
+    for (const pmt::Value& value : *entries) {
+        const auto* entry = value.get_if<property_map>();
+        if (entry == nullptr) {
+            rejected.push_back(std::format("vocabulary: {} is not a map of label, meaning and physical", value));
+            continue;
+        }
+        const auto             labelIt = entry->find("label");
+        const std::string_view text    = labelIt == entry->cend() ? std::string_view{} : labelIt->second.value_or(std::string_view{});
+        const auto             parsed  = block::parseLabel(text);
+        if (!parsed.has_value()) {
+            rejected.push_back(std::format("vocabulary: {}", parsed.error()));
+            continue;
+        }
+        const auto meaningIt  = entry->find("meaning");
+        const auto physicalIt = entry->find("physical");
+        vocabulary.add(parsed->first, parsed->second, meaningIt == entry->cend() ? std::string_view{} : meaningIt->second.value_or(std::string_view{}), physicalIt != entry->cend() && physicalIt->second.value_or(false));
+    }
+    return vocabulary;
 }
 
 struct YamlDefinitionsLoader {
@@ -210,6 +247,7 @@ struct YamlDefinitionsLoader {
         gr::property_map   definition;
         gr_plugin_metadata metadata;
         gr::property_map   attributes{}; ///< see definitionAttributes()
+        block::Vocabulary  vocabulary{}; ///< see definitionVocabulary()
     };
 
     static std::string assetsCacheDir() {
@@ -346,12 +384,13 @@ struct YamlDefinitionsLoader {
                 // a rejected attribute is reported on stderr, and the definition registers regardless
                 std::vector<std::string> rejected;
                 gr::property_map         attributes = definitionAttributes(*blockMap, meta, registry, rejected);
+                block::Vocabulary        vocabulary = definitionVocabulary(meta, rejected);
                 for (const std::string& line : rejected) {
                     std::println(stderr, "warning: block definition {} ({}): {}", metadata.block_type, blockUri, line);
                 }
 
                 auto blockType = metadata.block_type;
-                _definitionForBlockName.insert_or_assign(std::move(blockType), Definition{std::move(*blockMap), std::move(metadata), std::move(attributes)});
+                _definitionForBlockName.insert_or_assign(std::move(blockType), Definition{std::move(*blockMap), std::move(metadata), std::move(attributes), std::move(vocabulary)});
             }
         }
     }
@@ -371,6 +410,15 @@ struct YamlDefinitionsLoader {
     /// alone
     [[nodiscard]] std::optional<property_map> attributesForBlockName(std::string_view name, block::Version version) const { //
         return version == block::kDefaultVersion ? attributesForBlockName(name) : std::nullopt;
+    }
+
+    /// the words every definition brings
+    [[nodiscard]] block::Vocabulary vocabulary() const {
+        block::Vocabulary merged;
+        for (const auto& entry : _definitionForBlockName) {
+            merged.merge(entry.second.vocabulary);
+        }
+        return merged;
     }
 };
 
@@ -731,6 +779,18 @@ public:
         return _yamlRegistry.attributesForBlockName(name, version);
     }
 
+    /**
+     * @brief The words of every block the loader can reach, with their meanings.
+     *
+     * The registry's vocabulary and each YAML definition's words, merged: a word with several meanings keeps each,
+     * and a word physical in any source is physical.
+     */
+    [[nodiscard]] block::Vocabulary vocabulary() const {
+        block::Vocabulary merged = _registry->vocabulary();
+        merged.merge(_yamlRegistry.vocabulary());
+        return merged;
+    }
+
     /// the one version named, from the registry or from the plugin owning the name; the instance records the pin
     std::shared_ptr<gr::BlockModel> instantiatePinned(std::string_view name, block::Version version, const property_map& params = property_map{}) {
         if (auto result = _registry->create(name, version, params)) {
@@ -839,6 +899,13 @@ public:
     /// see the non-WASM PluginLoader::blockAttributes
     [[nodiscard]] std::optional<property_map> blockAttributes(std::string_view name, block::Version version) const { //
         return _registry->contains(name) ? _registry->attributes(name, version) : _yamlRegistry.attributesForBlockName(name, version);
+    }
+
+    /// see the non-WASM PluginLoader::vocabulary; the registry's words and each YAML definition's
+    [[nodiscard]] block::Vocabulary vocabulary() const {
+        block::Vocabulary merged = _registry->vocabulary();
+        merged.merge(_yamlRegistry.vocabulary());
+        return merged;
     }
 
     /// see the non-WASM PluginLoader::instantiatePinned
