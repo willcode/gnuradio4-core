@@ -77,6 +77,11 @@ if(GR_ENABLE_BLOCK_REGISTRY)
   endif()
 endif()
 
+# The block lookup is a public header, installed whether or not the registry is on. This consumer links the libraries
+# alone, without gnuradio-doctools, so it finds the header through core's include directory, the one the installation
+# copies.
+add_ut_test(qa_BlockLookupConsumer)
+
 # rungraph is tested as the program a caller runs, because its subject is the exit status and the output of a run. The
 # graph it is given names blocks core's own test plugins provide, so the cases that run one are built only where those
 # plugins are.

@@ -1,5 +1,5 @@
-#ifndef GNURADIO_TOOLS_BLOCKLOOKUP_HPP
-#define GNURADIO_TOOLS_BLOCKLOOKUP_HPP
+#ifndef GNURADIO_BLOCKLOOKUP_HPP
+#define GNURADIO_BLOCKLOOKUP_HPP
 
 // The lookups a tool makes through the plugin loader without running a block.
 
@@ -245,4 +245,4 @@ struct LabelText {
 
 } // namespace gr::tools
 
-#endif // GNURADIO_TOOLS_BLOCKLOOKUP_HPP
+#endif // GNURADIO_BLOCKLOOKUP_HPP

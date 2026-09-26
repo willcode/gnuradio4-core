@@ -30,13 +30,12 @@
 #include <utility>
 #include <vector>
 
+#include <gnuradio-4.0/BlockLookup.hpp>
 #include <gnuradio-4.0/BlockRegistry.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
 #include <gnuradio-4.0/Runtime.hpp>
 #include <gnuradio-4.0/YamlPmt.hpp>
 #include <gnuradio-4.0/formatter/ValueFormatter.hpp>
-
-#include "BlockLookup.hpp"
 
 namespace {
 

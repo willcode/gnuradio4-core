@@ -24,11 +24,10 @@
 #include <tuple>
 
 #include <gnuradio-4.0/Block.hpp>
+#include <gnuradio-4.0/BlockLookup.hpp>
 #include <gnuradio-4.0/BlockRegistry.hpp>
 #include <gnuradio-4.0/Graph_yaml_importer.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
-
-#include "BlockLookup.hpp"
 #endif
 
 /**

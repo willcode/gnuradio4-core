@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include <gnuradio-4.0/BlockLookup.hpp>
 #include <gnuradio-4.0/BlockModel.hpp>
 #include <gnuradio-4.0/BlockRegistry.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
@@ -22,7 +23,6 @@
 #include <gnuradio-4.0/config.hpp>
 #include <gnuradio-4.0/meta/formatter.hpp>
 
-#include "BlockLookup.hpp"
 #include "DocWriter.hpp"
 #include "GraphDoc.hpp"
 

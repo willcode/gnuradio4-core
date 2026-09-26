@@ -13,7 +13,7 @@
 #include "GraphDoc.hpp"
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
-#include "BlockLookup.hpp"
+#include <gnuradio-4.0/BlockLookup.hpp>
 #endif
 
 namespace {
@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
     }
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
-    const std::vector<Directory> directories = searchDirectories(pluginDirectories, GR_TOOLS_INSTALLED_PLUGIN_DIRECTORY);
+    const std::vector<Directory> directories = searchDirectories(pluginDirectories, gr::installedPluginDirectory());
     std::vector<std::string>     paths;
     bool                         searchable = true;
     for (const Directory& directory : directories) {
