@@ -1,19 +1,23 @@
 // rungraph - load a graph file, run it, and report what the run was asked to report.
 //
-// No block, setting or connection is named in this file: the graph file names the blocks, the plugin directories
-// supply them, and the framework's own loader builds the graph, so a chain that changes needs no program rebuilt.
+// No block, setting or connection is named in this file. The graph file names the blocks, the plugin directories supply
+// them through a loader of the program's own, gr::RuntimeGraph loads the graph and gr::Runtime runs it. A chain that
+// changes needs no program rebuilt.
 
 #include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
-#include <exception>
+#include <expected>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <print>
@@ -23,18 +27,16 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 #include <gnuradio-4.0/BlockRegistry.hpp>
-#include <gnuradio-4.0/Graph.hpp>
-#include <gnuradio-4.0/Graph_yaml_importer.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
-#include <gnuradio-4.0/Scheduler.hpp>
+#include <gnuradio-4.0/Runtime.hpp>
 #include <gnuradio-4.0/YamlPmt.hpp>
 #include <gnuradio-4.0/formatter/ValueFormatter.hpp>
+
+#include "BlockLookup.hpp"
 
 namespace {
 
@@ -55,25 +57,35 @@ Usage: rungraph --graph <file> [options]
 
 The blocks come from the directories named by --plugin-dir, from GNURADIO4_PLUGIN_DIRECTORIES,
 the colon-separated list the framework's own plugin loader reads, and from the plugin directory
-of this installation, which is always searched. A directory named twice is searched once.
+of this installation, which is always searched. A directory named twice is searched once. A block
+type two plugins supply comes from the one searched first.
 
 A settings map holds what the last refresh put there, so the settings --show prints are read
 after the run has ended and the block has been asked to refresh them: a counter a block keeps
 as a readable member is then current as of the last sample it processed.
 
+--show and the <block> of --set name a block by the unique_name the graph file gives it, or by its
+name when no other block carries that name.
+
 A bare key of --set names a setting of the scheduler, and a key of the form <block>.<key> names a
-setting of the block --show matches by that name. The split is at the last dot before the '=', so
+setting of that block. The split is at the last dot before the '=', so
 a block name may hold a dot and a setting key never does. rungraph reads the value the way a graph
 file's parameter value is read, so a type tag applies: -s timeout_ms=50, -s
 'shift.frequency_shift=!!float32 -100000'. One --set carries one setting, and a value that holds a
 second key is refused. The last --set of a key wins.
 
-SIGINT and SIGTERM stop the graph as a --seconds bound does.
+SIGINT and SIGTERM stop the graph as a --seconds bound does. The first error a block or the
+scheduler reports stops it too.
 
-Exit status is 0 when the run stopped cleanly, 1 when the graph could not be read, loaded or run
-and when a --set or --show names a block or a block setting the graph does not hold, and 2 when
-the command line could not be used, a scheduler setting the scheduler does not declare included.
+Exit status is 0 when the run stopped cleanly, 1 when a plugin directory could not be searched,
+when the graph could not be read, loaded or run, when a block or the scheduler reported an error,
+and when a --set or --show names a block or a block setting the graph does not hold, and 2 when the
+command line could not be used, a scheduler setting the scheduler does not declare or refuses
+included.
 )";
+
+// how often the wait for the end of the run looks at the signal flag, the bound and the errors the graph reports
+constexpr std::chrono::milliseconds kPollInterval{20};
 
 std::atomic<bool> gStopRequested{false};
 
@@ -196,76 +208,74 @@ struct Options {
     return text.str();
 }
 
-// where the blocks are looked for, in the order the directories are searched
-[[nodiscard]] std::vector<std::string> searchDirectories(const std::vector<std::string>& fromCommandLine) {
-    std::vector<std::string> directories;
-    auto                     add = [&directories](std::string_view directory) {
-        if (!directory.empty() && std::ranges::find(directories, directory) == directories.end()) {
-            directories.emplace_back(directory);
-        }
-    };
-    for (const std::string& directory : fromCommandLine) {
-        add(directory);
+// Searches the directories --plugin-dir names, the environment's and the installation's, in that order, with `loader`,
+// and returns what each held. A directory the search could not read is reported, and the answer is then nothing.
+[[nodiscard]] std::optional<std::vector<gr::RuntimePluginDirectory>> loadPlugins(gr::PluginLoader& loader, const std::vector<std::string>& fromCommandLine) {
+    std::vector<std::string> paths;
+    for (const gr::tools::Directory& directory : gr::tools::searchDirectories(fromCommandLine, gr::installedPluginDirectory())) {
+        paths.push_back(directory.path);
     }
-    if (const char* environment = std::getenv("GNURADIO4_PLUGIN_DIRECTORIES"); environment != nullptr) {
-        const std::string_view list(environment);
-        for (std::size_t start = 0UZ; start < list.size();) {
-            const std::size_t separator = list.find(':', start);
-            const std::size_t end       = separator == std::string_view::npos ? list.size() : separator;
-            add(list.substr(start, end - start));
-            start = end + 1UZ;
+    std::vector<gr::RuntimePluginDirectory> loaded = gr::RuntimeGraph::loadPlugins(loader, paths);
+    bool                                    read   = true;
+    for (const gr::RuntimePluginDirectory& directory : loaded) {
+        if (!directory.error.empty()) {
+            std::println(stderr, "{}: {} could not be searched: {}", kProgram, directory.directory, directory.error);
+            read = false;
         }
     }
-    add(GR_TOOLS_INSTALLED_PLUGIN_DIRECTORY);
-    return directories;
+    if (!read) {
+        return std::nullopt;
+    }
+    return loaded;
 }
 
-// what the directories held: the files that loaded, the files that did not, and the block keys they brought
-void reportPlugins(const gr::PluginLoader& loader, const std::vector<std::string>& directories, const std::vector<std::string>& keysBefore) {
-    for (const std::string& directory : directories) {
-        std::println(stderr, "{}: searching {}", kProgram, directory);
+// what the directories hold: the files that loaded, the files that did not, and the block keys they brought
+void reportPlugins(const std::vector<gr::RuntimePluginDirectory>& directories) {
+    std::vector<std::string> brought;
+    for (const gr::RuntimePluginDirectory& directory : directories) {
+        std::println(stderr, "{}: searching {}", kProgram, directory.directory);
+        for (const gr::RuntimePluginDirectory::BlockLibrary& library : directory.blockLibraries) {
+            std::println(stderr, "{}: loaded {} ({} block registration(s))", kProgram, library.file, library.nBlockRegistrations);
+        }
+        for (const auto& [file, reason] : directory.failed) {
+            std::println(stderr, "{}: {} did not load: {}", kProgram, file, reason);
+        }
+        for (const std::string& file : directory.skipped) {
+            std::println(stderr, "{}: {} was not opened; its name only reads as a shared object", kProgram, file);
+        }
+        std::ranges::copy(directory.blockTypes, std::back_inserter(brought));
     }
-    for (const gr::PluginLoader::BlockLibrary& library : loader.blockLibraries()) {
-        std::println(stderr, "{}: loaded {} ({} block registration(s))", kProgram, library.file, library.nBlockRegistrations);
-    }
-    for (const auto& [file, reason] : loader.failedPlugins()) {
-        std::println(stderr, "{}: {} did not load: {}", kProgram, file, reason);
-    }
-    for (const std::string& file : loader.skippedFiles()) {
-        std::println(stderr, "{}: {} was not opened; its name only reads as a shared object", kProgram, file);
-    }
-    std::vector<std::string> available = loader.availableBlocks();
-    std::ranges::sort(available);
-    std::vector<std::string> added;
-    std::ranges::set_difference(available, keysBefore, std::back_inserter(added));
-    std::println(stderr, "{}: the load brought {} block key(s):", kProgram, added.size());
-    for (const std::string& key : added) {
+    std::ranges::sort(brought);
+    brought.erase(std::ranges::unique(brought).begin(), brought.end());
+    std::println(stderr, "{}: the load brought {} block key(s):", kProgram, brought.size());
+    for (const std::string& key : brought) {
         std::println(stderr, "{}:   {}", kProgram, key);
     }
 }
 
-// One block's readable settings, one `name: key = value` line each, in key order.
+// One block's readable settings, one `label: key = value` line each, in key order, where `label` is the name --show
+// gave.
 //
 // A settings map holds what the last refresh put there, and the framework refreshes one when a settings change is
-// applied, so a block whose readable members move while it runs reports what it started with until it is asked. The
-// run is over by the time this is called, which is what makes such a member readable at all.
-void showSettings(gr::BlockModel& block) {
-    block.settings().updateActiveParameters();
+// applied. A block whose readable members move while it runs reports what it started with until it is asked. The run
+// is over by the time this is called, and a member is then read as the block left it.
+void showSettings(std::string_view label, gr::BlockHandle& block) {
+    block.updateActiveParameters();
     std::vector<std::pair<std::string, std::string>> lines;
-    for (const auto& [key, value] : block.settings().get()) {
+    for (const auto& [key, value] : block.get()) {
         lines.emplace_back(std::string(key.begin(), key.end()), std::format("{}", value));
     }
     std::ranges::sort(lines);
     for (const auto& [key, value] : lines) {
-        std::println("{}: {} = {}", block.name(), key, value);
+        std::println("{}: {} = {}", label, key, value);
     }
     std::fflush(stdout);
 }
 
 // the scheduler's settings, and the settings of each block named, which the graph file is read with
 struct StagedSettings {
-    gr::property_map  scheduler;
-    gr::BlockSettings blocks;
+    gr::property_map                                     scheduler;
+    std::map<std::string, gr::property_map, std::less<>> blocks;
 };
 
 // The settings the --set arguments stand for, or nothing when one of the values cannot be read or stands for more
@@ -296,49 +306,94 @@ struct StagedSettings {
     return staged;
 }
 
-// The reason a refused setting gives. gr::exception::what() appends the source location of the throw, a path on the
-// machine that built the library, and the reader is given the message alone.
-[[nodiscard]] std::string_view reasonOf(const std::exception& error) {
-    if (const auto* refusal = dynamic_cast<const gr::exception*>(&error); refusal != nullptr) {
-        return refusal->message;
-    }
-    return error.what();
-}
-
-// Applies the settings to the scheduler, before the graph reaches it.
+// Whether the scheduler takes these settings, asked of one built over an empty graph for the question alone.
 //
-// The name is checked against the settings the scheduler declares first: a key outside that set is filed as meta
-// information by the settings map itself, and the run would then proceed as if the caller had asked for nothing.
-[[nodiscard]] bool applySchedulerSettings(gr::scheduler::Simple<>& scheduler, const gr::property_map& settings) {
-    const std::set<std::string>& declared = scheduler.settings().writableMembers();
-    for (const auto& [key, value] : settings) {
-        if (!declared.contains(std::string(key.begin(), key.end()))) {
-            std::println(stderr, "{}: the scheduler declares no setting named '{}'", kProgram, std::string_view(key.data(), key.size()));
-            return false;
-        }
-    }
-    try {
-        if (const gr::property_map refused = scheduler.settings().set(settings); !refused.empty()) {
-            std::println(stderr, "{}: the scheduler refused {}", kProgram, refused);
-            return false;
-        }
-    } catch (const std::exception& error) {
-        std::println(stderr, "{}: a scheduler setting could not be applied: {}", kProgram, reasonOf(error));
+// A setting the scheduler will not take is a command line problem, and the answer is wanted before the graph file is
+// read. Each name is checked against the settings the scheduler declares, and its value is then staged, which converts
+// it to its setting's type without applying it.
+[[nodiscard]] bool schedulerTakesSettings(const std::shared_ptr<gr::PluginLoader>& loader, const gr::property_map& settings) {
+    std::expected<gr::Runtime, gr::RuntimeError> probe = gr::Runtime::create(gr::RuntimeGraph{loader});
+    if (!probe.has_value()) {
+        std::println(stderr, "{}: the scheduler could not be built: {}", kProgram, probe.error().message);
         return false;
     }
-    std::ignore = scheduler.settings().activateContext();
-    std::ignore = scheduler.settings().applyStagedParameters();
+    gr::BlockHandle             scheduler = probe->scheduler();
+    const std::set<std::string> declared  = scheduler.writableMembers();
+    for (const auto& [key, value] : settings) {
+        const std::string name(key.begin(), key.end());
+        if (!declared.contains(name)) {
+            std::println(stderr, "{}: the scheduler declares no setting named '{}'", kProgram, name);
+            return false;
+        }
+        if (const std::expected<gr::property_map, gr::RuntimeError> staged = scheduler.setStaged(gr::property_map{{key, value}}); !staged.has_value()) {
+            std::println(stderr, "{}: the scheduler setting '{}' could not be applied: {}", kProgram, name, staged.error().message);
+            return false;
+        }
+    }
     return true;
 }
 
-// Whether a scheduler takes these settings, asked of one built for the question alone.
-//
-// The scheduler that runs the graph holds the graph's blocks and has to be destroyed before the libraries those blocks
-// come from are unloaded, so it is built after the plugin loader and cannot answer this. A setting the scheduler will
-// not take is a command line problem, and the answer is wanted before the graph file is read.
-[[nodiscard]] bool schedulerTakesSettings(const gr::property_map& settings) {
-    gr::scheduler::Simple<> probe;
-    return applySchedulerSettings(probe, settings);
+// the names of the scheduler settings --set gave, quoted and joined for a message
+[[nodiscard]] std::string settingNames(const gr::property_map& settings) {
+    std::string names;
+    for (const auto& [key, value] : settings) {
+        names += std::format("{}'{}'", names.empty() ? "" : ", ", std::string_view(key.data(), key.size()));
+    }
+    return names;
+}
+
+// The blocks --show names, or nothing when one of them is not in the graph; each missing name is reported. A handle
+// keeps its block when the graph moves into the scheduler.
+[[nodiscard]] std::optional<std::vector<gr::BlockHandle>> shownBlocks(const gr::RuntimeGraph& graph, const std::vector<std::string>& names) {
+    std::vector<gr::BlockHandle> shown;
+    bool                         allFound = true;
+    for (const std::string& wanted : names) {
+        std::expected<gr::BlockHandle, gr::RuntimeError> found = graph.find(wanted, gr::RuntimeGraph::Recursive::No);
+        if (found.has_value()) {
+            shown.push_back(std::move(*found));
+            continue;
+        }
+        allFound                 = false;
+        const bool nameIsInGraph = std::ranges::any_of(graph.blocks(), [&wanted](const gr::BlockHandle& block) { return block.name() == wanted; });
+        if (nameIsInGraph) {
+            std::println(stderr, "{}: {}", kProgram, found.error().message);
+        } else {
+            std::println(stderr, "{}: the graph holds no block named {}", kProgram, wanted);
+        }
+    }
+    if (!allFound) {
+        return std::nullopt;
+    }
+    return shown;
+}
+
+// the errors a run reported: the first as the output gives it, and how many there were
+struct ReportedErrors {
+    std::size_t count = 0UZ;
+    std::string first; // a block's error in the words of the run it failed, or the scheduler's own message
+};
+
+// Takes the errors the graph has reported since the last call into `errors` and prints the first of the run, one line
+// without its source location. The later ones follow from the stop the first causes, and they are counted alone.
+void takeReportedErrors(gr::Runtime& runtime, ReportedErrors& errors) {
+    const std::string scheduler(runtime.scheduler().uniqueName());
+    for (std::vector<gr::RuntimeEvent> events = runtime.pollEvents(); !events.empty(); events = runtime.pollEvents()) {
+        for (const gr::RuntimeEvent& event : events) {
+            if (!event.isError) {
+                continue;
+            }
+            if (errors.count++ > 0UZ) {
+                continue;
+            }
+            if (event.source == scheduler) {
+                std::println(stderr, "{}: the scheduler reports an error on '{}': {}", kProgram, event.endpoint, event.text);
+                errors.first = event.text;
+            } else {
+                errors.first = std::format("block '{}' reports an error on '{}': {}", event.source, event.endpoint, event.text);
+                std::println(stderr, "{}: {}", kProgram, errors.first);
+            }
+        }
+    }
 }
 
 } // namespace
@@ -361,10 +416,27 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    const std::optional<StagedSettings> staged = stagedSettingsOf(options.settings);
+    if (!staged.has_value()) {
+        std::print(stderr, "{}", kUsage);
+        return 2;
+    }
+
+    // The program's loader searches its directories before anything builds a graph. The first graph builds the
+    // process's loader over GNURADIO4_PLUGIN_DIRECTORIES, and a block library that loader opened first registers
+    // nothing when this loader opens it again.
+    const std::shared_ptr<gr::PluginLoader>                      loader = std::make_shared<gr::PluginLoader>(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), std::span<const std::string>{});
+    const std::optional<std::vector<gr::RuntimePluginDirectory>> loaded = loadPlugins(*loader, options.pluginDirectories);
+    if (!loaded.has_value()) {
+        return 1;
+    }
+    if (options.verbose) {
+        reportPlugins(*loaded);
+    }
+
     // the scheduler's settings are settled before the graph is read, so that one it will not take is reported as the
     // command line problem it is rather than after a file has been loaded
-    const std::optional<StagedSettings> staged = stagedSettingsOf(options.settings);
-    if (!staged.has_value() || !schedulerTakesSettings(staged->scheduler)) {
+    if (!schedulerTakesSettings(loader, staged->scheduler)) {
         std::print(stderr, "{}", kUsage);
         return 2;
     }
@@ -374,88 +446,66 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::vector<std::string> directories = searchDirectories(options.pluginDirectories);
-    std::vector<std::string>       keysBefore  = gr::globalBlockRegistry().keys();
-    std::ranges::sort(keysBefore);
-    gr::PluginLoader loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), directories);
-    if (options.verbose) {
-        reportPlugins(loader, directories, keysBefore);
-    }
-
     // each block reads its --set values where it reads the graph file's own, so they are the values its start() sees;
-    // the loader refuses a graph file for a key nothing supplies, a setting a block does not declare, a value of the
-    // wrong type or a port that is not there, and a --set for a block the file does not hold, and its message is
-    // printed as it arrives
-    std::optional<gr::meta::indirect<gr::Graph>> graph;
-    try {
-        graph.emplace(gr::loadGrc(loader, *document, staged->blocks));
-    } catch (const std::exception& error) {
-        std::println(stderr, "{}: {} did not load: {}", kProgram, options.graph, reasonOf(error));
+    // the reader refuses a graph file for a key nothing supplies, a setting a block does not declare, a value of the
+    // wrong type or a port that is not there, and a --set for a block the file does not hold
+    std::expected<gr::RuntimeGraph, gr::RuntimeError> graph = gr::RuntimeGraph::fromYaml(loader, *document, staged->blocks);
+    if (!graph.has_value()) {
+        std::println(stderr, "{}: {} did not load: {}", kProgram, options.graph, graph.error().message);
         return 1;
     }
 
-    // the blocks --show names are found before the graph is handed to the scheduler, because the handles stay valid
-    // over the move and the graph itself does not
-    std::vector<std::shared_ptr<gr::BlockModel>> shown;
-    bool                                         allFound = true;
-    for (const std::string& wanted : options.show) {
-        std::shared_ptr<gr::BlockModel> found;
-        gr::graph::forEachBlock<gr::block::Category::NormalBlock>(**graph, [&found, &wanted](const std::shared_ptr<gr::BlockModel>& block) {
-            if (block->name() == wanted) {
-                found = block;
-            }
-        });
-        if (found == nullptr) {
-            std::println(stderr, "{}: the graph holds no block named {}", kProgram, wanted);
-            allFound = false;
-            continue;
-        }
-        shown.push_back(std::move(found));
-    }
-    if (!allFound) {
+    std::optional<std::vector<gr::BlockHandle>> shown = shownBlocks(*graph, options.show);
+    if (!shown.has_value()) {
         return 1;
     }
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
-    // the scheduler is built after the loader, so that it and the blocks it holds are destroyed while the libraries
-    // they came from are still open
-    gr::scheduler::Simple<> scheduler;
-    if (!applySchedulerSettings(scheduler, staged->scheduler)) {
+    std::expected<gr::Runtime, gr::RuntimeError> runtime = gr::Runtime::create(std::move(*graph), gr::Runtime::kDefaultScheduler, staged->scheduler);
+    if (!runtime.has_value()) {
+        if (staged->scheduler.empty()) {
+            std::println(stderr, "{}: the scheduler could not be built: {}", kProgram, runtime.error().message);
+        } else {
+            std::println(stderr, "{}: the scheduler refused the settings {}: {}", kProgram, settingNames(staged->scheduler), runtime.error().message);
+        }
         return 1;
     }
-    if (!scheduler.exchange(std::move(**graph)).has_value()) {
-        std::println(stderr, "{}: the scheduler refused the graph", kProgram);
+    if (const std::optional<gr::RuntimeError> refused = runtime->start(); refused.has_value()) {
+        std::println(stderr, "{}: the graph did not start: {}", kProgram, refused->message);
         return 1;
     }
 
-    std::atomic<bool> finished{false};
-    std::atomic<bool> failed{false};
-    std::thread       runner([&scheduler, &finished, &failed] {
-        if (const auto result = scheduler.runAndWait(); !result.has_value()) {
-            std::println(stderr, "{}: the graph stopped: {}", kProgram, result.error().message);
-            failed.store(true, std::memory_order_relaxed);
-        }
-        finished.store(true, std::memory_order_relaxed);
-    });
-
-    const auto start = std::chrono::steady_clock::now();
-    while (!finished.load(std::memory_order_relaxed) && !gStopRequested.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        if (options.seconds > 0.0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= options.seconds) {
-            break;
-        }
+    const auto     start        = std::chrono::steady_clock::now();
+    const auto     boundReached = [&options, start] { return options.seconds > 0.0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= options.seconds; };
+    ReportedErrors errors;
+    bool           endedItself = false;
+    while (!endedItself && errors.count == 0UZ && !gStopRequested.load(std::memory_order_relaxed) && !boundReached()) {
+        endedItself = runtime->waitFor(kPollInterval);
+        takeReportedErrors(*runtime, errors);
     }
-    const bool endedItself = finished.load(std::memory_order_relaxed);
+    const bool stoppedOnError = errors.count > 0UZ && !endedItself;
     if (!endedItself) {
-        scheduler.requestStop();
+        // the stop is requested once, and each later call waits for that same stop
+        while (!runtime->stopFor(kPollInterval)) {
+            takeReportedErrors(*runtime, errors);
+        }
     }
-    runner.join();
+    runtime->wait();
+    takeReportedErrors(*runtime, errors);
+    if (errors.count > 1UZ) {
+        std::println(stderr, "{}: {} more error(s) followed the first", kProgram, errors.count - 1UZ);
+    }
 
-    for (const std::shared_ptr<gr::BlockModel>& block : shown) {
-        showSettings(*block);
+    // a run the first error failed returns that error as its result, and the line is printed once
+    const std::expected<void, gr::RuntimeError> result = runtime->result();
+    if (!result.has_value() && result.error().message != errors.first) {
+        std::println(stderr, "{}: the graph stopped: {}", kProgram, result.error().message);
     }
-    std::println(stderr, "{}: {}", kProgram, endedItself ? "the graph ended on its own" : "the graph was stopped before it ended");
-    return failed.load(std::memory_order_relaxed) ? 1 : 0;
+    for (std::size_t i = 0UZ; i < shown->size(); ++i) {
+        showSettings(options.show[i], (*shown)[i]);
+    }
+    std::println(stderr, "{}: {}", kProgram, endedItself ? "the graph ended on its own" : (stoppedOnError ? "the graph was stopped on the first error reported" : "the graph was stopped before it ended"));
+    return result.has_value() && errors.count == 0UZ ? 0 : 1;
 }

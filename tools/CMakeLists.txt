@@ -36,9 +36,6 @@ if(GR_ENABLE_BLOCK_REGISTRY)
   if(TARGET gnuradio-plugin)
     target_link_libraries(rungraph PRIVATE gnuradio-plugin)
   endif()
-  # where this installation puts its plugins, which the tool searches whatever the caller and the environment name
-  target_compile_definitions(
-    rungraph PRIVATE GR_TOOLS_INSTALLED_PLUGIN_DIRECTORY="${CMAKE_INSTALL_FULL_LIBDIR}/gnuradio-4/plugins")
   install(TARGETS rungraph RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 

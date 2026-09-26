@@ -2,9 +2,13 @@
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #ifndef _WIN32
@@ -16,9 +20,11 @@
  *
  * The tool's contract is its exit status and what it prints, and neither is visible from inside the process, so
  * every case here runs the built executable: a graph that would not end by itself, bounded by --seconds; the
- * settings --show prints when the run is over; a scheduler setting and a block setting taken and each refused; a
- * recipe composite's exported parameter taken and its interior's setting refused; a command line that cannot be used;
- * and a graph file that cannot be read.
+ * settings --show prints when the run is over; the directories and block keys --verbose reports; a scheduler setting
+ * and a block setting taken and each refused; a recipe composite's exported parameter taken and its interior's setting
+ * refused; a command line that cannot be used; a graph file that cannot be read; the plugin a block type comes from
+ * when two directories supply it; a plugin directory that cannot be read; and the errors a block and the scheduler
+ * report while the graph runs.
  */
 namespace qa_rungraph {
 
@@ -35,9 +41,9 @@ struct Result {
     std::string output; // standard output and standard error together, in the order the run wrote them
 };
 
-// runs the tool with `arguments` and collects what it wrote and the status it exited with
-[[nodiscard]] Result run(const std::vector<std::string>& arguments) {
-    std::string command = std::format("\"{}\"", GR_TOOLS_RUNGRAPH);
+// runs `program` with `arguments` and collects what it wrote and the status it exited with
+[[nodiscard]] Result runProgram(std::string_view program, const std::vector<std::string>& arguments) {
+    std::string command = std::format("\"{}\"", program);
     for (const std::string& argument : arguments) {
         command += std::format(" \"{}\"", argument);
     }
@@ -60,6 +66,40 @@ struct Result {
 #endif
     return result;
 }
+
+// runs rungraph with `arguments`
+[[nodiscard]] Result run(const std::vector<std::string>& arguments) { return runProgram(GR_TOOLS_RUNGRAPH, arguments); }
+
+// how often `text` holds `part`
+[[nodiscard]] std::size_t occurrences(std::string_view text, std::string_view part) {
+    std::size_t count = 0UZ;
+    for (std::size_t at = text.find(part); at != std::string_view::npos; at = text.find(part, at + part.size())) {
+        ++count;
+    }
+    return count;
+}
+
+// sets GNURADIO4_PLUGIN_DIRECTORIES for the programs a case runs, and puts back the value it found
+class PluginDirectoriesVariable {
+    std::optional<std::string> _found;
+
+public:
+    explicit PluginDirectoriesVariable(const std::string& value) {
+        if (const char* found = std::getenv("GNURADIO4_PLUGIN_DIRECTORIES"); found != nullptr) {
+            _found = found;
+        }
+        ::setenv("GNURADIO4_PLUGIN_DIRECTORIES", value.c_str(), 1);
+    }
+    ~PluginDirectoriesVariable() {
+        if (_found.has_value()) {
+            ::setenv("GNURADIO4_PLUGIN_DIRECTORIES", _found->c_str(), 1);
+        } else {
+            ::unsetenv("GNURADIO4_PLUGIN_DIRECTORIES");
+        }
+    }
+    PluginDirectoriesVariable(const PluginDirectoriesVariable&)            = delete;
+    PluginDirectoriesVariable& operator=(const PluginDirectoriesVariable&) = delete;
+};
 
 #ifdef GR_TOOLS_CORE_TEST_PLUGINS
 constexpr std::string_view kGraphFile{GR_TOOLS_TEST_ASSETS "/source_to_sink.yaml"};
@@ -90,6 +130,17 @@ constexpr std::string_view kRecipeStartFile{GR_TOOLS_TEST_ASSETS "/recipe_start_
 
 // the same, over the composite whose interior block opens the resource the composite's parameter names
 [[nodiscard]] std::vector<std::string> recipeStartRun() { return {"--graph", std::string(kRecipeStartFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--plugin-dir", std::string(kRecipeDirectory), "--seconds", "5"}; }
+
+constexpr std::string_view kOriginFile{GR_TOOLS_TEST_ASSETS "/origin.yaml"};
+constexpr std::string_view kFaultFile{GR_TOOLS_TEST_ASSETS "/fault.yaml"};
+constexpr std::string_view kSharedNameFile{GR_TOOLS_TEST_ASSETS "/shared_name.yaml"};
+
+// the graph of the block that reports one error, over the fixture plugin; the bound is far beyond the report, and a
+// run that reaches it was not stopped by the error
+[[nodiscard]] std::vector<std::string> faultRun() { return {"--graph", std::string(kFaultFile), "--plugin-dir", GR_TOOLS_FIXTURE_FIRST, "--seconds", "10"}; }
+
+// the graph of two sources that share a name, each with a unique_name
+[[nodiscard]] std::vector<std::string> sharedNameRun() { return {"--graph", std::string(kSharedNameFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--seconds", "5"}; }
 #endif
 
 } // namespace qa_rungraph
@@ -148,6 +199,17 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         const Result bounded = run(boundedRun());
         expect(eq(bounded.exitCode, 0)) << bounded.output;
         expect(bounded.output.contains("the graph was stopped before it ended")) << bounded.output;
+    };
+
+    "--verbose names each directory searched, the files that did not load and the block keys the load brought"_test = [] {
+        std::vector<std::string> arguments = boundedRun();
+        arguments.emplace_back("--verbose");
+
+        const Result verbose = run(arguments);
+        expect(eq(verbose.exitCode, 0)) << verbose.output;
+        expect(verbose.output.contains(std::format("rungraph: searching {}\n", GR_TOOLS_CORE_TEST_PLUGINS))) << verbose.output;
+        expect(verbose.output.contains("libbad_plugin.so did not load: ")) << "the plugin that fails is reported with its reason" << verbose.output;
+        expect(verbose.output.contains("rungraph:   good::fixed_source<float32>\n")) << "a key a plugin of the directory brought is listed" << verbose.output;
     };
 
     "--show prints the settings of the block it names, and of no other"_test = [] {
@@ -313,7 +375,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
     "a value that does not convert is refused by its reason alone, without the source location of the refusal"_test = [] {
         const Result schedulerRefused = run({"--graph", "unread.yaml", "--set", "timeout_ms=many"});
         expect(eq(schedulerRefused.exitCode, 2)) << schedulerRefused.output;
-        expect(schedulerRefused.output.contains("a scheduler setting could not be applied")) << schedulerRefused.output;
+        expect(schedulerRefused.output.contains("the scheduler setting 'timeout_ms' could not be applied: ")) << "the refusal does not name the setting" << schedulerRefused.output;
         expect(!schedulerRefused.output.contains(".cpp:") && !schedulerRefused.output.contains(".hpp:")) << "a scheduler setting's refusal names no file and line of the library" << schedulerRefused.output;
 
         std::vector<std::string> member = settingsChainRun();
@@ -343,6 +405,88 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         const Result refused = run(arguments);
         expect(eq(refused.exitCode, 1)) << refused.output;
         expect(refused.output.contains("no block named no_such_block")) << refused.output;
+    };
+
+    "--show and --set take the unique_name the graph file gives a block, and refuse a name two blocks share"_test = [] {
+        std::vector<std::string> arguments = sharedNameRun();
+        arguments.insert(arguments.end(), {"--set", "left.event_count=1000", "--set", "right.event_count=2000", "--show", "left", "--show", "right"});
+
+        const Result byUniqueName = run(arguments);
+        expect(eq(byUniqueName.exitCode, 0)) << byUniqueName.output;
+        expect(byUniqueName.output.contains("left: event_count = 1000\n")) << byUniqueName.output;
+        expect(byUniqueName.output.contains("right: event_count = 2000\n")) << "--set and --show reached different blocks under the two unique names" << byUniqueName.output;
+
+        std::vector<std::string> shown = sharedNameRun();
+        shown.insert(shown.end(), {"--show", "twin"});
+        const Result sharedShow = run(shown);
+        expect(eq(sharedShow.exitCode, 1)) << sharedShow.output;
+        expect(sharedShow.output.contains("'twin' is the name of 2 blocks")) << sharedShow.output;
+
+        std::vector<std::string> set = sharedNameRun();
+        set.insert(set.end(), {"--set", "twin.event_count=1000"});
+        const Result sharedSet = run(set);
+        expect(eq(sharedSet.exitCode, 1)) << sharedSet.output;
+        expect(sharedSet.output.contains("'twin', which is the name of 2 blocks")) << sharedSet.output;
+    };
+
+    "a block type two directories supply comes from the command line's, under rungraph and under grinfo"_test = [] {
+        const PluginDirectoriesVariable environment(GR_TOOLS_FIXTURE_SECOND);
+
+        const Result fromOption = run({"--graph", std::string(kOriginFile), "--plugin-dir", GR_TOOLS_FIXTURE_FIRST, "--show", "origin"});
+        expect(eq(fromOption.exitCode, 0)) << fromOption.output;
+        expect(fromOption.output.contains(R"(origin: origin = "first")")) << "rungraph took the environment's plugin" << fromOption.output;
+
+        const Result fromEnvironment = run({"--graph", std::string(kOriginFile), "--show", "origin"});
+        expect(eq(fromEnvironment.exitCode, 0)) << fromEnvironment.output;
+        expect(fromEnvironment.output.contains(R"(origin: origin = "second")")) << "the environment's plugin is not the one the variable alone names" << fromEnvironment.output;
+
+#ifdef GR_TOOLS_GRINFO
+        const Result described = runProgram(GR_TOOLS_GRINFO, {"block", "test::origin", "--plugin-dir", GR_TOOLS_FIXTURE_FIRST});
+        expect(eq(described.exitCode, 0)) << described.output;
+        expect(described.output.contains("librungraph_fixture_first.so") && described.output.contains(R"("first")")) << "grinfo does not name the command line's plugin" << described.output;
+        expect(!described.output.contains("librungraph_fixture_second.so") && !described.output.contains(R"("second")")) << "grinfo names the environment's plugin" << described.output;
+#endif
+    };
+
+    "a plugin directory that cannot be searched ends the run before the graph is loaded"_test = [] {
+        namespace fs              = std::filesystem;
+        const fs::path unreadable = fs::path(GR_TOOLS_TEST_SCRATCH) / "unreadable_plugin_directory";
+        std::ignore               = fs::create_directory(unreadable);
+        fs::permissions(unreadable, fs::perms::none);
+
+        const Result refused = run({"--graph", std::string(kGraphFile), "--plugin-dir", unreadable.string(), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS});
+
+        std::error_code ignored;
+        fs::permissions(unreadable, fs::perms::owner_all, ignored);
+        fs::remove(unreadable, ignored);
+
+        expect(eq(refused.exitCode, 1)) << refused.output;
+        expect(refused.output.contains(std::format("rungraph: {} could not be searched: ", unreadable.string()))) << refused.output;
+        expect(!refused.output.contains("the graph")) << "the run went on past the directory" << refused.output;
+    };
+
+    "the first error a block reports ends the run, once, and without the source location"_test = [] {
+        const Result reported = run(faultRun());
+        expect(eq(reported.exitCode, 1)) << reported.output;
+        expect(eq(occurrences(reported.output, "reports an error on 'processBulk': the fixture reports a fault"), 1UZ)) << reported.output;
+        expect(reported.output.contains("rungraph: the graph was stopped on the first error reported")) << "the run went on to its bound" << reported.output;
+        expect(!reported.output.contains(".hpp") && !reported.output.contains(".cpp")) << "the error names a file of the library" << reported.output;
+
+        std::vector<std::string> failing = faultRun();
+        failing.insert(failing.end(), {"--set", "fault.fails=true"});
+        const Result failed = run(failing);
+        expect(eq(failed.exitCode, 1)) << failed.output;
+        expect(eq(occurrences(failed.output, "the fixture reports a fault"), 1UZ)) << "the run's result repeats the block's error" << failed.output;
+    };
+
+    "an error the scheduler reports reaches the output and fails the run"_test = [] {
+        std::vector<std::string> arguments = boundedRun();
+        arguments.insert(arguments.end(), {"--set", "poolName=nosuch"});
+
+        const Result reported = run(arguments);
+        expect(eq(reported.exitCode, 1)) << reported.output;
+        expect(reported.output.contains("rungraph: the scheduler reports an error on ")) << reported.output;
+        expect(reported.output.contains("'nosuch'")) << "the scheduler's reason is not printed" << reported.output;
     };
 #endif
 };

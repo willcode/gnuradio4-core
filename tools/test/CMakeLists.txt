@@ -90,7 +90,28 @@ if(TARGET rungraph)
     target_compile_definitions(qa_RunGraph PRIVATE GR_TOOLS_CORE_TEST_PLUGINS="${CMAKE_BINARY_DIR}/core/test/plugins")
     # the settings cases run chains of good::identity and good::start_recorder, which GoodRegistryPlugin supplies
     add_dependencies(qa_RunGraph GoodBasePlugin GoodRegistryPlugin)
+
+    # One plugin built twice, each build in a directory of its own and naming itself in a block's setting: a case names
+    # one directory on the command line and the other in the environment, and reads which build rungraph and grinfo take
+    # a block from. The same plugin supplies the block that reports an error.
+    foreach(_origin first second)
+      add_library(rungraph_fixture_${_origin} MODULE plugins/rungraph_fixture_plugin.cpp)
+      target_include_directories(rungraph_fixture_${_origin} PRIVATE ${CMAKE_BINARY_DIR}/include)
+      target_link_libraries(rungraph_fixture_${_origin} PRIVATE gnuradio-options gnuradio-core gnuradio-plugin)
+      target_compile_definitions(rungraph_fixture_${_origin} PRIVATE GR_TEST_PLUGIN_ORIGIN="${_origin}")
+      set_target_properties(rungraph_fixture_${_origin} PROPERTIES LIBRARY_OUTPUT_DIRECTORY
+                                                                   ${CMAKE_CURRENT_BINARY_DIR}/fixture_${_origin})
+      add_dependencies(qa_RunGraph rungraph_fixture_${_origin})
+    endforeach()
+    target_compile_definitions(qa_RunGraph PRIVATE GR_TOOLS_FIXTURE_FIRST="${CMAKE_CURRENT_BINARY_DIR}/fixture_first"
+                                                   GR_TOOLS_FIXTURE_SECOND="${CMAKE_CURRENT_BINARY_DIR}/fixture_second")
+    if(TARGET grinfo)
+      target_compile_definitions(qa_RunGraph PRIVATE GR_TOOLS_GRINFO="$<TARGET_FILE:grinfo>")
+      add_dependencies(qa_RunGraph grinfo)
+    endif()
   endif()
+  # the case of a directory the search cannot read makes one here
+  target_compile_definitions(qa_RunGraph PRIVATE GR_TOOLS_TEST_SCRATCH="${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 
 # grinfo is tested as the program a caller runs, for the same reason. It is given core's own test plugins and, beside
