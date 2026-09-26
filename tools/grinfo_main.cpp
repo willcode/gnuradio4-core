@@ -71,6 +71,7 @@ Usage: grinfo [command] [options]
                      class, with its meaning
 
   --plugin-dir <dir> a directory of plugins and block libraries; repeatable
+  --no-installed-dir leave out the plugin directory of this installation
   --json             the same content as a pretty-printed JSON document
   --verbose          with blocks, every block in detail rather than its name
   --label <c/w>      with blocks, only the blocks whose newest version carries
@@ -80,8 +81,8 @@ Usage: grinfo [command] [options]
 
 Blocks come from the directories named by --plugin-dir, from the colon-separated
 list in GNURADIO4_PLUGIN_DIRECTORIES, and from the plugin directory of this
-installation, which is always searched. A directory named twice is searched
-once.
+installation unless --no-installed-dir is given. A directory named twice is
+searched once.
 
 <name> is a registry key with its template parameters,
 gr::blocks::basic::Convert<int16, float32>, or a name without them,
@@ -119,10 +120,11 @@ struct Options {
     Command                  command = Command::Version;
     std::string              blockName;
     std::vector<std::string> pluginDirectories;
-    bool                     json        = false;
-    bool                     verbose     = false;
-    bool                     allSettings = false;
-    bool                     help        = false;
+    bool                     installedDirectory = true; // whether the installation's plugin directory is searched
+    bool                     json               = false;
+    bool                     verbose            = false;
+    bool                     allSettings        = false;
+    bool                     help               = false;
     // the labels `blocks` narrows its list to, as `class/word`; nothing narrows without the option
     std::vector<std::string> labels;
 };
@@ -150,6 +152,11 @@ struct Options {
         }
         if (argument == "--all-settings") {
             options.allSettings = true;
+            ++index;
+            continue;
+        }
+        if (argument == "--no-installed-dir") {
+            options.installedDirectory = false;
             ++index;
             continue;
         }
@@ -1955,7 +1962,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    std::vector<Directory> directories = searchDirectories(options.pluginDirectories, gr::installedPluginDirectory());
+    std::vector<Directory> directories = searchDirectories(options.pluginDirectories, options.installedDirectory ? gr::installedPluginDirectory() : std::string_view{});
     bool                   searchable  = true;
     for (const Directory& directory : directories) {
         if (directory.origin == "option" && !directory.present) {

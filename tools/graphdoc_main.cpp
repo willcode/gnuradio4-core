@@ -26,6 +26,7 @@ Usage: graphdoc [options] <graph.yaml>
   --output <file>    write the document to <file> (default: standard output)
   --title <text>     document title (default: the name of the input file)
   --plugin-dir <dir> a directory of plugins and block libraries; repeatable
+  --no-installed-dir leave out the plugin directory of this installation
   --help, -h         this text
 
 A lone - as the input reads the graph from standard input; the document is then
@@ -49,11 +50,11 @@ drawn with a dashed line to the block its feeds or fed_by parameter names, and a
 name the graph lacks is drawn as an unresolved block. Blocks come from the
 registry linked into this program, from the directories named by --plugin-dir,
 from the colon-separated list in GNURADIO4_PLUGIN_DIRECTORIES, and from the
-plugin directory of this installation, which is always searched. A block no
-registry holds and a port a block does not declare leave the column blank, and
-a block no registry holds carries no label. Everything else in the document is
-read from the file alone, so a graph whose blocks this build does not provide
-is still described.
+plugin directory of this installation unless --no-installed-dir is given. A
+block no registry holds and a port a block does not declare leave the column
+blank, and a block no registry holds carries no label. Everything else in the
+document is read from the file alone, so a graph whose blocks this build does
+not provide is still described.
 
 The HTML is a single self-contained page: its style sheet is embedded, it loads
 nothing over the network, and it draws every diagram itself as an inline SVG.
@@ -72,6 +73,7 @@ int main(int argc, char** argv) {
     const std::vector<std::string_view> arguments = argumentsOf(argc, argv);
     CommonOptions                       options;
     std::vector<std::string>            pluginDirectories;
+    [[maybe_unused]] bool               installedDirectory = true; // unread in a build without a block registry
     std::string                         inputPath;
     std::string                         error;
 
@@ -89,6 +91,11 @@ int main(int argc, char** argv) {
             }
             pluginDirectories.emplace_back(arguments[index + 1UZ]);
             index += 2UZ;
+            continue;
+        }
+        if (argument == "--no-installed-dir") {
+            installedDirectory = false;
+            ++index;
             continue;
         }
         if (argument.starts_with("-") && argument != "-") {
@@ -113,7 +120,7 @@ int main(int argc, char** argv) {
     }
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
-    const std::vector<Directory> directories = searchDirectories(pluginDirectories, gr::installedPluginDirectory());
+    const std::vector<Directory> directories = searchDirectories(pluginDirectories, installedDirectory ? gr::installedPluginDirectory() : std::string_view{});
     std::vector<std::string>     paths;
     bool                         searchable = true;
     for (const Directory& directory : directories) {

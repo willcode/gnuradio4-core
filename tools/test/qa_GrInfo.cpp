@@ -156,9 +156,10 @@ constexpr std::size_t kWidth = 80UZ;
 
 #ifdef GR_TOOLS_CORE_TEST_PLUGINS
 // the two directories core's own tests build: one of plugins, one of shared objects that register blocks without
-// being plugins
+// being plugins. Each run leaves out the installation's plugin directory, and every count covers these two alone.
 [[nodiscard]] std::vector<std::string> overTestDirectories(const std::vector<std::string>& arguments) {
     std::vector<std::string> all(arguments);
+    all.emplace_back("--no-installed-dir");
     all.emplace_back("--plugin-dir");
     all.emplace_back(GR_TOOLS_CORE_TEST_PLUGINS);
     all.emplace_back("--plugin-dir");
@@ -235,6 +236,20 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(version.output.contains(GR_TOOLS_CORE_TEST_PLUGINS)) << "a path the text report cut is whole here" << version.output;
         expect(version.output.contains("\"origin\": \"option\"")) << "the directory came from the command line" << version.output;
         expect(version.output.contains("\"kind\": \"block-library\"")) << "the kinds are an enumeration" << version.output;
+    };
+
+    "--no-installed-dir leaves the installation's plugin directory out of the search"_test = [] {
+        const std::vector<std::string> named{"version", "--json", "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS};
+        const Result                   searched = run(named);
+        expect(eq(searched.exitCode, 0)) << searched.output;
+        expect(searched.output.contains("\"origin\": \"installation\"")) << "the instrument: without the option the installation's directory is searched" << searched.output;
+
+        std::vector<std::string> withOption(named);
+        withOption.emplace_back("--no-installed-dir");
+        const Result alone = run(withOption);
+        expect(eq(alone.exitCode, 0)) << alone.output;
+        expect(alone.output.contains("\"origin\": \"option\"")) << "the named directory is still searched" << alone.output;
+        expect(!alone.output.contains("\"origin\": \"installation\"")) << alone.output;
     };
 
     "blocks lists a block under the file that registered it and under its family"_test = [] {

@@ -126,7 +126,8 @@ struct Run {
 
 /// Writes `yaml` to a file of the test's own and describes it with the built program, `options`
 /// placed ahead of the file. A refusal is the status the command exits with and the line it
-/// prints, and a test reads neither from inside this process.
+/// prints, and a test reads neither from inside this process. Every run leaves out the
+/// installation's plugin directory, and the document depends on the file and `options` alone.
 [[nodiscard]] Run describe(std::string_view fileName, std::string_view yaml, std::string_view options = {}) {
     const std::string path = std::format("{}/{}", GR_TOOLS_TEST_SCRATCH, fileName);
     {
@@ -135,7 +136,7 @@ struct Run {
     }
 
     Run               result;
-    const std::string command = std::format("\"{}\" --format md {} \"{}\" 2>&1", GR_TOOLS_GRAPHDOC, options, path);
+    const std::string command = std::format("\"{}\" --format md --no-installed-dir {} \"{}\" 2>&1", GR_TOOLS_GRAPHDOC, options, path);
     std::FILE*        pipe    = openPipe(command.c_str(), "r");
     if (pipe == nullptr) {
         return result;

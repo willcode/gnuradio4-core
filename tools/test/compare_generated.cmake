@@ -1,15 +1,16 @@
 # Runs a document generator over a fixture and compares the result with the pinned expectation. Two steps in one script
 # so that a single ctest entry covers both, and so that a generator that fails is reported as such rather than as an
 # empty difference. READ_FROM is `file` or `stdin`; the two must yield the same document, which is why both compare
-# against one expectation.
+# against one expectation. The generator leaves out the installation's plugin directory, and the document depends on the
+# fixture alone.
 if(READ_FROM STREQUAL "stdin")
   execute_process(
-    COMMAND "${TOOL}" --format "${FORMAT}" --title "${TITLE}" --output "${ACTUAL}" -
+    COMMAND "${TOOL}" --format "${FORMAT}" --title "${TITLE}" --no-installed-dir --output "${ACTUAL}" -
     INPUT_FILE "${INPUT}"
     RESULT_VARIABLE _generateStatus)
 else()
-  execute_process(COMMAND "${TOOL}" --format "${FORMAT}" --title "${TITLE}" --output "${ACTUAL}" "${INPUT}"
-                  RESULT_VARIABLE _generateStatus)
+  execute_process(COMMAND "${TOOL}" --format "${FORMAT}" --title "${TITLE}" --no-installed-dir --output "${ACTUAL}"
+                          "${INPUT}" RESULT_VARIABLE _generateStatus)
 endif()
 if(NOT
    _generateStatus
