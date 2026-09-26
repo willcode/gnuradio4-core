@@ -782,11 +782,15 @@ public:
     /**
      * @brief The words of every block the loader can reach, with their meanings.
      *
-     * The registry's vocabulary and each YAML definition's words, merged: a word with several meanings keeps each,
-     * and a word physical in any source is physical.
+     * The registry's vocabulary, each loaded plugin's `blockVocabulary()` and each YAML definition's words, merged:
+     * a word with several meanings keeps each, and a word physical in any source is physical.
      */
     [[nodiscard]] block::Vocabulary vocabulary() const {
         block::Vocabulary merged = _registry->vocabulary();
+        for (const PluginHandler& handler : _pluginHandlers) {
+            std::vector<std::string> discarded;
+            merged.merge(block::vocabularyFromMap(handler->blockVocabulary(), discarded));
+        }
         merged.merge(_yamlRegistry.vocabulary());
         return merged;
     }

@@ -120,6 +120,32 @@ const boost::ut::suite<"PluginRegistration"> pluginRegistrationTests = [] {
         expect(carried != nullptr && *carried == newestExpected) << "an instance carries the map the boundary answers";
     };
 
+    "a plugin's vocabulary crosses the plugin boundary with each word's meaning"_test = [] {
+        gr::BlockRegistry              registry;
+        gr::SchedulerRegistry          schedulerRegistry;
+        const std::vector<std::string> pluginDirectories{versionedPluginDirectory()};
+        gr::PluginLoader               loader(registry, schedulerRegistry, pluginDirectories);
+        expect(fatal(eq(loader.plugins().size(), 1UZ))) << "the versioned plugin loads";
+        expect(registry.vocabulary().find(gr::block::LabelClass::Holds, "testbus") == nullptr) << "the host's registry does not hold the plugin's word";
+
+        std::vector<std::string>    rejected;
+        const gr::block::Vocabulary fromPlugin = gr::block::vocabularyFromMap(loader.plugins().front()->blockVocabulary(), rejected);
+        expect(rejected.empty());
+        const gr::block::VocabularyEntry* testBus = fromPlugin.find(gr::block::LabelClass::Holds, "testbus");
+        expect(fatal(testBus != nullptr)) << "the plugin entry answers the words its blocks declare";
+        expect(testBus->meanings == std::vector<std::string>{"Opens the test plugin's own bus."});
+
+        const gr::block::Vocabulary merged = loader.vocabulary();
+        const auto*                 family = merged.find(gr::block::LabelClass::Family, "versioned");
+        expect(fatal(family != nullptr)) << "the loader merges the plugin's words into one view";
+        expect(family->meanings == std::vector<std::string>{"Blocks of the versioned test plugin."});
+        expect(merged.find(gr::block::LabelClass::Holds, "testbus") != nullptr);
+        expect(merged.find(gr::block::LabelClass::Role, "source") != nullptr) << "beside core's words";
+
+        const gr::block::AttributesRead read = gr::block::attributesFromMap(loader.blockAttributes(kVersionedKey).value_or(gr::property_map{}), merged);
+        expect(std::ranges::all_of(read.labels, &gr::block::LabelRead::known)) << "every label the plugin block declares is known to the merged vocabulary";
+    };
+
     "a plugin answers no attributes for a name it does not hold"_test = [] {
         gr::BlockRegistry              registry;
         gr::SchedulerRegistry          schedulerRegistry;

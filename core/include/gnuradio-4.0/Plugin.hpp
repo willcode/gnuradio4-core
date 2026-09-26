@@ -42,6 +42,8 @@ public:
     virtual std::unique_ptr<gr::BlockModel> createPinnedBlock(std::string_view name, gr::block::Version version, const gr::property_map& params) = 0;
     /// the attributes map of one registered version, empty for a type that declares none; nothing when the plugin does not hold that version
     virtual std::optional<gr::property_map> blockAttributes(std::string_view name, gr::block::Version version) const = 0;
+    /// the words the plugin's blocks declare and core's, in the form of `gr::block::vocabularyToMap()`
+    virtual gr::property_map blockVocabulary() const = 0;
 };
 
 namespace gr {
@@ -65,6 +67,7 @@ public:
     std::vector<block::Version>     blockVersions(std::string_view name) const override { return registry.versions(name); }
     std::unique_ptr<gr::BlockModel> createPinnedBlock(std::string_view name, block::Version version, const property_map& params) override { return registry.create(name, version, params); }
     std::optional<property_map>     blockAttributes(std::string_view name, block::Version version) const override { return registry.attributes(name, version); }
+    property_map                    blockVocabulary() const override { return block::vocabularyToMap(registry.vocabulary()); }
 
     operator gr::BlockRegistry&() { return registry; }
     operator gr::SchedulerRegistry&() { return schedulerRegistry; }
