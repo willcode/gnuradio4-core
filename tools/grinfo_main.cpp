@@ -71,6 +71,8 @@ Usage: grinfo [command] [options]
   version            the framework, the directories searched and what each held
   blocks             every registered block, by library and by family
   block <name>       one block in detail: its types, its ports and its settings
+  labels             every label word core and the loaded blocks declare, by
+                     class, with its meaning
   schedulers         every registered scheduler, by library, with its settings
 
   --plugin-dir <dir> a directory of plugins and block libraries; repeatable
@@ -106,8 +108,12 @@ dynamic linker holds that instance's type information in, so a block linked into
 this program is told apart from one a library brought.
 
 The labels a block type declares are read from its registration without an
-instance. Each label, written class/word, has a line of its own, and every block
-reports its version.
+instance. Each label has a line with its meaning from the vocabulary of core and
+the loaded blocks, and a word outside that vocabulary is marked. An emits word
+the vocabulary reads as physical is marked too. The role line gives the role the
+stream ports read, for every block, and a note follows a declared role the
+ports contradict. The option --label role/<word> matches the role a block
+declares, and the role its stream ports read where it declares none.
 
 --json, --markdown and --html each select one form of the report, and a
 command line that selects two is refused.
@@ -121,7 +127,7 @@ named by --plugin-dir cannot be searched, and 2 when the command line cannot be
 used.
 )";
 
-enum class Command : std::uint8_t { Version, Blocks, Block, Schedulers };
+enum class Command : std::uint8_t { Version, Blocks, Block, Labels, Schedulers };
 
 enum class Form : std::uint8_t { Text, Json, Markdown, Html };
 
@@ -218,6 +224,8 @@ struct Options {
                 options.command = Command::Blocks;
             } else if (argument == "block") {
                 options.command = Command::Block;
+            } else if (argument == "labels") {
+                options.command = Command::Labels;
             } else if (argument == "schedulers") {
                 options.command = Command::Schedulers;
             } else {
@@ -585,6 +593,7 @@ struct Instantiation {
     std::string              status;
     gr::block::Version       version = gr::block::kDefaultVersion;
     gr::property_map         attributes; // what the type declares, from its registration; empty where it declares nothing
+    std::string              readRole;   // the role the stream ports read, empty where they read none
     std::string              error;      // why no instance could be made; nothing below is filled then
     bool                     detailed = false;
     std::string              description;
@@ -654,6 +663,7 @@ struct Context {
     std::set<std::string>    libraryFiles;
     std::string              program;
     Totals                   totals;
+    gr::block::Vocabulary    vocabulary; // core's words and every loaded block's
 };
 
 [[nodiscard]] std::string metaString(const gr::property_map& meta, const std::string& key) {
@@ -774,8 +784,11 @@ void collectSettings(const gr::BlockModel& block, std::vector<Setting>& into) {
     fact.name       = parts.name;
     fact.parameters = splitParameters(parts.parameters);
     fact.attributes = context.loader.blockAttributes(key).value_or(gr::property_map{});
-    // the map of a declaring type holds its version, so a type whose factory fails still has it
-    fact.version = gr::block::attributesFromMap(fact.attributes).version;
+    // The map of a declaring type holds its version and the role its ports read, so a type whose factory fails
+    // still has both, and a dynamic port collection counts as a port even where an instance holds none.
+    const gr::block::AttributesRead declared = gr::block::attributesFromMap(fact.attributes);
+    fact.version                             = declared.version;
+    fact.readRole                            = declared.readRole;
 
     std::shared_ptr<gr::BlockModel> instance;
     try {
@@ -805,6 +818,10 @@ void collectSettings(const gr::BlockModel& block, std::vector<Setting>& into) {
     if (registry == Registry::Blocks) {
         fact.blockCategory = std::format("{}", instance->blockCategory());
         fact.uiCategory    = std::format("{}", instance->uiCategory());
+        if (fact.attributes.empty()) {
+            const std::optional<gr::block::Label> readRole = gr::tools::portRoleOf(*instance, false);
+            fact.readRole                                  = readRole.has_value() ? std::string(readRole->word) : std::string{};
+        }
     }
     if (!detailed) {
         return fact;
@@ -1251,7 +1268,7 @@ void printPortsAndSettings(const BlockTables& tables, std::string_view indent) {
 // The facts of one block as `name  value` pairs: the file it came from, its types, its category, the type it is an
 // alias of, and the error its settings gave, if any. A block that could not be read has its error in place of the
 // category.
-[[nodiscard]] std::vector<std::pair<std::string, std::string>> factsOf(const NamedBlock& block) {
+[[nodiscard]] std::vector<std::pair<std::string, std::string>> factsOf(const Context& context, const NamedBlock& block) {
     std::vector<std::pair<std::string, std::string>> facts;
     facts.emplace_back("library", block.file.empty() ? std::string(nameOf(block.origin)) : std::format("{} ({})", std::filesystem::path(block.file).filename().string(), nameOf(block.origin)));
     if (block.instantiations.size() > 1UZ) {
@@ -1265,8 +1282,8 @@ void printPortsAndSettings(const BlockTables& tables, std::string_view indent) {
     const Instantiation& first = block.instantiations.front();
     // the labels are read without an instance, so a type whose factory fails still prints them
     std::vector<std::pair<std::string, std::string>> labels;
-    for (const gr::block::LabelRead& label : gr::block::attributesFromMap(first.attributes).labels) {
-        labels.emplace_back(label.text(), std::string{});
+    for (const gr::tools::LabelText& label : gr::tools::labelTexts(first.attributes, context.vocabulary)) {
+        labels.emplace_back(label.label, gr::tools::meaningText(label));
     }
     if (!first.error.empty()) {
         facts.insert(facts.end(), labels.begin(), labels.end());
@@ -1276,8 +1293,12 @@ void printPortsAndSettings(const BlockTables& tables, std::string_view indent) {
     }
     if (first.registry == Registry::Blocks) {
         facts.emplace_back("category", std::format("{}, UI {}", first.blockCategory, first.uiCategory));
+        facts.insert(facts.end(), labels.begin(), labels.end());
+        facts.emplace_back("role", first.readRole.empty() ? std::string("none, read from the stream ports") : std::format("{}, read from the stream ports", first.readRole));
+        if (const std::optional<std::string> note = gr::tools::roleNote(gr::tools::declaredRole(first.attributes), first.readRole); note.has_value()) {
+            facts.emplace_back("note", *note);
+        }
     }
-    facts.insert(facts.end(), labels.begin(), labels.end());
     facts.emplace_back("version", std::to_string(first.version));
     if (first.registry == Registry::Blocks) {
         // A key registered under a name of its own reports the type it is an alias of, and only then is the row
@@ -1295,11 +1316,11 @@ void printPortsAndSettings(const BlockTables& tables, std::string_view indent) {
 
 // One block, whatever the number of its instantiations: what it is, what its text says, its ports and its
 // settings, each once. `qualified` names the block in full where no family heading stands above it.
-void printBlock(const NamedBlock& block, std::string_view indent, bool qualified, bool wholeDescription, bool allSettings) {
+void printBlock(const Context& context, const NamedBlock& block, std::string_view indent, bool qualified, bool wholeDescription, bool allSettings) {
     const TypeParameters types  = typeParametersOf(block);
     const std::string    detail = std::format("{}  ", indent);
     std::println("{}{}", indent, headingOf(block, types, qualified));
-    printFacts(detail, factsOf(block), Break::BetweenTypes);
+    printFacts(detail, factsOf(context, block), Break::BetweenTypes);
 
     const Instantiation& first = block.instantiations.front();
     if (!first.error.empty() || !first.detailed) {
@@ -1483,7 +1504,7 @@ void writeSetting(JsonWriter& json, const Setting& setting) {
 }
 
 // one instantiation: its key, what the key is made of, and what an instance of it declares
-void writeInstantiation(JsonWriter& json, const Instantiation& fact) {
+void writeInstantiation(JsonWriter& json, const Instantiation& fact, const gr::block::Vocabulary& vocabulary) {
     json.beginObject();
     json.member("key", fact.key);
     json.strings("parameters", fact.parameters);
@@ -1494,12 +1515,19 @@ void writeInstantiation(JsonWriter& json, const Instantiation& fact) {
     json.member("status", fact.status);
     json.key("labels");
     json.beginArray();
-    for (const gr::block::LabelRead& label : gr::block::attributesFromMap(fact.attributes).labels) {
+    for (const gr::tools::LabelText& label : gr::tools::labelTexts(fact.attributes, vocabulary)) {
         json.beginObject();
-        json.member("label", label.text());
+        json.member("label", label.label);
+        json.strings("meanings", label.meanings);
+        json.flag("known", label.known);
+        json.flag("physical", label.physical);
         json.endObject();
     }
     json.endArray();
+    json.member("role", fact.readRole);
+    if (const std::optional<std::string> note = gr::tools::roleNote(gr::tools::declaredRole(fact.attributes), fact.readRole); note.has_value()) {
+        json.member("roleNote", *note);
+    }
     json.member("error", fact.error);
     json.member("settingsError", fact.settingsError);
     if (fact.detailed) {
@@ -1522,7 +1550,7 @@ void writeInstantiation(JsonWriter& json, const Instantiation& fact) {
 }
 
 // one block: what every instantiation of it shares, and then the instantiations
-void writeBlock(JsonWriter& json, const NamedBlock& block, bool withFamily) {
+void writeBlock(JsonWriter& json, const NamedBlock& block, bool withFamily, const gr::block::Vocabulary& vocabulary) {
     json.beginObject();
     json.member("name", block.name);
     if (withFamily) {
@@ -1541,7 +1569,7 @@ void writeBlock(JsonWriter& json, const NamedBlock& block, bool withFamily) {
     json.key("instantiations");
     json.beginArray();
     for (const Instantiation& fact : block.instantiations) {
-        writeInstantiation(json, fact);
+        writeInstantiation(json, fact, vocabulary);
     }
     json.endArray();
     json.endObject();
@@ -1833,8 +1861,23 @@ void printBlockLine(std::string_view indent, const NamedBlock& block, std::size_
     }
 }
 
+// whether the newest version of `fact` carries `label`; a role label matches the declared role, else the role the
+// stream ports read
+[[nodiscard]] bool carries(const Instantiation& fact, std::string_view label) {
+    const auto parsed = gr::block::parseLabel(label);
+    if (!parsed.has_value()) {
+        return false;
+    }
+    const gr::block::AttributesRead read = gr::block::attributesFromMap(fact.attributes);
+    if (parsed->first != gr::block::LabelClass::Role) {
+        return read.has(parsed->first, parsed->second);
+    }
+    const std::vector<std::string_view> declared = read.words(gr::block::LabelClass::Role);
+    return (declared.empty() ? std::string_view(fact.readRole) : declared.front()) == parsed->second;
+}
+
 // one library object per file, each holding its families and they their blocks or their schedulers
-void writeLibraries(JsonWriter& json, const std::vector<Library>& libraries, Registry registry) {
+void writeLibraries(JsonWriter& json, const std::vector<Library>& libraries, Registry registry, const gr::block::Vocabulary& vocabulary) {
     json.key("libraries");
     json.beginArray();
     for (const Library& library : libraries) {
@@ -1850,7 +1893,7 @@ void writeLibraries(JsonWriter& json, const std::vector<Library>& libraries, Reg
             json.key(registry == Registry::Blocks ? "blocks" : "schedulers");
             json.beginArray();
             for (const NamedBlock& block : family.blocks) {
-                writeBlock(json, block, false);
+                writeBlock(json, block, false, vocabulary);
             }
             json.endArray();
             json.endObject();
@@ -1863,7 +1906,7 @@ void writeLibraries(JsonWriter& json, const std::vector<Library>& libraries, Reg
 
 // the libraries under the directories that held them, each with its families and in each family one line per entry,
 // or each entry in detail
-void printLibraries(const std::vector<Library>& libraries, bool detailed, bool allSettings) {
+void printLibraries(const Context& context, const std::vector<Library>& libraries, bool detailed, bool allSettings) {
     std::string lastDirectory;
     bool        firstDirectory = true;
     for (const Library& library : libraries) {
@@ -1885,7 +1928,7 @@ void printLibraries(const std::vector<Library>& libraries, bool detailed, bool a
             if (detailed) {
                 for (const NamedBlock& block : family.blocks) {
                     std::print("\n");
-                    printBlock(block, "      ", false, false, allSettings);
+                    printBlock(context, block, "      ", false, false, allSettings);
                 }
                 continue;
             }
@@ -1934,10 +1977,10 @@ void writeTotals(DocWriter& document, const std::vector<std::pair<std::string, s
 }
 
 // one block as a section under a heading of `level`
-void documentBlock(DocWriter& document, const NamedBlock& block, std::size_t level, std::string_view anchorName, bool qualified, bool wholeDescription, bool allSettings) {
+void documentBlock(DocWriter& document, const Context& context, const NamedBlock& block, std::size_t level, std::string_view anchorName, bool qualified, bool wholeDescription, bool allSettings) {
     const TypeParameters types = typeParametersOf(block);
     document.heading(level, headingOf(block, types, qualified), anchorName);
-    writeFacts(document, factsOf(block));
+    writeFacts(document, factsOf(context, block));
 
     const Instantiation& first = block.instantiations.front();
     if (!first.error.empty() || !first.detailed) {
@@ -1976,7 +2019,7 @@ void documentBlock(DocWriter& document, const NamedBlock& block, std::size_t lev
 
 // A section per library and in it one per family. Each family is a table of its entries. With `detailed`, each entry
 // has a section of its own, and the document opens with a link to every entry's section.
-void documentLibraries(DocWriter& document, const std::vector<Library>& libraries, bool detailed, bool allSettings) {
+void documentLibraries(DocWriter& document, const Context& context, const std::vector<Library>& libraries, bool detailed, bool allSettings) {
     std::vector<std::string> anchors; // one per entry, in the order of their sections
     if (detailed) {
         std::vector<std::string> links;
@@ -2003,7 +2046,7 @@ void documentLibraries(DocWriter& document, const std::vector<Library>& librarie
             document.heading(3UZ, familyName, document.anchor(std::format("{} {}", name, familyName)));
             if (detailed) {
                 for (const NamedBlock& block : family.blocks) {
-                    documentBlock(document, block, 4UZ, anchors[entry++], false, false, allSettings);
+                    documentBlock(document, context, block, 4UZ, anchors[entry++], false, false, allSettings);
                 }
                 continue;
             }
@@ -2079,31 +2122,43 @@ void documentVersion(DocWriter& document, const Context& context) {
     };
 }
 
-void reportBlocks(Context& context, const Options& options) {
-    // --label keeps the keys whose newest version carries every label named, read from the registration alone, and
-    // the totals of blocks, block libraries and plugins count what is kept
-    std::vector<std::string> keys   = context.keys;
-    Totals                   totals = context.totals;
-    if (!options.labels.empty()) {
-        std::erase_if(keys, [&context, &options](const std::string& key) {
-            const gr::block::AttributesRead read = gr::block::attributesFromMap(context.loader.blockAttributes(key).value_or(gr::property_map{}));
-            return !std::ranges::all_of(options.labels, [&read](const std::string& label) {
-                const auto parsed = gr::block::parseLabel(label);
-                return parsed.has_value() && read.has(parsed->first, parsed->second);
-            });
-        });
-        std::set<std::string> families;
-        for (const std::string& key : keys) {
-            families.emplace(partsOf(key).family);
-        }
-        totals.blockKeys     = keys.size();
-        totals.blockFamilies = families.size();
+// the lines that open a report narrowed by --label: the labels named, then each one the loaded vocabulary lacks
+[[nodiscard]] std::vector<std::string> narrowingLines(const Context& context, const Options& options) {
+    std::vector<std::string> lines;
+    if (options.labels.empty()) {
+        return lines;
     }
+    std::string named;
+    for (const std::string& label : options.labels) {
+        named += named.empty() ? label : std::format(", {}", label);
+    }
+    lines.push_back(std::format("blocks carrying {}", named));
+    for (const std::string& label : options.labels) {
+        const auto parsed = gr::block::parseLabel(label);
+        if (parsed.has_value() && context.vocabulary.find(parsed->first, parsed->second) == nullptr) {
+            lines.push_back(std::format("{} is outside the loaded vocabulary", label));
+        }
+    }
+    return lines;
+}
 
+void reportBlocks(Context& context, const Options& options) {
     std::vector<Instantiation> facts;
-    facts.reserve(keys.size());
-    for (const std::string& key : keys) {
+    facts.reserve(context.keys.size());
+    for (const std::string& key : context.keys) {
         facts.push_back(readKey(context, key, Registry::Blocks, options.verbose));
+    }
+    // --label keeps the keys whose newest version carries every label named, and the totals of blocks, block
+    // libraries and plugins count what is kept
+    Totals totals = context.totals;
+    if (!options.labels.empty()) {
+        std::erase_if(facts, [&options](const Instantiation& fact) { return !std::ranges::all_of(options.labels, [&fact](const std::string& label) { return carries(fact, label); }); });
+        std::set<std::string> families;
+        for (const Instantiation& fact : facts) {
+            families.emplace(fact.family);
+        }
+        totals.blockKeys     = facts.size();
+        totals.blockFamilies = families.size();
     }
     const std::vector<Library> libraries = group(std::move(facts));
     if (!options.labels.empty()) {
@@ -2117,7 +2172,7 @@ void reportBlocks(Context& context, const Options& options) {
         json.count("schema", 2UZ);
         json.member("command", "blocks");
         json.strings("labels", options.labels);
-        writeLibraries(json, libraries, Registry::Blocks);
+        writeLibraries(json, libraries, Registry::Blocks, context.vocabulary);
         writeTotals(json, totals);
         json.endObject();
         std::println("{}", json.text);
@@ -2125,23 +2180,23 @@ void reportBlocks(Context& context, const Options& options) {
     }
     if (options.form != Form::Text) {
         DocWriter document = documentFor(options.form, "grinfo blocks");
-        documentLibraries(document, libraries, options.verbose, options.allSettings);
+        for (const std::string& line : narrowingLines(context, options)) {
+            document.paragraph(line);
+        }
+        documentLibraries(document, context, libraries, options.verbose, options.allSettings);
         writeTotals(document, blockTotals(totals, libraries));
         std::print("{}", document.finish());
         return;
     }
 
-    if (!options.labels.empty()) {
-        std::string named;
-        for (const std::string& label : options.labels) {
-            named += named.empty() ? label : std::format(", {}", label);
-        }
-        std::println("blocks carrying {}", named);
-        if (!libraries.empty()) {
-            std::print("\n");
-        }
+    const std::vector<std::string> narrowing = narrowingLines(context, options);
+    for (const std::string& line : narrowing) {
+        std::println("{}", line);
     }
-    printLibraries(libraries, options.verbose, options.allSettings);
+    if (!narrowing.empty() && !libraries.empty()) {
+        std::print("\n");
+    }
+    printLibraries(context, libraries, options.verbose, options.allSettings);
     printTotals(blockTotals(totals, libraries));
 }
 
@@ -2158,7 +2213,7 @@ void reportSchedulers(Context& context, const Options& options) {
         json.beginObject();
         json.count("schema", 2UZ);
         json.member("command", "schedulers");
-        writeLibraries(json, libraries, Registry::Schedulers);
+        writeLibraries(json, libraries, Registry::Schedulers, context.vocabulary);
         writeTotals(json, context.totals);
         json.endObject();
         std::println("{}", json.text);
@@ -2166,13 +2221,13 @@ void reportSchedulers(Context& context, const Options& options) {
     }
     if (options.form != Form::Text) {
         DocWriter document = documentFor(options.form, "grinfo schedulers");
-        documentLibraries(document, libraries, true, options.allSettings);
+        documentLibraries(document, context, libraries, true, options.allSettings);
         writeTotals(document, schedulerTotals(context, libraries));
         std::print("{}", document.finish());
         return;
     }
 
-    printLibraries(libraries, true, options.allSettings);
+    printLibraries(context, libraries, true, options.allSettings);
     printTotals(schedulerTotals(context, libraries));
 }
 
@@ -2211,7 +2266,7 @@ void reportSchedulers(Context& context, const Options& options) {
         json.key("blocks");
         json.beginArray();
         for (const NamedBlock& block : blocks) {
-            writeBlock(json, block, true);
+            writeBlock(json, block, true, context.vocabulary);
         }
         json.endArray();
         json.endObject();
@@ -2221,7 +2276,7 @@ void reportSchedulers(Context& context, const Options& options) {
     if (options.form != Form::Text) {
         DocWriter document = documentFor(options.form, std::format("grinfo block {}", wanted));
         for (const NamedBlock& block : blocks) {
-            documentBlock(document, block, 2UZ, document.anchor(std::format("{}::{}", block.family, block.name)), true, true, options.allSettings);
+            documentBlock(document, context, block, 2UZ, document.anchor(std::format("{}::{}", block.family, block.name)), true, true, options.allSettings);
         }
         std::print("{}", document.finish());
         return 0;
@@ -2231,9 +2286,66 @@ void reportSchedulers(Context& context, const Options& options) {
         if (i != 0UZ) {
             std::print("\n");
         }
-        printBlock(blocks[i], "", true, true, options.allSettings);
+        printBlock(context, blocks[i], "", true, true, options.allSettings);
     }
     return 0;
+}
+
+// the vocabulary by class: each word with its meanings, and whether a medium word is physical
+void reportLabels(const Context& context, const Options& options) {
+    if (options.form == Form::Json) {
+        JsonWriter json;
+        json.beginObject();
+        json.count("schema", 2UZ);
+        json.member("command", "labels");
+        json.key("labels");
+        json.beginArray();
+        for (const gr::block::VocabularyEntry& entry : context.vocabulary.entries()) {
+            json.beginObject();
+            json.member("label", entry.text());
+            json.strings("meanings", entry.meanings);
+            json.flag("physical", entry.physical);
+            json.endObject();
+        }
+        json.endArray();
+        json.endObject();
+        std::println("{}", json.text);
+        return;
+    }
+
+    std::vector<std::pair<std::string_view, std::vector<std::pair<std::string, std::string>>>> classes;
+    for (const std::string_view className : gr::block::kLabelClassNames) {
+        const std::optional<gr::block::LabelClass>       cls = gr::block::classNamed(className);
+        std::vector<std::pair<std::string, std::string>> words;
+        for (const gr::block::VocabularyEntry* entry : context.vocabulary.words(*cls)) {
+            gr::tools::LabelText text{.cls = *cls, .label = entry->text(), .meanings = entry->meanings, .known = true, .physical = entry->physical};
+            std::string          meaning = gr::tools::meaningText(text);
+            if (entry->physical && cls == gr::block::LabelClass::Ingests) {
+                meaning += " (physical)";
+            }
+            words.emplace_back(entry->word, std::move(meaning));
+        }
+        if (!words.empty()) {
+            classes.emplace_back(className, std::move(words));
+        }
+    }
+
+    if (options.form != Form::Text) {
+        DocWriter document = documentFor(options.form, "grinfo labels");
+        for (const auto& [className, words] : classes) {
+            document.heading(2UZ, className, document.anchor(className));
+            writeFacts(document, words);
+        }
+        std::print("{}", document.finish());
+        return;
+    }
+    for (std::size_t i = 0UZ; i < classes.size(); ++i) {
+        if (i != 0UZ) {
+            std::print("\n");
+        }
+        std::println("{}", classes[i].first);
+        printFacts("  ", classes[i].second);
+    }
 }
 
 } // namespace
@@ -2276,7 +2388,7 @@ int main(int argc, char** argv) {
     gr::tools::registerSchedulers(gr::globalSchedulerRegistry());
     gr::PluginLoader loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), paths);
 
-    Context context{.loader = loader, .directories = std::move(directories), .keys = {}, .schedulers = {}, .files = {}, .plugins = {}, .libraryFiles = {}, .program = thisProgramFile(), .totals = {}};
+    Context context{.loader = loader, .directories = std::move(directories), .keys = {}, .schedulers = {}, .files = {}, .plugins = {}, .libraryFiles = {}, .program = thisProgramFile(), .totals = {}, .vocabulary = loader.vocabulary()};
 
     context.keys = loader.availableBlocks();
     std::ranges::sort(context.keys);
@@ -2329,6 +2441,7 @@ int main(int argc, char** argv) {
         return 0;
     case Command::Blocks: reportBlocks(context, options); return 0;
     case Command::Block: return reportBlock(context, options);
+    case Command::Labels: reportLabels(context, options); return 0;
     case Command::Schedulers: reportSchedulers(context, options); return 0;
     }
     return 0;
