@@ -252,6 +252,14 @@ if(GR_ENABLE_BLOCK_REGISTRY AND INTERNAL_ENABLE_BLOCK_PLUGINS)
     good_conversion_plugin
     bad_plugin)
 
+  # qa_ErasedRuntime lists the types of a loader over the test plugin directory, and has the process's loader search the
+  # versioned plugin's directory
+  add_dependencies(
+    qa_ErasedRuntime
+    GoodBasePlugin
+    good_math_plugin
+    versioned_plugin)
+
   add_app_test(qa_PluginRegistration)
   add_dependencies(
     qa_PluginRegistration
