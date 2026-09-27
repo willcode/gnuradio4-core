@@ -1,3 +1,16 @@
+# An installed tool reaches the libraries through a run path relative to its own directory. It runs from any prefix
+# without a library path in the environment. The run path of a tool in the build tree stays the one CMake sets.
+file(
+  RELATIVE_PATH
+  _gr_tools_bin_to_lib
+  "${CMAKE_INSTALL_FULL_BINDIR}"
+  "${CMAKE_INSTALL_FULL_LIBDIR}")
+if(APPLE)
+  set(GR_TOOLS_INSTALL_RPATH "@loader_path/${_gr_tools_bin_to_lib}")
+else()
+  set(GR_TOOLS_INSTALL_RPATH "$ORIGIN/${_gr_tools_bin_to_lib}")
+endif()
+
 # graphdoc and the headers it shares with its test. It is an ordinary consumer of the installed headers: nothing here is
 # compiled into the libraries. Its document is read from the graph file, so it is built whether or not the registry is
 # on.
@@ -11,6 +24,7 @@ target_link_libraries(graphdoc PRIVATE gnuradio-doctools)
 if(TARGET gnuradio-plugin)
   target_link_libraries(graphdoc PRIVATE gnuradio-plugin)
 endif()
+set_target_properties(graphdoc PROPERTIES INSTALL_RPATH "${GR_TOOLS_INSTALL_RPATH}")
 install(TARGETS graphdoc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # rungraph, an ordinary consumer of the installed headers: it is not compiled into the libraries. It builds its graph by
@@ -21,6 +35,7 @@ if(GR_ENABLE_BLOCK_REGISTRY)
   if(TARGET gnuradio-plugin)
     target_link_libraries(rungraph PRIVATE gnuradio-plugin)
   endif()
+  set_target_properties(rungraph PROPERTIES INSTALL_RPATH "${GR_TOOLS_INSTALL_RPATH}")
   install(TARGETS rungraph RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
@@ -36,6 +51,7 @@ if(GR_ENABLE_BLOCK_REGISTRY)
   # what this installation is; the project version is not in config.hpp, so the build hands it over too
   target_compile_definitions(grinfo PRIVATE GR_TOOLS_CORE_VERSION="${PROJECT_VERSION}"
                                             GR_TOOLS_INSTALLED_PREFIX="${CMAKE_INSTALL_PREFIX}")
+  set_target_properties(grinfo PROPERTIES INSTALL_RPATH "${GR_TOOLS_INSTALL_RPATH}")
   install(TARGETS grinfo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
