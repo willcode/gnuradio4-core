@@ -100,14 +100,17 @@ apart from one a library brought.
 The labels a block type declares are read from its registration without an
 instance. Each label has a line with its meaning from the vocabulary of core and
 the loaded blocks, and a word outside that vocabulary is marked. An emits word
-the vocabulary reads as physical is marked too. The role line gives the role the
-stream ports read, for every block, and a note follows a declared role the
-ports contradict. The option --label role/<word> matches the role a block
-declares, and the role its stream ports read where it declares none.
+the vocabulary reads as physical is marked too. The role line gives the role a
+block declares, marked declared, and otherwise the role its stream ports read.
+A note follows a declared role the ports contradict. The option --label
+role/<word> matches the role a block declares, and the role its stream ports
+read where it declares none.
 
 The JSON document carries "schema": 2 and one shape per command. A field the
 framework holds nothing in is left out rather than written as null; an array is
-always present, and empty where the block declares none of it.
+always present, and empty where the block declares none of it. A block's role
+field is the role its stream ports read, and a declared role is among its
+labels.
 
 Exit status is 0, 1 when a block named to block is not registered or a directory
 named by --plugin-dir cannot be searched, and 2 when the command line cannot be
@@ -1211,8 +1214,9 @@ void printBlock(const Context& context, const NamedBlock& block, std::string_vie
     }
     facts.emplace_back("category", std::format("{}, UI {}", first.blockCategory, first.uiCategory));
     facts.insert(facts.end(), labels.begin(), labels.end());
-    facts.emplace_back("role", first.readRole.empty() ? std::string("none, read from the stream ports") : std::format("{}, read from the stream ports", first.readRole));
-    if (const std::optional<std::string> note = gr::tools::roleNote(gr::tools::declaredRole(first.attributes), first.readRole); note.has_value()) {
+    const std::string declared = gr::tools::declaredRole(first.attributes);
+    facts.emplace_back("role", gr::tools::roleText(declared, first.readRole));
+    if (const std::optional<std::string> note = gr::tools::roleNote(declared, first.readRole); note.has_value()) {
         facts.emplace_back("note", *note);
     }
     facts.emplace_back("version", std::to_string(first.version));

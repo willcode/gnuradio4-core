@@ -220,6 +220,14 @@ struct LabelText {
     return std::format("{} declared; the stream ports read {}", block::Label{block::LabelClass::Role, declared}.text(), read.empty() ? std::string_view("no role") : read);
 }
 
+/// the role a tool prints on one line: the declared word marked declared, else the word the stream ports read
+[[nodiscard]] inline std::string roleText(std::string_view declared, std::string_view read) {
+    if (!declared.empty()) {
+        return std::format("{}, declared", declared);
+    }
+    return std::format("{}, read from the stream ports", read.empty() ? std::string_view("none") : read);
+}
+
 /// the declared role word among `attributes`' labels, empty when it declares none
 [[nodiscard]] inline std::string declaredRole(const property_map& attributes) {
     const std::vector<std::string_view> roles = block::attributesFromMap(attributes).words(block::LabelClass::Role);

@@ -377,6 +377,8 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         const Result block = run(overVersionedPlugin({"block", "test::mislabeled"}));
         expect(eq(block.exitCode, 0)) << block.output;
         expect(hasFact(block.output, "role/source", "Produces stream data into the graph: a device, a file, a network")) << block.output;
+        expect(hasFact(block.output, "role", "source, declared")) << "the declared word on the one role line" << block.output;
+        expect(eq(occurrences(block.output, "\n  role "), 1UZ)) << block.output;
         expect(hasFact(block.output, "note", "role/source declared; the stream ports read sink")) << block.output;
         expect(eq(occurrences(block.output, "\n  note "), 1UZ)) << block.output;
 
@@ -384,6 +386,25 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(eq(agreeing.exitCode, 0)) << agreeing.output;
         expect(hasFact(agreeing.output, "role", "notation, read from the stream ports")) << "no stream port and plane/notation" << agreeing.output;
         expect(!agreeing.output.contains("\n  note ")) << agreeing.output;
+    };
+
+    "a declared source its ports read as source, and a declared transceiver they read as processor, carry no note"_test = [] {
+        const Result source = run(overVersionedPlugin({"block", "test::radio"}));
+        expect(eq(source.exitCode, 0)) << source.output;
+        expect(hasFact(source.output, "role", "source, declared")) << source.output;
+        expect(eq(occurrences(source.output, "\n  role "), 1UZ)) << source.output;
+        expect(!source.output.contains("\n  note ")) << "the ports confirm the declaration" << source.output;
+
+        const Result transceiver = run(overVersionedPlugin({"block", "test::transceiver"}));
+        expect(eq(transceiver.exitCode, 0)) << transceiver.output;
+        expect(hasFact(transceiver.output, "role", "transceiver, declared")) << transceiver.output;
+        expect(!transceiver.output.contains("\n  note ")) << "a transceiver's ports read processor" << transceiver.output;
+
+        const Result json = run(overVersionedPlugin({"block", "test::transceiver", "--json"}));
+        expect(eq(json.exitCode, 0)) << json.output;
+        expect(json.output.contains("\"label\": \"role/transceiver\"")) << "the declared role among the labels" << json.output;
+        expect(json.output.contains("\"role\": \"processor\"")) << "the role the stream ports read" << json.output;
+        expect(!json.output.contains("\"roleNote\"")) << json.output;
     };
 
     "block --json carries the labels with their meanings and the read role"_test = [] {
@@ -398,6 +419,7 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(!block.output.contains("\"roleNote\"")) << block.output;
 
         const Result mislabeled = run(overVersionedPlugin({"block", "test::mislabeled", "--json"}));
+        expect(mislabeled.output.contains("\"role\": \"sink\"")) << mislabeled.output;
         expect(mislabeled.output.contains("\"roleNote\": \"role/source declared; the stream ports read sink\"")) << mislabeled.output;
     };
 
@@ -428,19 +450,26 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(eq(sources.exitCode, 0)) << sources.output;
         expect(isOneJsonDocument(sources.output)) << sources.output;
         expect(sources.output.contains("\"mislabeled\"")) << "a declared role counts whatever the ports read" << sources.output;
+        expect(sources.output.contains("\"radio\"")) << "a declared role the ports confirm" << sources.output;
         expect(sources.output.contains("\"key\": \"good::fixed_source<float32>\"")) << "a block that declares nothing matches the role its ports read" << sources.output;
-        expect(jsonObject(sources.output, "totals").contains("\"blockKeys\": 4")) << sources.output;
+        expect(jsonObject(sources.output, "totals").contains("\"blockKeys\": 6")) << sources.output;
 
         const Result processors = run(overTestDirectories({"blocks", "--label", "role/processor", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}));
         expect(eq(processors.exitCode, 0)) << processors.output;
         expect(processors.output.contains("LibraryDoubler")) << "a block that declares nothing matches the role its ports read" << processors.output;
         expect(processors.output.contains("\n      versioned\n")) << "a declaring type without a role matches the role its map reads" << processors.output;
         expect(!processors.output.contains("mislabeled")) << "a declared role counts before the one the ports read" << processors.output;
+        expect(!processors.output.contains("transceiver")) << processors.output;
 
         const Result outside = run(overTestDirectories({"blocks", "--label", "holds/gpib", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}));
         expect(eq(outside.exitCode, 0)) << outside.output;
         expect(outside.output.contains("\nholds/gpib is outside the loaded vocabulary\n")) << outside.output;
         expect(hasFact(outside.output, "block keys", "0")) << outside.output;
+
+        const Result generator = run(overTestDirectories({"blocks", "--label", "role/generator", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}));
+        expect(eq(generator.exitCode, 0)) << generator.output;
+        expect(generator.output.contains("\nrole/generator is outside the loaded vocabulary\n")) << "a role word outside the vocabulary is named" << generator.output;
+        expect(hasFact(generator.output, "block keys", "0")) << generator.output;
     };
 
     "a malformed label is refused with the usage text"_test = [] {
