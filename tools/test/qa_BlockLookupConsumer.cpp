@@ -47,8 +47,21 @@ const boost::ut::suite<"BlockLookupConsumer"> blockLookupConsumerTests = [] {
     };
 
     "a declared role the stream ports contradict yields a note, and one they agree with yields none"_test = [] {
-        expect(gr::tools::roleNote("source", "sink").has_value());
+        expect(eq(gr::tools::roleNote("source", "sink").value_or(""), std::string("role/source declared; the stream ports read sink")));
+        expect(gr::tools::roleNote("sink", "source").has_value());
+        expect(eq(gr::tools::roleNote("processor", "").value_or(""), std::string("role/processor declared; the stream ports read no role")));
+        expect(gr::tools::roleNote("notation", "source").has_value());
         expect(!gr::tools::roleNote("source", "source").has_value());
+        expect(!gr::tools::roleNote("source", "processor").has_value()) << "a device source may take a stream input";
+        expect(!gr::tools::roleNote("sink", "").has_value());
+        expect(!gr::tools::roleNote("transceiver", "processor").has_value());
+        expect(!gr::tools::roleNote("", "sink").has_value()) << "nothing declared, nothing contradicted";
+    };
+
+    "the role line carries the declared word, else the word the stream ports read"_test = [] {
+        expect(eq(gr::tools::roleText("source", "sink"), std::string("source, declared")));
+        expect(eq(gr::tools::roleText("", "processor"), std::string("processor, read from the stream ports")));
+        expect(eq(gr::tools::roleText("", ""), std::string("none, read from the stream ports")));
     };
 };
 

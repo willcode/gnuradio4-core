@@ -3,7 +3,7 @@
 GR_PLUGIN("Versioned Plugin", "Unknown", "MIT", "v1")
 
 /// a plugin carrying two revisions of one alias, which only the versioned plugin interface can tell apart, a notation
-/// block and a block whose declared role its ports contradict
+/// block, a block whose declared role its ports contradict, one whose declared role its ports confirm and a transceiver
 namespace good {
 
 inline constexpr gr::block::Label kVersionedFamily = gr::block::labels::family("versioned", "Blocks of the versioned test plugin.");
@@ -65,9 +65,38 @@ struct MislabeledSource : gr::Block<MislabeledSource> {
     void processOne(float) const noexcept {}
 };
 
+/// a declared source whose one stream port is an output
+struct RadioSource : gr::Block<RadioSource> {
+    using Description = gr::Doc<"a declared source whose stream port is an output">;
+
+    static constexpr auto attributes = gr::block::describe(1U, gr::block::labels::role::source);
+
+    gr::PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(RadioSource, out);
+
+    [[nodiscard]] constexpr float processOne() const noexcept { return 0.0f; }
+};
+
+/// a declared transceiver with a stream input and a stream output, which the ports read as a processor
+struct Transceiver : gr::Block<Transceiver> {
+    using Description = gr::Doc<"a declared transceiver with a stream input and output">;
+
+    static constexpr auto attributes = gr::block::describe(1U, gr::block::labels::role::transceiver);
+
+    gr::PortIn<float>  in;
+    gr::PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(Transceiver, in, out);
+
+    [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
+};
+
 } // namespace good
 
-const bool registeredFirst [[maybe_unused]]      = grPluginBlockRegistry().insert<good::VersionedFirst>("=test::versioned");
-const bool registeredSecond [[maybe_unused]]     = grPluginBlockRegistry().insert<good::VersionedSecond>("=test::versioned");
-const bool registeredAntenna [[maybe_unused]]    = grPluginBlockRegistry().insert<good::Antenna>("=test::antenna");
-const bool registeredMislabeled [[maybe_unused]] = grPluginBlockRegistry().insert<good::MislabeledSource>("=test::mislabeled");
+const bool registeredFirst [[maybe_unused]]       = grPluginBlockRegistry().insert<good::VersionedFirst>("=test::versioned");
+const bool registeredSecond [[maybe_unused]]      = grPluginBlockRegistry().insert<good::VersionedSecond>("=test::versioned");
+const bool registeredAntenna [[maybe_unused]]     = grPluginBlockRegistry().insert<good::Antenna>("=test::antenna");
+const bool registeredMislabeled [[maybe_unused]]  = grPluginBlockRegistry().insert<good::MislabeledSource>("=test::mislabeled");
+const bool registeredRadio [[maybe_unused]]       = grPluginBlockRegistry().insert<good::RadioSource>("=test::radio");
+const bool registeredTransceiver [[maybe_unused]] = grPluginBlockRegistry().insert<good::Transceiver>("=test::transceiver");
