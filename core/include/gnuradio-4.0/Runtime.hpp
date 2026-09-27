@@ -249,7 +249,18 @@ public:
     /// scheduler's "GraphGRC" endpoint holds the document under `value`.
     [[nodiscard]] std::expected<std::string, RuntimeError> toYaml() const;
 
+    /// The block types `loader` can build: those of the block registry it reads and those of its plugins, sorted.
+    [[nodiscard]] static std::vector<std::string> availableBlockTypes(const PluginLoader& loader);
+
+    /// `availableBlockTypes` of the process's loader, which is built on the first call that uses it.
     [[nodiscard]] static std::vector<std::string> availableBlockTypes();
+
+    /// The scheduler types `loader` can build, the ones `Runtime::create` takes for a graph over it, sorted. The call
+    /// registers the shipped schedulers into `gr::globalSchedulerRegistry()` first, so the list holds them when `loader`
+    /// reads that registry, and it holds the schedulers of the loader's plugins.
+    [[nodiscard]] static std::vector<std::string> availableSchedulerTypes(const PluginLoader& loader);
+
+    /// `availableSchedulerTypes` of the process's loader, which is built on the first call that uses it.
     [[nodiscard]] static std::vector<std::string> availableSchedulerTypes();
 
     /**
