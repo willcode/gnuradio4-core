@@ -697,12 +697,16 @@ std::expected<std::string, RuntimeError> RuntimeGraph::toYaml() const {
     }
 }
 
-std::vector<std::string> RuntimeGraph::availableBlockTypes() { return gr::globalPluginLoader().availableBlocks(); }
+std::vector<std::string> RuntimeGraph::availableBlockTypes(const PluginLoader& loader) { return loader.availableBlocks(); }
 
-std::vector<std::string> RuntimeGraph::availableSchedulerTypes() {
+std::vector<std::string> RuntimeGraph::availableBlockTypes() { return availableBlockTypes(gr::globalPluginLoader()); }
+
+std::vector<std::string> RuntimeGraph::availableSchedulerTypes(const PluginLoader& loader) {
     std::ignore = gr::registerBuiltinSchedulers();
-    return gr::globalPluginLoader().availableSchedulers();
+    return loader.availableSchedulers();
 }
+
+std::vector<std::string> RuntimeGraph::availableSchedulerTypes() { return availableSchedulerTypes(gr::globalPluginLoader()); }
 
 std::vector<RuntimePluginDirectory> RuntimeGraph::loadPlugins(std::span<const std::string> directories) { return loadPlugins(gr::globalPluginLoader(), directories); }
 
