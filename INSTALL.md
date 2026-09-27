@@ -58,6 +58,14 @@ ctest --test-dir build --output-on-failure
 cmake --install build --prefix "$HOME/gr4-core"
 ```
 
+The plugin loader keeps its cached data in a data cache directory whose path
+is compiled in. A build configured with `CMAKE_INSTALL_PREFIX` uses
+`lib/gnuradio4/cache` under the installation's state directory, which
+GNUInstallDirs sets (`<prefix>/var` for most prefixes, `/var` for `/usr`). A
+build configured without it uses `gnuradio_cache` in the build tree. The
+`GR_DATA_CACHE_DIR` CMake variable sets another path at configure time, and
+the `GR_DATA_CACHE_DIR` environment variable overrides the path at run time.
+
 Downstream repositories should configure with:
 
 ```bash
