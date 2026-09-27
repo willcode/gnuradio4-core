@@ -206,13 +206,14 @@ struct LabelText {
 /**
  * @brief The note a tool prints when a declared role contradicts the role the stream ports read, else nothing.
  *
- * A `source` whose ports read `consumer`, a `sink` whose ports read `generator`, and a declared `generator`,
- * `processor`, `consumer` or `notation` the ports read otherwise each contradict them. Nothing is refused.
+ * A declared `source` whose ports read `sink`, a declared `sink` whose ports read `source`, and a declared `processor`
+ * or `notation` the ports read otherwise each contradict them. A declared `transceiver`, and a declared `source` or
+ * `sink` the ports read as `processor` or as no role, carry no note. Nothing is refused.
  */
 [[nodiscard]] inline std::optional<std::string> roleNote(std::string_view declared, std::string_view read) {
     namespace role           = block::labels::role;
-    const bool readWord      = declared == role::generator.word || declared == role::processor.word || declared == role::consumer.word || declared == role::notation.word;
-    const bool contradiction = (declared == role::source.word && read == role::consumer.word) || (declared == role::sink.word && read == role::generator.word) || (readWord && declared != read);
+    const bool portsCanRead  = declared == role::processor.word || declared == role::notation.word;
+    const bool contradiction = (declared == role::source.word && read == role::sink.word) || (declared == role::sink.word && read == role::source.word) || (portsCanRead && declared != read);
     if (!contradiction) {
         return std::nullopt;
     }

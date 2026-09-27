@@ -150,12 +150,10 @@ namespace labels {
 [[nodiscard]] constexpr Label family(std::string_view word, std::string_view meaning) noexcept { return {LabelClass::Family, word, meaning, false}; }
 
 namespace role {
-inline constexpr Label source{LabelClass::Role, "source", "Brings signals from the world into the graph across a boundary the block owns."};
-inline constexpr Label sink{LabelClass::Role, "sink", "Carries signals from the graph into the world across a boundary the block owns."};
+inline constexpr Label source{LabelClass::Role, "source", "Produces stream data into the graph: a device, a file, a network peer or a generator."};
+inline constexpr Label sink{LabelClass::Role, "sink", "Ends stream data from the graph: a device, a file, a network peer or a display."};
 inline constexpr Label transceiver{LabelClass::Role, "transceiver", "Carries signals both ways across a boundary the block owns."};
-inline constexpr Label generator{LabelClass::Role, "generator", "Produces stream data inside the graph from its settings alone."};
 inline constexpr Label processor{LabelClass::Role, "processor", "Turns stream input into stream output inside the graph."};
-inline constexpr Label consumer{LabelClass::Role, "consumer", "Takes stream input and ends it inside the graph."};
 inline constexpr Label notation{LabelClass::Role, "notation", "Appears in a drawing of the graph and never runs."};
 } // namespace role
 
@@ -230,7 +228,7 @@ inline constexpr Label experimental{LabelClass::Status, "experimental", "Its int
 } // namespace status
 
 /// every word core defines, the seed of every vocabulary
-inline constexpr std::array kCore{role::source, role::sink, role::transceiver, role::generator, role::processor, role::consumer, role::notation,                                                             //
+inline constexpr std::array kCore{role::source, role::sink, role::transceiver, role::processor, role::notation,                                                                                              //
     plane::control, plane::notation,                                                                                                                                                                         //
     holds::device, holds::storage, holds::network, holds::ipc,                                                                                                                                               //
     emits::rf, emits::sound, emits::light, emits::motion, emits::electrical, emits::ambient, emits::time, emits::storage, emits::network, emits::ipc, emits::graphical, emits::text,                         //
@@ -258,19 +256,19 @@ template<typename TBlock>
 /**
  * @brief The role a block's stream ports read.
  *
- * Stream outputs alone read `generator`, stream inputs alone `consumer` and both `processor`. A block with no stream
- * port reads `notation` when it is `plane/notation` and no role otherwise. No port shape tells a source, a sink or a
- * transceiver from a processing block, so the ports never read one of the three.
+ * Stream outputs alone read `source`, stream inputs alone `sink` and both `processor`. A block with no stream port reads
+ * `notation` when it is `plane/notation` and no role otherwise. The ports never read `transceiver`: a block that carries
+ * signals both ways across its own boundary declares it.
  */
 [[nodiscard]] constexpr std::optional<Label> roleFromPorts(bool hasStreamInputs, bool hasStreamOutputs, bool isNotation) noexcept {
     if (hasStreamInputs && hasStreamOutputs) {
         return labels::role::processor;
     }
     if (hasStreamOutputs) {
-        return labels::role::generator;
+        return labels::role::source;
     }
     if (hasStreamInputs) {
-        return labels::role::consumer;
+        return labels::role::sink;
     }
     return isNotation ? std::optional<Label>{labels::role::notation} : std::nullopt;
 }
