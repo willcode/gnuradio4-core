@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -27,6 +28,8 @@
 #include <thread>
 #include <tuple>
 #include <vector>
+
+#include "build_configure.hpp"
 
 /**
  * Parity between a graph built through gr::Runtime and the same graph built with the typed API:
@@ -518,6 +521,40 @@ blocks:
 };
 
 } // namespace qa_runtime
+
+#ifdef INTERNAL_ENABLE_BLOCK_PLUGINS
+/**
+ * The type lists over a loader the program builds, which read that loader and not the process's one.
+ *
+ * The suites of this file run in the order they appear, and this one runs first, before any case builds the process's
+ * loader. That loader reads GNURADIO4_PLUGIN_DIRECTORIES once, when it is built. The case names a directory that does
+ * not exist while it calls the lists, and names the versioned plugin's directory after them, which neither that value
+ * nor the test's environment names. The process's loader holds the versioned plugin's block only if it is built after
+ * the calls.
+ */
+const boost::ut::suite<"type lists over a loader"> typeListTests = [] {
+    using namespace boost::ut;
+
+    "the type lists over a program's loader hold its plugin types and the shipped schedulers, and leave the process's loader unbuilt"_test = [] {
+        const std::string pluginDirectory    = std::string(TESTS_BINARY_PATH) + "/plugins";
+        const std::string missingDirectory   = std::string(TESTS_BINARY_PATH) + "/no_such_plugin_directory";
+        const std::string versionedDirectory = std::string(TESTS_BINARY_PATH) + "/versioned_plugin";
+        expect(fatal(::setenv("GNURADIO4_PLUGIN_DIRECTORIES", missingDirectory.c_str(), 1) == 0));
+
+        const gr::PluginLoader         loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), std::vector<std::string>{pluginDirectory});
+        const std::vector<std::string> blocks     = gr::RuntimeGraph::availableBlockTypes(loader);
+        const std::vector<std::string> schedulers = gr::RuntimeGraph::availableSchedulerTypes(loader);
+
+        expect(std::ranges::contains(blocks, std::string_view{"good::fixed_source<float32>"})) << "the block list holds no plugin block";
+        expect(std::ranges::contains(schedulers, std::string_view{"gr::scheduler::Simple<singleThreaded>"})) << "the scheduler list holds no shipped scheduler";
+        const auto pluginScheduler = std::ranges::find_if(schedulers, [](const std::string& name) { return name.contains("GoodMathScheduler"); });
+        expect(fatal(pluginScheduler != schedulers.end())) << "the scheduler list holds no plugin scheduler";
+
+        expect(fatal(::setenv("GNURADIO4_PLUGIN_DIRECTORIES", versionedDirectory.c_str(), 1) == 0));
+        expect(std::ranges::contains(gr::RuntimeGraph::availableBlockTypes(), std::string_view{"test::versioned"})) << "the process's loader was built before the versioned plugin's directory was named";
+    };
+};
+#endif
 
 const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
     using namespace boost::ut;
