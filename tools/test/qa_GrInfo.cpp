@@ -168,6 +168,17 @@ constexpr std::size_t kWidth = 80UZ;
 }
 #endif
 
+#ifdef GR_TOOLS_VERSIONED_PLUGIN
+// a run over the versioned test plugin alone, with the installation's plugin directory left out of the search
+[[nodiscard]] std::vector<std::string> overVersionedPlugin(const std::vector<std::string>& arguments) {
+    std::vector<std::string> all(arguments);
+    all.emplace_back("--no-installed-dir");
+    all.emplace_back("--plugin-dir");
+    all.emplace_back(GR_TOOLS_VERSIONED_PLUGIN);
+    return all;
+}
+#endif
+
 } // namespace qa_grinfo
 
 const boost::ut::suite<"GrInfo"> grInfoTests = [] {
@@ -348,7 +359,7 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
 
 #ifdef GR_TOOLS_VERSIONED_PLUGIN
     "a block that declares labels prints each with its meaning, then the role its ports read"_test = [] {
-        const Result block = run({"block", "test::versioned", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        const Result block = run(overVersionedPlugin({"block", "test::versioned"}));
         expect(eq(block.exitCode, 0)) << block.output;
         expect(hasFact(block.output, "family/versioned", "Blocks of the versioned test plugin.")) << "the meaning the plugin's vocabulary carries across the boundary" << block.output;
         expect(hasFact(block.output, "holds/device", "Opens a hardware unit attached to the host.")) << block.output;
@@ -363,20 +374,20 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
     };
 
     "a declared role the stream ports contradict is printed with one note, and nothing is refused"_test = [] {
-        const Result block = run({"block", "test::mislabeled", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        const Result block = run(overVersionedPlugin({"block", "test::mislabeled"}));
         expect(eq(block.exitCode, 0)) << block.output;
-        expect(hasFact(block.output, "role/source", "Brings signals from the world into the graph across a boundary")) << block.output;
-        expect(hasFact(block.output, "note", "role/source declared; the stream ports read consumer")) << block.output;
+        expect(hasFact(block.output, "role/source", "Produces stream data into the graph: a device, a file, a network")) << block.output;
+        expect(hasFact(block.output, "note", "role/source declared; the stream ports read sink")) << block.output;
         expect(eq(occurrences(block.output, "\n  note "), 1UZ)) << block.output;
 
-        const Result agreeing = run({"block", "test::antenna", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        const Result agreeing = run(overVersionedPlugin({"block", "test::antenna"}));
         expect(eq(agreeing.exitCode, 0)) << agreeing.output;
         expect(hasFact(agreeing.output, "role", "notation, read from the stream ports")) << "no stream port and plane/notation" << agreeing.output;
         expect(!agreeing.output.contains("\n  note ")) << agreeing.output;
     };
 
     "block --json carries the labels with their meanings and the read role"_test = [] {
-        const Result block = run({"block", "test::versioned", "--json", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        const Result block = run(overVersionedPlugin({"block", "test::versioned", "--json"}));
         expect(eq(block.exitCode, 0)) << block.output;
         expect(isOneJsonDocument(block.output)) << block.output;
         expect(block.output.contains("\"label\": \"family/versioned\"")) << block.output;
@@ -386,8 +397,8 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(block.output.contains("\"version\": 2")) << "a number, not a string" << block.output;
         expect(!block.output.contains("\"roleNote\"")) << block.output;
 
-        const Result mislabeled = run({"block", "test::mislabeled", "--json", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
-        expect(mislabeled.output.contains("\"roleNote\": \"role/source declared; the stream ports read consumer\"")) << mislabeled.output;
+        const Result mislabeled = run(overVersionedPlugin({"block", "test::mislabeled", "--json"}));
+        expect(mislabeled.output.contains("\"roleNote\": \"role/source declared; the stream ports read sink\"")) << mislabeled.output;
     };
 
     "blocks --label keeps the blocks whose newest version carries every label named"_test = [] {
@@ -417,7 +428,8 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(eq(sources.exitCode, 0)) << sources.output;
         expect(isOneJsonDocument(sources.output)) << sources.output;
         expect(sources.output.contains("\"mislabeled\"")) << "a declared role counts whatever the ports read" << sources.output;
-        expect(jsonObject(sources.output, "totals").contains("\"blockKeys\": 2")) << sources.output;
+        expect(sources.output.contains("\"key\": \"good::fixed_source<float32>\"")) << "a block that declares nothing matches the role its ports read" << sources.output;
+        expect(jsonObject(sources.output, "totals").contains("\"blockKeys\": 4")) << sources.output;
 
         const Result processors = run(overTestDirectories({"blocks", "--label", "role/processor", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}));
         expect(eq(processors.exitCode, 0)) << processors.output;
@@ -447,7 +459,7 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
     };
 
     "labels prints the vocabulary by class with each word's meaning"_test = [] {
-        const Result labels = run({"labels", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        const Result labels = run(overVersionedPlugin({"labels"}));
         expect(eq(labels.exitCode, 0)) << labels.output;
         expect(labels.output.starts_with("family\n")) << labels.output;
         expect(hasFact(labels.output, "versioned", "Blocks of the versioned test plugin.")) << "a plugin's word" << labels.output;
@@ -457,7 +469,7 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         const std::array<std::size_t, 8> classes{labels.output.find("family\n"), labels.output.find("\nrole\n"), labels.output.find("\nplane\n"), labels.output.find("\nholds\n"), labels.output.find("\nemits\n"), labels.output.find("\ningests\n"), labels.output.find("\ncompute\n"), labels.output.find("\nstatus\n")};
         expect(classes.back() != std::string::npos && std::ranges::is_sorted(classes)) << "the classes in their order" << labels.output;
 
-        const Result json = run({"labels", "--json", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN});
+        const Result json = run(overVersionedPlugin({"labels", "--json"}));
         expect(eq(json.exitCode, 0)) << json.output;
         expect(isOneJsonDocument(json.output)) << json.output;
         expect(json.output.contains("\"label\": \"holds/testbus\"")) << json.output;

@@ -47,8 +47,8 @@ const boost::ut::suite<"BlockLookupConsumer"> blockLookupConsumerTests = [] {
     };
 
     "a declared role the stream ports contradict yields a note, and one they agree with yields none"_test = [] {
-        expect(gr::tools::roleNote("source", "consumer").has_value());
-        expect(!gr::tools::roleNote("source", "generator").has_value());
+        expect(gr::tools::roleNote("source", "sink").has_value());
+        expect(!gr::tools::roleNote("source", "source").has_value());
     };
 };
 

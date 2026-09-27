@@ -94,7 +94,7 @@ struct FilterV2 : gr::Block<FilterV2> {
     [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
 };
 
-/// a radio source and sink, each declaring its role, whose ports read generator and consumer
+/// a radio source and sink, each declaring the role its stream ports also read
 struct RadioSource : gr::Block<RadioSource> {
     static constexpr auto attributes = gr::block::describe(1U, kQaFamily, labels::role::source, labels::holds::device, labels::ingests::rf);
 
@@ -193,7 +193,7 @@ struct Antenna : gr::Block<Antenna> {
     [[nodiscard]] constexpr gr::work::Status processBulk() const noexcept { return gr::work::Status::DONE; }
 };
 
-/// a declared source whose stream ports read consumer; the framework carries both and refuses neither
+/// a declared source whose stream ports read sink; the framework carries both and refuses neither
 struct ContradictedSource : gr::Block<ContradictedSource> {
     static constexpr auto attributes = gr::block::describe(1U, labels::role::source);
 
@@ -494,23 +494,23 @@ const boost::ut::suite<"block attributes"> blockAttributesTests = [] {
         using gr::block::roleOf;
         using Role = std::optional<Label>;
         expect(roleOf<qa_registration::RadioSource>() == Role{labels::role::source});
-        expect(portRoleOf<qa_registration::RadioSource>() == Role{labels::role::generator});
+        expect(portRoleOf<qa_registration::RadioSource>() == Role{labels::role::source}) << "a declaration may confirm the ports";
         expect(roleOf<qa_registration::RadioSink>() == Role{labels::role::sink});
-        expect(portRoleOf<qa_registration::RadioSink>() == Role{labels::role::consumer});
+        expect(portRoleOf<qa_registration::RadioSink>() == Role{labels::role::sink});
         expect(roleOf<qa_registration::FpgaTransform>() == Role{labels::role::processor}) << "holding a device makes no transceiver";
-        expect(roleOf<qa_registration::RadioCombiningSink>() == Role{labels::role::consumer}) << "a dynamic port collection counts as one port";
-        expect(roleOf<qa_registration::RadioControlledSource>() == Role{labels::role::generator}) << "a message port counts for nothing";
+        expect(roleOf<qa_registration::RadioCombiningSink>() == Role{labels::role::sink}) << "a dynamic port collection counts as one port";
+        expect(roleOf<qa_registration::RadioControlledSource>() == Role{labels::role::source}) << "a message port counts for nothing";
         expect(roleOf<qa_registration::RotatorController>() == Role{labels::role::transceiver});
         expect(portRoleOf<qa_registration::RotatorController>() == Role{}) << "no stream port reads no role";
         expect(roleOf<qa_registration::ControlOnly>() == Role{}) << "a control-only block that declares no role has none";
         expect(roleOf<qa_registration::Antenna>() == Role{labels::role::notation}) << "no stream port and plane/notation read notation";
         expect(roleOf<qa_registration::ContradictedSource>() == Role{labels::role::source});
-        expect(portRoleOf<qa_registration::ContradictedSource>() == Role{labels::role::consumer}) << "the declaration and the ports disagree, and both are kept";
+        expect(portRoleOf<qa_registration::ContradictedSource>() == Role{labels::role::sink}) << "the declaration and the ports disagree, and both are kept";
 
         const gr::property_map sourceMap = registeredMap<qa_registration::RadioSource>();
         expect(wordsAt(sourceMap, "labels") == std::vector<std::string>{"family/qa", "role/source", "holds/device", "ingests/rf"});
-        expect(eq(wordAt(sourceMap, "role"), "generator"sv)) << "the map carries the role the ports read beside the declared one";
-        expect(eq(wordAt(registeredMap<qa_registration::ContradictedSource>(), "role"), "consumer"sv));
+        expect(eq(wordAt(sourceMap, "role"), "source"sv)) << "the map carries the role the ports read beside the declared one";
+        expect(eq(wordAt(registeredMap<qa_registration::ContradictedSource>(), "role"), "sink"sv));
         expect(!registeredMap<qa_registration::ControlOnly>().contains("role"sv));
         expect(!registeredMap<qa_registration::RotatorController>().contains("role"sv));
         expect(eq(wordAt(registeredMap<qa_registration::Antenna>(), "role"), "notation"sv));
@@ -526,12 +526,29 @@ const boost::ut::suite<"block attributes"> blockAttributesTests = [] {
         using gr::block::roleFromPorts;
         using Role = std::optional<Label>;
         for (const bool isNotation : {false, true}) {
-            expect(roleFromPorts(false, true, isNotation) == Role{labels::role::generator});
-            expect(roleFromPorts(true, false, isNotation) == Role{labels::role::consumer});
+            expect(roleFromPorts(false, true, isNotation) == Role{labels::role::source});
+            expect(roleFromPorts(true, false, isNotation) == Role{labels::role::sink});
             expect(roleFromPorts(true, true, isNotation) == Role{labels::role::processor});
         }
         expect(roleFromPorts(false, false, true) == Role{labels::role::notation});
         expect(roleFromPorts(false, false, false) == Role{});
+    };
+
+    "core's role words are the four the ports read and transceiver, and a map's other role word is carried unknown"_test = [] {
+        std::vector<std::string> words;
+        for (const gr::block::VocabularyEntry* entry : gr::block::coreVocabulary().words(LabelClass::Role)) {
+            words.push_back(entry->word);
+        }
+        std::ranges::sort(words);
+        expect(words == std::vector<std::string>{"notation", "processor", "sink", "source", "transceiver"}) << "one role vocabulary";
+
+        const gr::property_map   stated{{"labels", gr::Tensor<gr::pmt::Value>(std::pmr::vector<gr::pmt::Value>{gr::pmt::Value(std::string("role/generator"))})}, {"role", std::string("source")}};
+        std::vector<std::string> rejected;
+        const AttributesRead     read = gr::block::attributesFromMap(stated, gr::block::coreVocabulary(), rejected);
+        expect(rejected.empty()) << "a well-formed word of a known class is read";
+        expect(fatal(eq(read.labels.size(), 1UZ)));
+        expect(eq(read.labels.front().text(), "role/generator"s));
+        expect(!read.labels.front().known) << "and marked outside core's vocabulary";
     };
 
     "describe() refuses a label given twice, a second word in a class of one, a malformed word and a seventeenth label"_test = [] {
@@ -551,14 +568,14 @@ const boost::ut::suite<"block attributes"> blockAttributesTests = [] {
 
     "the map round-trips, and a word outside the vocabulary is carried and marked"_test = [] {
         static constexpr auto  kDeclared = gr::block::describe(7U, labels::status::deprecated, qa_registration::kQaGpib, qa_registration::kQaFamily, labels::role::sink, labels::emits::storage, labels::status::experimental);
-        const gr::property_map map       = gr::block::attributesToMap(kDeclared, labels::role::consumer);
+        const gr::property_map map       = gr::block::attributesToMap(kDeclared, labels::role::processor);
         expect(wordsAt(map, "labels") == std::vector<std::string>{"family/qa", "role/sink", "holds/gpib", "emits/storage", "status/deprecated", "status/experimental"});
 
         std::vector<std::string> rejected;
         const AttributesRead     read = gr::block::attributesFromMap(map, gr::block::coreVocabulary(), rejected);
         expect(rejected.empty()) << "well-formed words of known classes reject nothing";
         expect(eq(read.version, Version{7U}));
-        expect(eq(read.readRole, "consumer"s));
+        expect(eq(read.readRole, "processor"s));
         expect(eq(read.role(), "sink"sv));
         expect(gr::block::attributesToMap(read) == map);
         expect(read.words(LabelClass::Status) == std::vector<std::string_view>{"deprecated", "experimental"});
@@ -670,9 +687,9 @@ const boost::ut::suite<"block attributes"> blockAttributesTests = [] {
             }
             return keys;
         };
-        expect(keysWith(qa_registration::kQaFamily, labels::role::source) == std::vector<std::string>{"qa::RadioSource"}) << "a source whose ports read generator, by its declared role";
+        expect(keysWith(qa_registration::kQaFamily, labels::role::source) == std::vector<std::string>{"qa::RadioSource"}) << "a declared source, and not a block whose ports read source";
         expect(keysWith(qa_registration::kQaFamily, labels::role::sink) == std::vector<std::string>{"qa::RadioSink"});
-        expect(keysWith(qa_registration::kQaFamily, labels::role::generator).empty()) << "a role read from the ports never matches";
+        expect(keysWith(qa_registration::kQaFamily, labels::role::processor).empty()) << "a role read from the ports never matches";
         expect(keysWith(qa_registration::kOtherFamily, labels::role::source).empty());
     };
 
