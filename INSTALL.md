@@ -65,6 +65,11 @@ GNUInstallDirs sets (`<prefix>/var` for most prefixes, `/var` for `/usr`). A
 build configured without it uses `gnuradio_cache` in the build tree. The
 `GR_DATA_CACHE_DIR` CMake variable sets another path at configure time, and
 the `GR_DATA_CACHE_DIR` environment variable overrides the path at run time.
+When the running user cannot make the compiled directory, the loader uses the
+user's cache directory, `gnuradio4/cache` under `$XDG_CACHE_HOME` or else
+under `$HOME/.cache`, and prints a note that names it and the reason. With
+neither directory, caching is off. `grinfo version` reports the directory in
+use.
 
 Downstream repositories should configure with:
 

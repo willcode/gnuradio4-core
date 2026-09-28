@@ -4,9 +4,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #ifndef _WIN32
@@ -62,6 +66,33 @@ struct Result {
 #endif
     return result;
 }
+
+// sets or clears one environment variable for the programs a case runs, and puts back the value it found
+class EnvironmentVariable {
+    std::string                _name;
+    std::optional<std::string> _found;
+
+public:
+    EnvironmentVariable(std::string name, const std::optional<std::string>& value) : _name(std::move(name)) {
+        if (const char* found = std::getenv(_name.c_str()); found != nullptr) {
+            _found = found;
+        }
+        if (value.has_value()) {
+            ::setenv(_name.c_str(), value->c_str(), 1);
+        } else {
+            ::unsetenv(_name.c_str());
+        }
+    }
+    ~EnvironmentVariable() {
+        if (_found.has_value()) {
+            ::setenv(_name.c_str(), _found->c_str(), 1);
+        } else {
+            ::unsetenv(_name.c_str());
+        }
+    }
+    EnvironmentVariable(const EnvironmentVariable&)            = delete;
+    EnvironmentVariable& operator=(const EnvironmentVariable&) = delete;
+};
 
 // one JSON document: every bracket closed in order outside a string, and nothing left open at the end
 [[nodiscard]] bool isOneJsonDocument(std::string_view text) {
@@ -214,6 +245,27 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         const Result help = run({"--help"});
         expect(eq(help.exitCode, 0)) << help.output;
         expect(help.output.contains("Usage: grinfo")) << help.output;
+    };
+
+    "version reports the data cache directory in use, the one GR_DATA_CACHE_DIR names when it is set"_test = [] {
+        const std::string named = (std::filesystem::temp_directory_path() / "gr4_qa_grinfo_cache").string();
+        {
+            const EnvironmentVariable unset("GR_DATA_CACHE_DIR", std::nullopt);
+            const Result              compiled = run({"version", "--json", "--no-installed-dir"});
+            expect(eq(compiled.exitCode, 0)) << compiled.output;
+            expect(compiled.output.contains("\"dataCacheOrigin\": \"compiled\"")) << "the instrument: without the variable the build's compiled directory is in use" << compiled.output;
+            expect(!compiled.output.contains(named)) << compiled.output;
+        }
+
+        const EnvironmentVariable variable("GR_DATA_CACHE_DIR", named);
+        const Result              json = run({"version", "--json", "--no-installed-dir"});
+        expect(eq(json.exitCode, 0)) << json.output;
+        expect(json.output.contains(std::format("\"dataCacheDirectory\": \"{}\"", named))) << json.output;
+        expect(json.output.contains("\"dataCacheOrigin\": \"environment\"")) << json.output;
+
+        const Result text = run({"version", "--no-installed-dir"});
+        expect(eq(text.exitCode, 0)) << text.output;
+        expect(text.output.contains(std::format("{}, from GR_DATA_CACHE_DIR", named))) << text.output;
     };
 
 #ifdef GR_TOOLS_CORE_TEST_PLUGINS
