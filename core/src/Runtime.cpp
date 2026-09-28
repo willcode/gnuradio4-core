@@ -714,7 +714,7 @@ std::vector<RuntimePluginDirectory> RuntimeGraph::loadPlugins(PluginLoader& load
     std::vector<RuntimePluginDirectory> reports;
     reports.reserve(directories.size());
     for (const std::string& directory : directories) {
-        RuntimePluginDirectory report{.directory = directory, .plugins = {}, .blockLibraries = {}, .failed = {}, .skipped = {}, .blockTypes = {}, .error = {}};
+        RuntimePluginDirectory report{.directory = directory, .plugins = {}, .blockLibraries = {}, .failed = {}, .skipped = {}, .blockTypes = {}, .refused = {}, .error = {}};
         try {
             loader.loadDirectories(std::span(std::addressof(directory), 1UZ));
         } catch (const std::exception& error) {
@@ -755,6 +755,18 @@ std::vector<RuntimePluginDirectory> RuntimeGraph::loadPlugins(PluginLoader& load
 #endif
         reports.push_back(std::move(report));
     }
+#ifdef INTERNAL_ENABLE_BLOCK_PLUGINS
+    // a registration is refused against whatever the whole search holds, so the refusals are read once it is over
+    for (const RefusedRegistration& refusal : loader.refusedRegistrations()) {
+        const std::filesystem::path offeredIn = (std::filesystem::path(refusal.file).parent_path() / "").lexically_normal();
+        for (RuntimePluginDirectory& report : reports) {
+            if ((std::filesystem::path(report.directory) / "").lexically_normal() == offeredIn) {
+                report.refused.push_back({.key = refusal.key, .version = refusal.version, .file = refusal.file, .holder = refusal.holder});
+                break;
+            }
+        }
+    }
+#endif
     return reports;
 }
 

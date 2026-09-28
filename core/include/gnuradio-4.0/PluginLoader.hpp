@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <optional>
@@ -14,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -40,6 +43,21 @@ using namespace std::string_view_literals;
 
 // Forward declaration needed for instantiateBlockFromYamlDefinition before PluginLoader is fully defined.
 class PluginLoader;
+
+/**
+ * @brief A registration a file offered while an earlier registration in the search order holds its key at its version.
+ *
+ * The search order is the block registry, which holds the program's own blocks and then the block libraries in the
+ * order they loaded, then the plugins in the order they loaded, then the YAML definitions in the order they were read.
+ * The first registration of a key at a version in that order holds it. A refused registration is not an error: the
+ * load goes on, and the holder answers for that key and version.
+ */
+struct RefusedRegistration {
+    std::string    key;
+    block::Version version = block::kDefaultVersion;
+    std::string    file;   ///< the file that offered the refused registration
+    std::string    holder; ///< the file of the registration that holds the key at that version, empty where the linker names none
+};
 
 namespace detail {
 
@@ -251,6 +269,7 @@ struct YamlDefinitionsLoader {
         gr_plugin_metadata metadata;
         gr::property_map   attributes{}; ///< see definitionAttributes()
         block::Vocabulary  vocabulary{}; ///< see definitionVocabulary()
+        std::string        uri{};        ///< the file the definition was read from
     };
 
     /// the data cache directory: the GR_DATA_CACHE_DIR environment variable when set, else the path compiled in
@@ -263,6 +282,10 @@ struct YamlDefinitionsLoader {
     }
 
     std::unordered_map<std::string, Definition> _definitionForBlockName;
+
+    /// every definition read, as its block type and its file, in the order they were read; a block type repeats where
+    /// a later definition names it again
+    std::vector<std::pair<std::string, std::string>> _offeredDefinitions;
 
     /// assets an index named that did not register; each was reported as it was skipped
     std::size_t _nSkippedAssets = 0UZ;
@@ -393,11 +416,15 @@ struct YamlDefinitionsLoader {
                     std::println(stderr, "warning: block definition {} ({}): {}", metadata.block_type, blockUri, line);
                 }
 
+                // the first definition of a block type holds it, and a later one is only listed as offered
+                _offeredDefinitions.emplace_back(metadata.block_type, blockUri);
                 auto blockType = metadata.block_type;
-                _definitionForBlockName.insert_or_assign(std::move(blockType), Definition{std::move(*blockMap), std::move(metadata), std::move(attributes), std::move(vocabulary)});
+                _definitionForBlockName.try_emplace(std::move(blockType), Definition{std::move(*blockMap), std::move(metadata), std::move(attributes), std::move(vocabulary), blockUri});
             }
         }
     }
+
+    [[nodiscard]] const std::vector<std::pair<std::string, std::string>>& offeredDefinitions() const noexcept { return _offeredDefinitions; }
 
     std::optional<Definition> definitionForBlockName(std::string_view name) const { //
         return detail::optionalMapAt<std::optional<Definition>>(_definitionForBlockName, name, std::nullopt);
@@ -465,6 +492,28 @@ inline constexpr std::array<std::string_view, 2> kLibraryExtensions{".so", ".dyl
 #else
 inline constexpr std::array<std::string_view, 1> kLibraryExtensions{".so"};
 #endif
+
+namespace detail {
+
+/// the file the dynamic linker holds `address` in, empty when it names none
+[[nodiscard]] inline std::string fileHoldingCode(const void* address) {
+    Dl_info info{};
+    if (address == nullptr || dladdr(address, &info) == 0 || info.dli_fname == nullptr) {
+        return {};
+    }
+    return std::string(info.dli_fname);
+}
+
+/// the versions `plugin` offers under `name`, and `block::kDefaultVersion` for a plugin that states none
+[[nodiscard]] inline std::vector<block::Version> offeredVersions(const gr_plugin_base& plugin, std::string_view name) {
+    std::vector<block::Version> versions = plugin.blockVersions(name);
+    if (versions.empty()) {
+        versions.push_back(block::kDefaultVersion);
+    }
+    return versions;
+}
+
+} // namespace detail
 
 class PluginHandler {
 private:
@@ -590,7 +639,7 @@ public:
         std::string              file;
         std::size_t              nBlockRegistrations     = 0UZ;
         std::size_t              nSchedulerRegistrations = 0UZ;
-        std::vector<std::string> blockTypes{}; ///< the keys it added to the block registries, sorted; a key it replaced is not among them
+        std::vector<std::string> blockTypes{}; ///< the keys it added to the block registries, sorted
     };
 
     /// A shared object that loaded as a plugin.
@@ -610,14 +659,87 @@ private:
     std::unordered_set<std::string>              _searchedDirectories;
     std::map<std::string, std::string>           _failedDirectories;
 
-    std::unordered_map<std::string, gr_plugin_base*> _pluginForBlockName;
-    std::unordered_map<std::string, gr_plugin_base*> _pluginForSchedulerName;
+    /// per key and version, the first plugin that offered it
+    std::map<std::string, std::map<block::Version, gr_plugin_base*>, std::less<>> _pluginForBlockName;
+    std::unordered_map<std::string, gr_plugin_base*>                              _pluginForSchedulerName;
+
+    /// the refusals the registries recorded while a file loaded, each with that file
+    std::vector<RefusedRegistration> _registryRefusals;
 
     BlockRegistry*     _registry;
     SchedulerRegistry* _schedulerRegistry;
 
-    gr_plugin_base* pluginForBlockName(std::string_view name) const { //
-        return detail::optionalMapAt<gr_plugin_base*>(_pluginForBlockName, name, nullptr);
+    /// the plugin that holds `name` at `version` among the plugins, null when none does
+    gr_plugin_base* pluginFor(std::string_view name, block::Version version) const {
+        const auto versions = _pluginForBlockName.find(name);
+        if (versions == _pluginForBlockName.cend()) {
+            return nullptr;
+        }
+        const auto held = versions->second.find(version);
+        return held == versions->second.cend() ? nullptr : held->second;
+    }
+
+    /// the newest version of `name` the registry or a plugin holds
+    [[nodiscard]] std::optional<block::Version> newestVersion(std::string_view name) const {
+        std::optional<block::Version> newest = _registry->newestVersion(name);
+        if (const auto versions = _pluginForBlockName.find(name); versions != _pluginForBlockName.cend() && !versions->second.empty()) {
+            const block::Version pluginNewest = std::prev(versions->second.cend())->first;
+            newest                            = newest.has_value() ? std::max(*newest, pluginNewest) : pluginNewest;
+        }
+        return newest;
+    }
+
+    /// the file `plugin` was loaded from
+    [[nodiscard]] std::string fileOf(const gr_plugin_base* plugin) const {
+        for (std::size_t i = 0UZ; i < _pluginHandlers.size(); ++i) {
+            if (_pluginHandlers[i].operator->() == plugin) {
+                return _pluginFiles[i].file;
+            }
+        }
+        return {};
+    }
+
+    /// the file of the registration that holds `name` at `version` in the search order, empty when none holds it or the
+    /// linker names no file
+    [[nodiscard]] std::string holderFile(std::string_view name, block::Version version) const {
+        if (const BlockRegistry::Factory factory = _registry->factoryFor(name, version); factory != nullptr) {
+            return detail::fileHoldingCode(std::bit_cast<const void*>(factory));
+        }
+        if (const gr_plugin_base* plugin = pluginFor(name, version); plugin != nullptr) {
+            return fileOf(plugin);
+        }
+        if (const auto definition = _yamlRegistry._definitionForBlockName.find(std::string(name)); version == block::kDefaultVersion && definition != _yamlRegistry._definitionForBlockName.cend()) {
+            return definition->second.uri;
+        }
+        return {};
+    }
+
+    /// how many refusals each registry a load can reach holds: this loader's block and scheduler registries, then the
+    /// process-wide pair where they differ from them
+    [[nodiscard]] std::array<std::size_t, 4UZ> refusalMarks() const {
+        const BlockRegistry&     globalBlocks     = gr::globalBlockRegistry();
+        const SchedulerRegistry& globalSchedulers = gr::globalSchedulerRegistry();
+        return {_registry->refused().size(), _schedulerRegistry->refused().size(), &globalBlocks != _registry ? globalBlocks.refused().size() : 0UZ, &globalSchedulers != _schedulerRegistry ? globalSchedulers.refused().size() : 0UZ};
+    }
+
+    /// records as `file`'s each refusal the registries made after `marks`, and returns how many there were
+    std::size_t recordRefusals(const std::array<std::size_t, 4UZ>& marks, const std::string& file) {
+        const std::size_t before = _registryRefusals.size();
+        const auto        record = [this, &file](const auto& registry, std::size_t from) {
+            const auto& refused = registry.refused();
+            for (std::size_t i = from; i < refused.size(); ++i) {
+                _registryRefusals.push_back({.key = refused[i].key, .version = refused[i].version, .file = file, .holder = detail::fileHoldingCode(std::bit_cast<const void*>(refused[i].holder))});
+            }
+        };
+        record(*_registry, marks[0UZ]);
+        record(*_schedulerRegistry, marks[1UZ]);
+        if (const BlockRegistry& global = gr::globalBlockRegistry(); &global != _registry) {
+            record(global, marks[2UZ]);
+        }
+        if (const SchedulerRegistry& global = gr::globalSchedulerRegistry(); &global != _schedulerRegistry) {
+            record(global, marks[3UZ]);
+        }
+        return _registryRefusals.size() - before;
     }
 
     gr_plugin_base* pluginForSchedulerName(std::string_view name) const { //
@@ -702,13 +824,22 @@ public:
                 _loadedPluginFiles.insert(fileString);
 
                 const auto [blockGenerationBefore, schedulerGenerationBefore] = registryGenerations();
-                const std::vector<std::string> keysBefore                     = registryKeys();
+                const std::vector<std::string>     keysBefore                 = registryKeys();
+                const std::array<std::size_t, 4UZ> refusalsBefore             = refusalMarks();
 
-                if (PluginHandler handler(fileString); handler) {
+                PluginHandler     handler(fileString);
+                const std::size_t nRefusals = recordRefusals(refusalsBefore, fileString);
+                if (handler) {
+                    // each version of a key goes to the first plugin that offers it; the registry precedes every plugin
+                    // at lookup and in refusedRegistrations()
                     PluginFile loaded{.file = fileString};
-                    for (std::string_view blockName : handler->availableBlocks()) {
-                        if (_pluginForBlockName.emplace(std::string(blockName), handler.operator->()).second && !std::ranges::binary_search(keysBefore, blockName)) {
-                            loaded.blockTypes.emplace_back(blockName);
+                    for (const std::string& blockName : handler->availableBlocks()) {
+                        auto [versions, isNewKey] = _pluginForBlockName.try_emplace(blockName);
+                        if (isNewKey && !std::ranges::binary_search(keysBefore, blockName)) {
+                            loaded.blockTypes.push_back(blockName);
+                        }
+                        for (const block::Version version : detail::offeredVersions(*handler.operator->(), blockName)) {
+                            std::ignore = detail::claimVersion(versions->second, version, handler.operator->(), std::equal_to<>{});
                         }
                     }
                     std::ranges::sort(loaded.blockTypes);
@@ -725,7 +856,7 @@ public:
                     const std::size_t blockRegistrations                        = blockGenerationAfter - blockGenerationBefore;
                     const std::size_t schedulerRegistrations                    = schedulerGenerationAfter - schedulerGenerationBefore;
 
-                    if (handler.isLoaded() && (blockRegistrations != 0UZ || schedulerRegistrations != 0UZ)) {
+                    if (handler.isLoaded() && (blockRegistrations != 0UZ || schedulerRegistrations != 0UZ || nRefusals != 0UZ)) {
                         handler.keepMapped();
                         std::vector<std::string> added;
                         std::ranges::set_difference(registryKeys(), keysBefore, std::back_inserter(added));
@@ -760,6 +891,34 @@ public:
 
     const auto& failedPlugins() const { return _failedPlugins; }
 
+    /**
+     * @brief Every registration a loaded file offered that an earlier registration in the search order holds.
+     *
+     * The block libraries' refusals come first, in the order the libraries loaded, then the plugins' in the order they
+     * loaded, then the YAML definitions' in the order they were read. Each names the file that holds the key at that
+     * version as the search finds it now, so a block library that loaded after a plugin holds what that plugin offered
+     * at the same key and version. A different version of the same key is held by whichever file offered it first.
+     */
+    [[nodiscard]] std::vector<RefusedRegistration> refusedRegistrations() const {
+        std::vector<RefusedRegistration> refused = _registryRefusals;
+        for (std::size_t i = 0UZ; i < _pluginHandlers.size(); ++i) {
+            const std::string& file = _pluginFiles[i].file;
+            for (const std::string& name : _pluginHandlers[i]->availableBlocks()) {
+                for (const block::Version version : detail::offeredVersions(*_pluginHandlers[i].operator->(), name)) {
+                    if (std::string holder = holderFile(name, version); holder != file) {
+                        refused.push_back({.key = name, .version = version, .file = file, .holder = std::move(holder)});
+                    }
+                }
+            }
+        }
+        for (const auto& [name, file] : _yamlRegistry.offeredDefinitions()) {
+            if (std::string holder = holderFile(name, block::kDefaultVersion); holder != file) {
+                refused.push_back({.key = name, .version = block::kDefaultVersion, .file = file, .holder = std::move(holder)});
+            }
+        }
+        return refused;
+    }
+
     std::vector<std::string> availableBlocks() const {
         auto                     keysView = _pluginForBlockName | std::views::keys;
         std::vector<std::string> result(keysView.begin(), keysView.end());
@@ -777,15 +936,18 @@ public:
     /// Instantiates and keeps the reason a definition refused: a null value is an ordinary miss --
     /// no block, plugin or YAML definition carries that name -- while an unexpected carries the
     /// definition's own reason, which for a recipe names the parameter the recipe requires.
-    /// instantiate() calls this, prints the reason and drops it.
+    /// instantiate() calls this, prints the reason and drops it. The newest version the registry or a plugin holds
+    /// is built, by the registry where it holds that version.
     std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateOrError(std::string_view name, const property_map& params = property_map{}) {
-        // Try to create a node from the global registry
-        if (auto result = _registry->create(name, params)) {
-            return std::shared_ptr<gr::BlockModel>(std::move(result));
-        }
-
-        if (auto* plugin = pluginForBlockName(name); plugin != nullptr) {
-            return std::shared_ptr<gr::BlockModel>(plugin->createBlock(name, params));
+        if (const std::optional<block::Version> newest = newestVersion(name); newest.has_value()) {
+            if (_registry->factoryFor(name, *newest) != nullptr) {
+                if (auto result = _registry->create(name, params)) {
+                    return std::shared_ptr<gr::BlockModel>(std::move(result));
+                }
+            } else if (auto* plugin = pluginFor(name, *newest); plugin != nullptr) {
+                // createBlock() builds the plugin's own newest version, which is `newest`
+                return std::shared_ptr<gr::BlockModel>(plugin->createBlock(name, params));
+            }
         }
 
         if (const auto def = _yamlRegistry.definitionForBlockName(name)) {
@@ -807,42 +969,42 @@ public:
         return *result;
     }
 
-    /// every version of `name` a create can reach: the registry's, else those the plugin owning the name holds
+    /// every version of `name` a create can reach, oldest first: the registry's and the plugins' together
     [[nodiscard]] std::vector<block::Version> blockVersions(std::string_view name) const {
-        if (std::vector<block::Version> known = _registry->versions(name); !known.empty()) {
-            return known;
+        std::vector<block::Version> known = _registry->versions(name);
+        if (const auto versions = _pluginForBlockName.find(name); versions != _pluginForBlockName.cend()) {
+            std::ranges::copy(versions->second | std::views::keys, std::back_inserter(known));
         }
-        if (const gr_plugin_base* plugin = pluginForBlockName(name); plugin != nullptr) {
-            return plugin->blockVersions(name);
-        }
-        return {};
+        std::ranges::sort(known);
+        known.erase(std::ranges::unique(known).begin(), known.end());
+        return known;
     }
 
     /**
      * @brief The attributes map of the newest version of `name`.
      *
-     * The registry answers first, then the plugin owning the name, then a YAML definition. The map is empty for a
-     * block that declares no attributes; nothing answers for a name none of them holds.
+     * The holder of the newest version the registry or a plugin holds answers, and a YAML definition answers for a
+     * name neither holds. The map is empty for a block that declares no attributes; nothing answers for a name none of
+     * them holds.
      */
     [[nodiscard]] std::optional<property_map> blockAttributes(std::string_view name) const {
-        if (std::optional<property_map> known = _registry->attributes(name); known.has_value()) {
-            return known;
-        }
-        if (const gr_plugin_base* plugin = pluginForBlockName(name); plugin != nullptr) {
-            const std::vector<block::Version> versions = plugin->blockVersions(name);
-            return versions.empty() ? std::nullopt : plugin->blockAttributes(name, std::ranges::max(versions));
+        if (const std::optional<block::Version> newest = newestVersion(name); newest.has_value()) {
+            return blockAttributes(name, *newest);
         }
         return _yamlRegistry.attributesForBlockName(name);
     }
 
-    /// the attributes map of that one version of `name`; the first source holding the name answers alone, as
-    /// instantiatePinnedOrError() refuses a version the registry or the plugin lacks
+    /// the attributes map of that one version of `name`, from the registry or the plugin holding that version; a YAML
+    /// definition answers only for a name neither holds, as instantiatePinnedOrError() refuses a version they lack
     [[nodiscard]] std::optional<property_map> blockAttributes(std::string_view name, block::Version version) const {
-        if (_registry->contains(name)) {
+        if (_registry->factoryFor(name, version) != nullptr) {
             return _registry->attributes(name, version);
         }
-        if (const gr_plugin_base* plugin = pluginForBlockName(name); plugin != nullptr) {
+        if (const gr_plugin_base* plugin = pluginFor(name, version); plugin != nullptr) {
             return plugin->blockAttributes(name, version);
+        }
+        if (_registry->contains(name) || _pluginForBlockName.contains(name)) {
+            return std::nullopt;
         }
         return _yamlRegistry.attributesForBlockName(name, version);
     }
@@ -863,13 +1025,13 @@ public:
         return merged;
     }
 
-    /// the one version named, from the registry or from the plugin owning the name; the instance records the pin
+    /// the one version named, from the registry or from the plugin holding that version; the instance records the pin
     std::shared_ptr<gr::BlockModel> instantiatePinned(std::string_view name, block::Version version, const property_map& params = property_map{}) {
         if (auto result = _registry->create(name, version, params)) {
             return result;
         }
 
-        if (auto* plugin = pluginForBlockName(name); plugin != nullptr) {
+        if (auto* plugin = pluginFor(name, version); plugin != nullptr) {
             return plugin->createPinnedBlock(name, version, params);
         }
 
@@ -909,7 +1071,7 @@ public:
         return result;
     }
 
-    bool isBlockAvailable(std::string_view block) const { return _registry->contains(block) || pluginForBlockName(block) != nullptr; }
+    bool isBlockAvailable(std::string_view block) const { return _registry->contains(block) || _pluginForBlockName.contains(block); }
 
     bool isSchedulerAvailable(std::string_view scheduler) const { return _schedulerRegistry->contains(scheduler) || pluginForSchedulerName(scheduler) != nullptr; }
 

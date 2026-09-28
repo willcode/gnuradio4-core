@@ -212,6 +212,20 @@ if(GR_ENABLE_BLOCK_REGISTRY AND INTERNAL_ENABLE_BLOCK_PLUGINS)
     block_library_duplicate
     block_library_duplicate_second)
 
+  # A block library registers into the process's registry and stays mapped, so one process loads the two precedence
+  # libraries in one order only: the second run reverses it.
+  add_ut_test(qa_PluginPrecedence)
+  add_dependencies(
+    qa_PluginPrecedence
+    precedence_plugin_first
+    precedence_plugin_second
+    precedence_plugin_newer
+    precedence_library_first
+    precedence_library_second)
+  add_test(NAME qa_PluginPrecedenceReversed COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:qa_PluginPrecedence>)
+  set_tests_properties(qa_PluginPrecedenceReversed PROPERTIES ENVIRONMENT "GR_TEST_PRECEDENCE_ORDER=reversed")
+  set_tests_properties(qa_PluginPrecedence qa_PluginPrecedenceReversed PROPERTIES TIMEOUT 60)
+
   add_app_test(qa_PluginAbiVersion)
   add_dependencies(qa_PluginAbiVersion abi_probe_plugin abi_probe_plugin_v1)
 

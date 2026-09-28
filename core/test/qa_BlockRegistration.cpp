@@ -773,11 +773,62 @@ const boost::ut::suite<"block attributes"> blockAttributesTests = [] {
         expect(!registry.newestVersion("qa::NoSuchBlock").has_value());
     };
 
-    "one key and one version registered twice is the collision it always was: the last wins"_test = [] {
+    "the first registration of a key at a version holds it in either order, and the later one is refused and recorded"_test = [] {
+        for (const bool filterAhead : {true, false}) {
+            gr::BlockRegistry      registry;
+            const gr::property_map version1 = gr::block::attributesToMap(gr::block::Attributes{.version = 1U}, std::nullopt);
+            const auto             filter   = &qa_registration::makeBlock<qa_registration::Filter>;
+            const auto             sink     = &qa_registration::makeBlock<qa_registration::Sink>;
+            const auto             ahead    = filterAhead ? filter : sink;
+            const auto             behind   = filterAhead ? sink : filter;
+
+            expect(registry.insert("qa::Shared", "", ahead, version1));
+            expect(!registry.insert("qa::Shared", "", behind, version1)) << "the later registration adds nothing";
+            expect(eq(registry.versions("qa::Shared").size(), 1UZ));
+            expect(registry.factoryFor("qa::Shared", 1U) == ahead);
+
+            const std::unique_ptr<gr::BlockModel> built = registry.create("qa::Shared", {});
+            expect(fatal(built != nullptr));
+            const std::string holderType = filterAhead ? gr::meta::type_name<qa_registration::Filter>() : gr::meta::type_name<qa_registration::Sink>();
+            expect(eq(std::string(built->typeName()), holderType)) << "the holder builds";
+
+            expect(fatal(eq(registry.refused().size(), 1UZ)));
+            expect(eq(registry.refused().front().key, std::string("qa::Shared")));
+            expect(eq(registry.refused().front().version, gr::block::Version{1U}));
+            expect(registry.refused().front().refused == behind);
+            expect(registry.refused().front().holder == ahead);
+        }
+    };
+
+    "the same factory registered again under its key and version is a repeat, not a refusal"_test = [] {
         gr::BlockRegistry registry;
         expect(qa_registration::insertAs<qa_registration::FilterV1>(registry, "qa::Filter"));
         expect(!qa_registration::insertAs<qa_registration::FilterV1>(registry, "qa::Filter")) << "nothing new";
         expect(eq(registry.versions("qa::Filter").size(), 1UZ));
+        expect(that % registry.refused().empty());
+    };
+
+    "a refused registration leaves the key's alias, and a refused alias names no key"_test = [] {
+        const std::string sinkKey = gr::meta::type_name<qa_registration::Sink>();
+        // a second factory of the same block, which the registry tells from the first by its address alone
+        const auto again = +[](gr::property_map params) -> std::unique_ptr<gr::BlockModel> { return std::make_unique<gr::BlockWrapper<qa_registration::Sink>>(std::move(params)); };
+
+        gr::BlockRegistry registry;
+        expect(registry.insert(sinkKey, "qa::Held", &qa_registration::makeBlock<qa_registration::Sink>));
+        expect(registry.insert(sinkKey, "qa::Renamed", again)) << "the new alias key is added";
+        std::shared_ptr<gr::BlockModel> sink = registry.create(sinkKey, {});
+        expect(fatal(sink != nullptr));
+        expect(eq(registry.typeName(sink), std::string("qa::Held"))) << "the refused registration renames nothing";
+        expect(fatal(eq(registry.refused().size(), 1UZ)));
+        expect(eq(registry.refused().front().key, sinkKey));
+
+        const std::string filterKey = gr::meta::type_name<qa_registration::Filter>();
+        expect(registry.insert(filterKey, "qa::Held", &qa_registration::makeBlock<qa_registration::Filter>)) << "the type name is new";
+        std::shared_ptr<gr::BlockModel> filter = registry.create(filterKey, {});
+        expect(fatal(filter != nullptr));
+        expect(eq(registry.typeName(filter), filterKey)) << "the alias another block holds does not name this one";
+        expect(eq(registry.refused().size(), 2UZ));
+        expect(eq(registry.refused().back().key, std::string("qa::Held")));
     };
 
     "what the generated definition unit hands over carries the declarations"_test = [] {

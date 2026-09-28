@@ -70,21 +70,29 @@ const boost::ut::suite<"PluginBlockLibrary"> pluginBlockLibraryTests = [] {
         expect(that % doubler->settings().defaultParameters().contains("extra_gain"));
     };
 
-    "a library whose registrations replace another library's is kept mapped too"_test = [] {
+    "a library whose registrations another library holds is kept mapped, and its refusals name the holder"_test = [] {
         {
             const std::vector<std::string> directories{duplicateLibraryDirectory()};
             PluginLoader                   loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), directories);
 
-            expect(fatal(eq(loader.blockLibraries().size(), 2UZ))) << "a registration that replaces an entry counts as much as one that adds an entry";
-            for (const PluginLoader::BlockLibrary& library : loader.blockLibraries()) {
-                expect(ge(library.nBlockRegistrations, 1UZ)) << std::format("{} registered no block", library.file);
+            expect(fatal(eq(loader.blockLibraries().size(), 2UZ))) << "a library whose every registration was refused is a block library too";
+            const PluginLoader::BlockLibrary& holder  = loader.blockLibraries().front();
+            const PluginLoader::BlockLibrary& refuser = loader.blockLibraries().back();
+            expect(eq(holder.nBlockRegistrations, 2UZ)) << "the first to load adds its type name and its alias";
+            expect(eq(refuser.nBlockRegistrations, 0UZ)) << "the second adds nothing";
+
+            const std::vector<RefusedRegistration> refused = loader.refusedRegistrations();
+            expect(fatal(eq(refused.size(), 2UZ))) << "the type name and the alias of the second are refused";
+            for (const RefusedRegistration& refusal : refused) {
+                expect(eq(refusal.file, refuser.file)) << refusal.key;
+                expect(eq(refusal.holder, holder.file)) << refusal.key;
             }
-            expect(that % loader.failedPlugins().empty()) << "a library that registered a block is not a failed plugin";
+            expect(that % loader.failedPlugins().empty()) << "a refused registration fails no file";
             expect(that % gr::globalBlockRegistry().contains(kDuplicateKey));
         }
 
         std::unique_ptr<BlockModel> duplicate = gr::globalBlockRegistry().create(kDuplicateKey, {});
-        expect(fatal(duplicate != nullptr)) << "the surviving factory produced nothing";
+        expect(fatal(duplicate != nullptr)) << "the holding factory produced nothing";
 
         duplicate->settings().init();
         expect(eq(std::string(duplicate->typeName()), std::string("gr::testing::LibraryDuplicate")));
