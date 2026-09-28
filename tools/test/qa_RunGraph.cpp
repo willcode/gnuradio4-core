@@ -1,6 +1,7 @@
 #include <boost/ut.hpp>
 
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -22,9 +23,10 @@
  * every case here runs the built executable: a graph that would not end by itself, bounded by --seconds; the
  * settings --show prints when the run is over; the directories and block keys --verbose reports; a scheduler setting
  * and a block setting taken and each refused; a recipe composite's exported parameter taken and its interior's setting
- * refused; a command line that cannot be used; a graph file that cannot be read; the plugin a block type comes from
- * when two directories supply it, and the refused registration --verbose lists then; a plugin directory that cannot be
- * read; and the errors a block and the scheduler report while the graph runs.
+ * refused; a block setting sent while the graph runs, and one refused; a command line that cannot be used; a graph file
+ * that cannot be read; the plugin a block type comes from when two directories supply it, and the refused registration
+ * --verbose lists then; a plugin directory that cannot be read; and the errors a block and the scheduler report while
+ * the graph runs.
  */
 namespace qa_rungraph {
 
@@ -77,6 +79,32 @@ struct Result {
         ++count;
     }
     return count;
+}
+
+// the number that follows `prefix` in `text`, or nothing when `text` holds no `prefix` followed by a number
+[[nodiscard]] std::optional<double> numberAfter(std::string_view text, std::string_view prefix) {
+    const std::size_t at = text.find(prefix);
+    if (at == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const std::string_view rest   = text.substr(at + prefix.size());
+    double                 value  = 0.0;
+    const auto             parsed = std::from_chars(rest.data(), rest.data() + rest.size(), value);
+    if (parsed.ec != std::errc{}) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+// the time --verbose gives for the timed setting `setting`, or nothing when it names none
+[[nodiscard]] std::optional<double> sentAt(std::string_view output, std::string_view setting) {
+    const std::size_t at = output.find(std::format(" s: set {}\n", setting));
+    if (at == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const std::size_t lineStart = output.rfind('\n', at);
+    const std::size_t from      = lineStart == std::string_view::npos ? 0UZ : lineStart + 1UZ;
+    return numberAfter(output.substr(from, at - from), "rungraph: ");
 }
 
 // sets GNURADIO4_PLUGIN_DIRECTORIES for the programs a case runs, and puts back the value it found
@@ -141,6 +169,18 @@ constexpr std::string_view kSharedNameFile{GR_TOOLS_TEST_ASSETS "/shared_name.ya
 
 // the graph of two sources that share a name, each with a unique_name
 [[nodiscard]] std::vector<std::string> sharedNameRun() { return {"--graph", std::string(kSharedNameFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--seconds", "5"}; }
+
+constexpr std::string_view kTimedSettingFile{GR_TOOLS_TEST_ASSETS "/timed_setting.yaml"};
+
+// the graph of a source into the sink that prints each level it applies, without a bound
+[[nodiscard]] std::vector<std::string> timedSettingGraph() { return {"--graph", std::string(kTimedSettingFile), "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS, "--plugin-dir", GR_TOOLS_FIXTURE_FIRST}; }
+
+// the same, bounded by --seconds
+[[nodiscard]] std::vector<std::string> timedSettingRun() {
+    std::vector<std::string> arguments = timedSettingGraph();
+    arguments.insert(arguments.end(), {"--seconds", "0.6"});
+    return arguments;
+}
 #endif
 
 } // namespace qa_rungraph
@@ -162,6 +202,41 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         const Result withoutValue = run({"--graph"});
         expect(eq(withoutValue.exitCode, 2)) << withoutValue.output;
         expect(withoutValue.output.contains("--graph needs a value")) << withoutValue.output;
+    };
+
+    "a --set-at the command line cannot use is refused as a --set is, before the graph is read"_test = [] {
+        const Result withoutSetting = run({"--graph", "unread.yaml", "--set-at", "0.1"});
+        expect(eq(withoutSetting.exitCode, 2)) << withoutSetting.output;
+        expect(withoutSetting.output.contains("--set-at needs a time and a setting")) << withoutSetting.output;
+
+        const Result withoutValue = run({"--graph", "unread.yaml", "-S", "0.1", "sink.level"});
+        expect(eq(withoutValue.exitCode, 2)) << withoutValue.output;
+        expect(withoutValue.output.contains("--set-at takes <seconds> <block>.<key>=<value>, not 'sink.level'")) << withoutValue.output;
+        expect(withoutValue.output.contains("Usage: rungraph")) << withoutValue.output;
+
+        for (const std::string_view time : {"soon", "-1", "inf"}) {
+            const Result badTime = run({"--graph", "unread.yaml", "--set-at", std::string(time), "sink.level=1"});
+            expect(eq(badTime.exitCode, 2)) << badTime.output;
+            expect(badTime.output.contains(std::format("--set-at takes a time of zero or more seconds, not '{}'", time))) << badTime.output;
+        }
+
+        const Result scheduler = run({"--graph", "unread.yaml", "--set-at", "0.1", "timeout_ms=10"});
+        expect(eq(scheduler.exitCode, 2)) << scheduler.output;
+        expect(scheduler.output.contains("'timeout_ms=10' names a setting of the scheduler, which --set gives before the start")) << scheduler.output;
+
+        const Result secondKey = run({"--graph", "unread.yaml", "--set-at", "0.1", "sink.level=1\nother: 2"});
+        expect(eq(secondKey.exitCode, 2)) << secondKey.output;
+        expect(secondKey.output.contains("the value of --set-at level holds more than one key")) << secondKey.output;
+        expect(!secondKey.output.contains("unread.yaml")) << "the refusal comes before the graph is read" << secondKey.output;
+    };
+
+    "a --set-at at or past the --seconds bound is refused before the run starts"_test = [] {
+        for (const std::string_view time : {"2", "1"}) {
+            const Result late = run({"--graph", "unread.yaml", "--seconds", "1", "--set-at", "0.5", "sink.level=1", "--set-at", std::string(time), "sink.level=2"});
+            expect(eq(late.exitCode, 1)) << late.output;
+            expect(late.output.contains(std::format("rungraph: --set-at {} sink.level=2 is not before the end of the run at --seconds 1\n", time))) << late.output;
+            expect(!late.output.contains("unread.yaml")) << "the graph was read" << late.output;
+        }
     };
 
     "a scheduler setting the scheduler does not declare is refused"_test = [] {
@@ -284,6 +359,69 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         expect(eq(forwarded.exitCode, 0)) << forwarded.output;
         expect(forwarded.output.contains("second: sample_rate = 2000")) << "the graph file gives the upstream block 1000" << forwarded.output;
         expect(forwarded.output.contains("the graph ended on its own")) << "the run ended after every sample had passed the downstream block" << forwarded.output;
+    };
+
+    // the sink prints a line each time it applies its level, the value the graph file gives it at the start among them
+    "--set-at sends a block setting to the running block, and --show reads it back"_test = [] {
+        std::vector<std::string> arguments = timedSettingRun();
+        arguments.insert(arguments.end(), {"--set-at", "0.2", "sink.level=1.5", "--show", "sink", "--verbose"});
+
+        const Result set = run(arguments);
+        expect(eq(set.exitCode, 0)) << set.output;
+        expect(set.output.contains("sink: level 0.5 applied after 0 samples\n")) << "the graph file's value applies before the first sample" << set.output;
+        const std::optional<double> samples = numberAfter(set.output, "sink: level 1.5 applied after ");
+        expect(fatal(samples.has_value())) << "the sink did not apply the timed value" << set.output;
+        expect(gt(*samples, 0.0)) << "the value applied before the graph ran" << set.output;
+        const std::optional<double> sent = sentAt(set.output, "sink.level=1.5");
+        expect(fatal(sent.has_value())) << "--verbose names no timed setting" << set.output;
+        expect(ge(*sent, 0.2)) << "the setting was sent before its time" << set.output;
+        expect(set.output.contains("sink: level = 1.5")) << "--show reads the value --set-at put in force" << set.output;
+        expect(set.output.contains("the graph was stopped before it ended")) << set.output;
+    };
+
+    "two --set-at of one setting are sent in time order, whatever their order on the command line"_test = [] {
+        std::vector<std::string> arguments = timedSettingRun();
+        arguments.insert(arguments.end(), {"--set-at", "0.3", "sink.level=2.5", "-S", "0.1", "sink.level=1.5", "--show", "sink", "--verbose"});
+
+        const Result set = run(arguments);
+        expect(eq(set.exitCode, 0)) << set.output;
+        const std::optional<double> first  = numberAfter(set.output, "sink: level 1.5 applied after ");
+        const std::optional<double> second = numberAfter(set.output, "sink: level 2.5 applied after ");
+        expect(fatal(first.has_value() && second.has_value())) << set.output;
+        expect(lt(*first, *second)) << "the later setting applied first, or both at one sample" << set.output;
+        const std::optional<double> firstSent  = sentAt(set.output, "sink.level=1.5");
+        const std::optional<double> secondSent = sentAt(set.output, "sink.level=2.5");
+        expect(fatal(firstSent.has_value() && secondSent.has_value())) << "--verbose names no timed setting" << set.output;
+        expect(ge(*firstSent, 0.1) && ge(*secondSent, 0.3)) << "a setting was sent before its time" << set.output;
+        expect(lt(set.output.find(" s: set sink.level=1.5\n"), set.output.find(" s: set sink.level=2.5\n"))) << "--verbose names them out of order" << set.output;
+        expect(set.output.contains("sink: level = 2.5")) << "the later setting is the one in force" << set.output;
+    };
+
+    "a --set-at a run that ends by itself does not reach is named and not sent"_test = [] {
+        std::vector<std::string> arguments = timedSettingGraph();
+        arguments.insert(arguments.end(), {"--set", "source.event_count=1000", "--set-at", "30", "sink.level=1.5"});
+
+        const Result unsent = run(arguments);
+        expect(eq(unsent.exitCode, 0)) << unsent.output;
+        expect(unsent.output.contains("rungraph: --set-at 30 sink.level=1.5 was not sent; the run ended ")) << unsent.output;
+        expect(!unsent.output.contains("level 1.5 applied")) << unsent.output;
+        expect(unsent.output.contains("the graph ended on its own")) << unsent.output;
+    };
+
+    "a --set-at of a block, or a block setting, the graph does not hold is refused before the run starts"_test = [] {
+        std::vector<std::string> unknownKey = timedSettingRun();
+        unknownKey.insert(unknownKey.end(), {"--set-at", "0.1", "sink.no_such_key=1"});
+        const Result refusedKey = run(unknownKey);
+        expect(eq(refusedKey.exitCode, 1)) << refusedKey.output;
+        expect(refusedKey.output.contains("rungraph: block 'sink' of type 'fixture::LevelSink' declares no setting named 'no_such_key'\n")) << refusedKey.output;
+        expect(!refusedKey.output.contains("the graph was")) << "the run started" << refusedKey.output;
+
+        std::vector<std::string> unknownBlock = timedSettingRun();
+        unknownBlock.insert(unknownBlock.end(), {"--set-at", "0.1", "no_such_block.level=1"});
+        const Result refusedBlock = run(unknownBlock);
+        expect(eq(refusedBlock.exitCode, 1)) << refusedBlock.output;
+        expect(refusedBlock.output.contains("the graph holds no block named no_such_block")) << refusedBlock.output;
+        expect(!refusedBlock.output.contains("the graph was")) << "the run started" << refusedBlock.output;
     };
 
     "a block, or a block setting, the graph does not hold is refused"_test = [] {

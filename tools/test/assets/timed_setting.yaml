@@ -1,0 +1,12 @@
+# A source of core's test plugins into the level sink of the rungraph fixture plugin, which prints each level it
+# applies. Neither end asks to stop, so a run of this graph ends on the --seconds bound.
+blocks:
+  - id: good::fixed_source<float32>
+    parameters:
+      name: source
+  - id: test::level_sink
+    parameters:
+      name: sink
+      level: 0.5
+connections:
+  - [source, out, sink, in]
