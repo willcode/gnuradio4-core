@@ -1,11 +1,14 @@
+#include <cstddef>
+#include <cstdio>
+#include <print>
 #include <string>
 
 #include <gnuradio-4.0/Plugin.hpp>
 
 GR_PLUGIN("rungraph Fixture Plugin", "Unknown", "MIT", "v1")
 
-/// Blocks without ports for the cases that run rungraph. The build compiles this plugin twice, into two directories, with
-/// a different GR_TEST_PLUGIN_ORIGIN each, so that a case can read which of the two supplied a block.
+/// Blocks for the cases that run rungraph. The build compiles this plugin twice, into two directories, with a different
+/// GR_TEST_PLUGIN_ORIGIN each, so that a case can read which of the two supplied a block.
 namespace fixture {
 
 /// a block whose `origin` names the build of the plugin it came from, and which ends its run at once
@@ -41,7 +44,29 @@ struct Fault : gr::Block<Fault> {
     }
 };
 
+/// a sink that prints each `level` it applies and the samples it had taken by then, one line on standard output each
+struct LevelSink : gr::Block<LevelSink> {
+    using Description = gr::Doc<"a sink that prints each level it applies">;
+
+    gr::PortIn<float>                                                 in;
+    gr::Annotated<float, "level", gr::Doc<"a value the sink prints">> level = 0.f;
+
+    GR_MAKE_REFLECTABLE(LevelSink, in, level);
+
+    std::size_t _received = 0UZ;
+
+    void settingsChanged(const gr::property_map& /*oldSettings*/, const gr::property_map& newSettings) {
+        if (newSettings.contains("level")) {
+            std::println("{}: level {} applied after {} samples", this->name.value, level.value, _received);
+            std::fflush(stdout);
+        }
+    }
+
+    void processOne(float /*sample*/) { ++_received; }
+};
+
 } // namespace fixture
 
-const bool registeredOrigin [[maybe_unused]] = grPluginBlockRegistry().insert<fixture::Origin>("=test::origin");
-const bool registeredFault [[maybe_unused]]  = grPluginBlockRegistry().insert<fixture::Fault>("=test::fault");
+const bool registeredOrigin [[maybe_unused]]    = grPluginBlockRegistry().insert<fixture::Origin>("=test::origin");
+const bool registeredFault [[maybe_unused]]     = grPluginBlockRegistry().insert<fixture::Fault>("=test::fault");
+const bool registeredLevelSink [[maybe_unused]] = grPluginBlockRegistry().insert<fixture::LevelSink>("=test::level_sink");

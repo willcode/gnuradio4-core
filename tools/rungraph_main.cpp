@@ -8,6 +8,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +56,8 @@ Usage: rungraph --graph <file> [options]
   --show <name>      print the settings of the block named <name> when the run ends; repeatable
   --set, -s <key>=<value>
                      set one setting before the run; repeatable
+  --set-at, -S <seconds> <block>.<key>=<value>
+                     set one block setting <seconds> after the start; repeatable
   --verbose          list what each plugin directory loaded, the keys it brought, the
                      registrations it refused and the scheduler
   --help, -h         this text
@@ -90,14 +93,23 @@ file's parameter value is read, so a type tag applies: -s timeout_ms=50, -s
 'shift.frequency_shift=!!float32 -100000'. One --set carries one setting, and a value that holds a
 second key is refused. The last --set of a key wins.
 
+--set-at takes a time in seconds after the start, zero included, and a <block>.<key>=<value> as
+--set reads it. At that time rungraph sends the setting to the running block as a settings message,
+and the block applies it at its next work call. Several --set-at are sent in time order, and two
+with one time in command-line order. A time at or past the --seconds bound is refused before the
+run starts. A run that ends by itself before a time leaves that setting unsent, and rungraph names
+it. A bare key is refused: the scheduler takes its settings when it is built, from --set. --verbose
+names each timed setting as rungraph sends it.
+
 SIGINT and SIGTERM stop the graph as a --seconds bound does. The first error a block or the
 scheduler reports stops it too.
 
 Exit status is 0 when the run stopped cleanly, 1 when a plugin directory could not be searched,
 when the graph could not be read, loaded or run, when a block or the scheduler reported an error,
-and when a --set or --show names a block or a block setting the graph does not hold, and 2 when the
-command line could not be used, a scheduler the registry does not hold or cannot build and a
-scheduler setting the scheduler does not declare or refuses included.
+when a --set, --set-at or --show names a block or a block setting the graph does not hold, and when
+a --set-at time is not before the --seconds bound, and 2 when the command line could not be used, a
+scheduler the registry does not hold or cannot build and a scheduler setting the scheduler does not
+declare or refuses included.
 )";
 
 // how often the wait for the end of the run looks at the signal flag, the bound and the errors the graph reports
@@ -114,15 +126,24 @@ struct Setting {
     std::string value; // the text after the '=', read as a graph file's parameter value is read
 };
 
+// one --set-at
+struct TimedSetting {
+    double      at = 0.0; // seconds after the start
+    std::string time;     // the time as the command line gave it
+    std::string text;     // the <block>.<key>=<value> as the command line gave it
+    Setting     setting;
+};
+
 struct Options {
-    std::string              graph; // the graph file, or "-" for standard input
-    std::vector<std::string> pluginDirectories;
-    std::string              scheduler{gr::tools::kDefaultScheduler};
-    std::vector<std::string> show;          // the blocks whose settings are printed when the run ends
-    std::vector<Setting>     settings;      // in command-line order, so that the last of a key wins
-    double                   seconds = 0.0; // 0 runs until the graph ends or a signal arrives
-    bool                     verbose = false;
-    bool                     help    = false;
+    std::string               graph; // the graph file, or "-" for standard input
+    std::vector<std::string>  pluginDirectories;
+    std::string               scheduler{gr::tools::kDefaultScheduler};
+    std::vector<std::string>  show;          // the blocks whose settings are printed when the run ends
+    std::vector<Setting>      settings;      // in command-line order, so that the last of a key wins
+    std::vector<TimedSetting> timedSettings; // in time order, and in command-line order within one time
+    double                    seconds = 0.0; // 0 runs until the graph ends or a signal arrives
+    bool                      verbose = false;
+    bool                      help    = false;
 };
 
 // a run bound, or nothing when the text is not one positive number
@@ -130,6 +151,16 @@ struct Options {
     double     value  = 0.0;
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
     if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !(value > 0.0)) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+// a time after the start, or nothing when the text is not one finite number of zero or more seconds
+[[nodiscard]] std::optional<double> timeOf(std::string_view text) {
+    double     value  = 0.0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value) || value < 0.0) {
         return std::nullopt;
     }
     return value;
@@ -166,6 +197,31 @@ struct Options {
         if (argument == "--verbose") {
             options.verbose = true;
             ++index;
+            continue;
+        }
+        if (argument == "--set-at" || argument == "-S") {
+            if (index + 2UZ >= arguments.size()) {
+                std::println(stderr, "{}: {} needs a time and a setting", kProgram, argument);
+                return std::nullopt;
+            }
+            const std::string_view time = arguments[index + 1UZ];
+            const std::string_view text = arguments[index + 2UZ];
+            index += 3UZ;
+            const std::optional<double> at = timeOf(time);
+            if (!at.has_value()) {
+                std::println(stderr, "{}: --set-at takes a time of zero or more seconds, not '{}'", kProgram, time);
+                return std::nullopt;
+            }
+            std::optional<Setting> setting = settingOf(text);
+            if (!setting.has_value()) {
+                std::println(stderr, "{}: --set-at takes <seconds> <block>.<key>=<value>, not '{}'", kProgram, text);
+                return std::nullopt;
+            }
+            if (setting->block.empty()) {
+                std::println(stderr, "{}: --set-at takes a block setting, and '{}' names a setting of the scheduler, which --set gives before the start", kProgram, text);
+                return std::nullopt;
+            }
+            options.timedSettings.push_back(TimedSetting{*at, std::string(time), std::string(text), std::move(*setting)});
             continue;
         }
         // the option is recognized before its value is asked for, so that an unknown option in the last position is
@@ -208,6 +264,7 @@ struct Options {
         std::println(stderr, "{}: --graph names the graph file to run", kProgram);
         return std::nullopt;
     }
+    std::ranges::stable_sort(options.timedSettings, std::less<>{}, &TimedSetting::at);
     return options;
 }
 
@@ -301,32 +358,54 @@ struct StagedSettings {
     std::map<std::string, gr::property_map, std::less<>> blocks;
 };
 
-// The settings the --set arguments stand for, or nothing when one of the values cannot be read or stands for more
-// than the key it was given for.
+// The one-entry settings map one setting stands for, or nothing when its value cannot be read or stands for more than
+// the key it was given for; `option` names the option in the refusal.
 //
-// Each pair becomes a one-entry YAML document and the framework's own reader gives the value its type, so the text
-// after the '=' means here what the same text means as a parameter of a graph file: a bare `true` is a boolean, a bare
-// number an integer, and a tagged `!!float32 1.5` a float. The document has to come back holding that one key alone:
-// text carrying a second line would otherwise reach the run as a setting the caller never wrote. A later setting of a
+// The pair becomes a one-entry YAML document and the framework's own reader gives the value its type, so the text after
+// the '=' means here what the same text means as a parameter of a graph file: a bare `true` is a boolean, a bare number
+// an integer, and a tagged `!!float32 1.5` a float. The document has to come back holding that one key alone: text
+// carrying a second line would otherwise reach the run as a setting the caller never wrote.
+[[nodiscard]] std::optional<gr::property_map> settingValueOf(const Setting& setting, std::string_view option) {
+    auto parsed = gr::pmt::yaml::deserialize(std::format("{}: {}", setting.key, setting.value));
+    if (!parsed.has_value()) {
+        std::println(stderr, "{}: the value of {} {} could not be read: {}", kProgram, option, setting.key, parsed.error().message);
+        return std::nullopt;
+    }
+    if (parsed->size() != 1UZ || std::string_view(parsed->begin()->first) != setting.key) {
+        std::println(stderr, "{}: {} takes one value for one key, and the value of {} {} holds more than one key", kProgram, option, option, setting.key);
+        return std::nullopt;
+    }
+    return std::move(*parsed);
+}
+
+// The settings the --set arguments stand for, or nothing when one of the values cannot be read. A later setting of a
 // key overwrites an earlier one.
 [[nodiscard]] std::optional<StagedSettings> stagedSettingsOf(const std::vector<Setting>& settings) {
     StagedSettings staged;
     for (const Setting& setting : settings) {
-        const auto parsed = gr::pmt::yaml::deserialize(std::format("{}: {}", setting.key, setting.value));
-        if (!parsed.has_value()) {
-            std::println(stderr, "{}: the value of --set {} could not be read: {}", kProgram, setting.key, parsed.error().message);
-            return std::nullopt;
-        }
-        if (parsed->size() != 1UZ || std::string_view(parsed->begin()->first) != setting.key) {
-            std::println(stderr, "{}: --set takes one value for one key, and the value of --set {} holds more than one key", kProgram, setting.key);
+        const std::optional<gr::property_map> value = settingValueOf(setting, "--set");
+        if (!value.has_value()) {
             return std::nullopt;
         }
         gr::property_map* target = setting.block.empty() ? std::addressof(staged.scheduler) : std::addressof(staged.blocks[setting.block]);
-        for (const auto& [parsedKey, parsedValue] : *parsed) {
+        for (const auto& [parsedKey, parsedValue] : *value) {
             target->insert_or_assign(parsedKey, parsedValue);
         }
     }
     return staged;
+}
+
+// the values the --set-at arguments stand for, in their order, or nothing when one of them cannot be read
+[[nodiscard]] std::optional<std::vector<gr::property_map>> timedValuesOf(const std::vector<TimedSetting>& timedSettings) {
+    std::vector<gr::property_map> values;
+    for (const TimedSetting& timed : timedSettings) {
+        std::optional<gr::property_map> value = settingValueOf(timed.setting, "--set-at");
+        if (!value.has_value()) {
+            return std::nullopt;
+        }
+        values.push_back(std::move(*value));
+    }
+    return values;
 }
 
 // Whether the registry holds a scheduler under `key`. A key it does not hold is reported with the keys it holds.
@@ -390,6 +469,16 @@ void reportScheduler(gr::BlockHandle scheduler, std::string_view key, const gr::
     return names;
 }
 
+// reports why `graph` has no one block for `wanted`, the name --show or --set-at gave, with the lookup's `error`
+void reportMissingBlock(const gr::RuntimeGraph& graph, const std::string& wanted, const gr::RuntimeError& error) {
+    const bool nameIsInGraph = std::ranges::any_of(graph.blocks(), [&wanted](const gr::BlockHandle& block) { return block.name() == wanted; });
+    if (nameIsInGraph) {
+        std::println(stderr, "{}: {}", kProgram, error.message);
+    } else {
+        std::println(stderr, "{}: the graph holds no block named {}", kProgram, wanted);
+    }
+}
+
 // The blocks --show names, or nothing when one of them is not in the graph; each missing name is reported. A handle
 // keeps its block when the graph moves into the scheduler.
 [[nodiscard]] std::optional<std::vector<gr::BlockHandle>> shownBlocks(const gr::RuntimeGraph& graph, const std::vector<std::string>& names) {
@@ -401,18 +490,62 @@ void reportScheduler(gr::BlockHandle scheduler, std::string_view key, const gr::
             shown.push_back(std::move(*found));
             continue;
         }
-        allFound                 = false;
-        const bool nameIsInGraph = std::ranges::any_of(graph.blocks(), [&wanted](const gr::BlockHandle& block) { return block.name() == wanted; });
-        if (nameIsInGraph) {
-            std::println(stderr, "{}: {}", kProgram, found.error().message);
-        } else {
-            std::println(stderr, "{}: the graph holds no block named {}", kProgram, wanted);
-        }
+        allFound = false;
+        reportMissingBlock(graph, wanted, found.error());
     }
     if (!allFound) {
         return std::nullopt;
     }
     return shown;
+}
+
+// the property of a block that stages the settings of a Set message, which the block applies at its next work call
+constexpr std::string_view kSettingsEndpoint = "Settings";
+
+// one --set-at, addressed to its block
+struct PendingSetting {
+    double           at = 0.0; // seconds after the start
+    std::string      time;     // the time and the setting as the command line gave them
+    std::string      text;
+    std::string      block; // the unique name of the block the message is addressed to
+    gr::property_map value;
+};
+
+// The --set-at settings addressed to the blocks of `graph`, in time order, or nothing when one names a block or a block
+// setting the graph does not hold; each refusal is reported. `values` holds the value of each setting.
+[[nodiscard]] std::optional<std::vector<PendingSetting>> pendingSettingsOf(const gr::RuntimeGraph& graph, const std::vector<TimedSetting>& timedSettings, std::vector<gr::property_map> values) {
+    std::vector<PendingSetting> pending;
+    bool                        allFound = true;
+    for (std::size_t i = 0UZ; i < timedSettings.size(); ++i) {
+        const TimedSetting&                                    timed = timedSettings[i];
+        const std::expected<gr::BlockHandle, gr::RuntimeError> found = graph.find(timed.setting.block, gr::RuntimeGraph::Recursive::No);
+        if (!found.has_value()) {
+            allFound = false;
+            reportMissingBlock(graph, timed.setting.block, found.error());
+            continue;
+        }
+        if (!found->writableMembers().contains(timed.setting.key)) {
+            allFound = false;
+            std::println(stderr, "{}: block '{}' of type '{}' declares no setting named '{}'", kProgram, timed.setting.block, found->typeName(), timed.setting.key);
+            continue;
+        }
+        pending.push_back(PendingSetting{timed.at, timed.time, timed.text, std::string(found->uniqueName()), std::move(values[i])});
+    }
+    if (!allFound) {
+        return std::nullopt;
+    }
+    return pending;
+}
+
+// Sends one --set-at to its block as a Set message on the block's settings property, and names it under --verbose.
+void sendSetting(gr::Runtime& runtime, const PendingSetting& setting, double elapsed, bool verbose) {
+    if (const std::expected<void, gr::RuntimeError> sent = runtime.send(gr::RuntimeCommand::Set, setting.block, kSettingsEndpoint, setting.value); !sent.has_value()) {
+        std::println(stderr, "{}: --set-at {} {} could not be sent: {}", kProgram, setting.time, setting.text, sent.error().message);
+        return;
+    }
+    if (verbose) {
+        std::println(stderr, "{}: {:.3f} s: set {}", kProgram, elapsed, setting.text);
+    }
 }
 
 // the errors a run reported: the first as the output gives it, and how many there were
@@ -469,9 +602,19 @@ int main(int argc, char** argv) {
         std::print(stderr, "{}", kUsage);
         return 2;
     }
+    std::optional<std::vector<gr::property_map>> timedValues = timedValuesOf(options.timedSettings);
+    if (!timedValues.has_value()) {
+        std::print(stderr, "{}", kUsage);
+        return 2;
+    }
+    if (options.seconds > 0.0 && !options.timedSettings.empty() && options.timedSettings.back().at >= options.seconds) {
+        const TimedSetting& late = options.timedSettings.back();
+        std::println(stderr, "{}: --set-at {} {} is not before the end of the run at --seconds {}", kProgram, late.time, late.text, options.seconds);
+        return 1;
+    }
 
-    // registers the program's own schedulers before the loader runs. A library the loader opens can then replace one
-    // under the same key.
+    // registers the program's own schedulers before the loader runs, so that each holds its key against a library that
+    // registers the key again
     gr::tools::registerSchedulers(gr::globalSchedulerRegistry());
 
     // The program's loader searches its directories before anything builds a graph. The first graph builds the
@@ -515,6 +658,10 @@ int main(int argc, char** argv) {
     if (!shown.has_value()) {
         return 1;
     }
+    const std::optional<std::vector<PendingSetting>> pending = pendingSettingsOf(*graph, options.timedSettings, std::move(*timedValues));
+    if (!pending.has_value()) {
+        return 1;
+    }
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
@@ -537,12 +684,26 @@ int main(int argc, char** argv) {
     }
 
     const auto     start        = std::chrono::steady_clock::now();
-    const auto     boundReached = [&options, start] { return options.seconds > 0.0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= options.seconds; };
+    const auto     elapsed      = [start] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); };
+    const auto     boundReached = [&options, &elapsed] { return options.seconds > 0.0 && elapsed() >= options.seconds; };
     ReportedErrors errors;
     bool           endedItself = false;
+    std::size_t    nSent       = 0UZ;
     while (!endedItself && errors.count == 0UZ && !gStopRequested.load(std::memory_order_relaxed) && !boundReached()) {
-        endedItself = runtime->waitFor(kPollInterval);
+        for (double now = elapsed(); nSent < pending->size() && (*pending)[nSent].at <= now; ++nSent) {
+            sendSetting(*runtime, (*pending)[nSent], now, options.verbose);
+        }
+        // the wait ends at the next --set-at time when that comes before the next look at the flag and the bound
+        std::chrono::duration<double> wait = kPollInterval;
+        if (nSent < pending->size()) {
+            wait = std::min(wait, std::chrono::duration<double>(std::max(0.0, (*pending)[nSent].at - elapsed())));
+        }
+        endedItself = runtime->waitFor(std::chrono::duration_cast<std::chrono::nanoseconds>(wait));
         takeReportedErrors(*runtime, errors);
+    }
+    const double ended = elapsed();
+    for (std::size_t i = nSent; i < pending->size(); ++i) {
+        std::println(stderr, "{}: --set-at {} {} was not sent; the run ended {:.3f} s after the start", kProgram, (*pending)[i].time, (*pending)[i].text, ended);
     }
     const bool stoppedOnError = errors.count > 0UZ && !endedItself;
     if (!endedItself) {
