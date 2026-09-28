@@ -51,13 +51,16 @@ Usage: rungraph --graph <file> [options]
   --show <name>      print the settings of the block named <name> when the run ends; repeatable
   --set, -s <key>=<value>
                      set one setting before the run; repeatable
-  --verbose          list what each plugin directory loaded and the keys it brought
+  --verbose          list what each plugin directory loaded, the keys it brought and the
+                     registrations it refused
   --help, -h         this text
 
 The blocks come from the directories named by --plugin-dir, from GNURADIO4_PLUGIN_DIRECTORIES,
 the colon-separated list the framework's own plugin loader reads, and from the plugin directory
-of this installation, which is always searched. A directory named twice is searched once. A block
-type two plugins supply comes from the one searched first.
+of this installation, which is always searched. A directory named twice is searched once. The
+first registration of a block key at one version holds it, the program's own blocks and the block
+libraries ahead of the plugins and the YAML definitions, each in load order, and a later one is
+refused without stopping the run.
 
 A settings map holds what the last refresh put there, so the settings --show prints are read
 after the run has ended and the block has been asked to refresh them: a counter a block keeps
@@ -228,7 +231,8 @@ struct Options {
     return loaded;
 }
 
-// what the directories hold: the files that loaded, the files that did not, and the block keys they brought
+// what the directories hold: the files that loaded, the files that did not, the registrations refused, and the block
+// keys they brought
 void reportPlugins(const std::vector<gr::RuntimePluginDirectory>& directories) {
     std::vector<std::string> brought;
     for (const gr::RuntimePluginDirectory& directory : directories) {
@@ -241,6 +245,9 @@ void reportPlugins(const std::vector<gr::RuntimePluginDirectory>& directories) {
         }
         for (const std::string& file : directory.skipped) {
             std::println(stderr, "{}: {} was not opened; its name only reads as a shared object", kProgram, file);
+        }
+        for (const gr::RuntimePluginDirectory::Refused& refused : directory.refused) {
+            std::println(stderr, "{}: refused {} v{} from {}, held by {}", kProgram, refused.key, refused.version, refused.file, refused.holder.empty() ? "an unnamed file" : refused.holder);
         }
         std::ranges::copy(directory.blockTypes, std::back_inserter(brought));
     }

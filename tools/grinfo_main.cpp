@@ -64,8 +64,10 @@ constexpr std::string_view kUsage = R"(grinfo - report the GNU Radio 4 framework
 
 Usage: grinfo [command] [options]
 
-  version            the framework, the directories searched and what each held
-  blocks             every registered block, by library and by family
+  version            the framework, the directories searched, what each held and
+                     the registrations refused
+  blocks             every registered block, by library and by family, and the
+                     registrations refused
   block <name>       one block in detail: its types, its ports and its settings
   labels             every label word core and the loaded blocks declare, by
                      class, with its meaning
@@ -82,7 +84,10 @@ Usage: grinfo [command] [options]
 Blocks come from the directories named by --plugin-dir, from the colon-separated
 list in GNURADIO4_PLUGIN_DIRECTORIES, and from the plugin directory of this
 installation unless --no-installed-dir is given. A directory named twice is
-searched once.
+searched once. The first registration of a block key at one version holds it:
+this program's own blocks and the block libraries come before the plugins and
+the YAML definitions, each in load order, and version and blocks list every
+later registration as refused.
 
 <name> is a registry key with its template parameters,
 gr::blocks::basic::Convert<int16, float32>, or a name without them,
@@ -597,13 +602,14 @@ struct PluginFact {
 };
 
 struct Totals {
-    std::size_t blockKeys      = 0UZ;
-    std::size_t blockFamilies  = 0UZ;
-    std::size_t schedulerKeys  = 0UZ;
-    std::size_t blockLibraries = 0UZ;
-    std::size_t plugins        = 0UZ;
-    std::size_t filesNotLoaded = 0UZ;
-    std::size_t filesNotOpened = 0UZ;
+    std::size_t blockKeys            = 0UZ;
+    std::size_t blockFamilies        = 0UZ;
+    std::size_t schedulerKeys        = 0UZ;
+    std::size_t blockLibraries       = 0UZ;
+    std::size_t plugins              = 0UZ;
+    std::size_t filesNotLoaded       = 0UZ;
+    std::size_t filesNotOpened       = 0UZ;
+    std::size_t refusedRegistrations = 0UZ;
 };
 
 // what one run of the program has to report, read once
@@ -618,6 +624,8 @@ struct Context {
     std::string              program;
     Totals                   totals;
     gr::block::Vocabulary    vocabulary; // core's words and every loaded block's
+
+    std::vector<gr::RefusedRegistration> refused; // the registrations an earlier one in the search order holds
 };
 
 [[nodiscard]] std::string metaString(const gr::property_map& meta, const std::string& key) {
@@ -1491,7 +1499,36 @@ void writeTotals(JsonWriter& json, const Totals& totals) {
     json.count("plugins", totals.plugins);
     json.count("filesNotLoaded", totals.filesNotLoaded);
     json.count("filesNotOpened", totals.filesNotOpened);
+    json.count("refusedRegistrations", totals.refusedRegistrations);
     json.endObject();
+}
+
+// one refused registration as the text report writes it
+[[nodiscard]] std::string refusalText(const gr::RefusedRegistration& refusal) { return std::format("{} v{} from {}, held by {}", refusal.key, refusal.version, refusal.file, refusal.holder.empty() ? "an unnamed file" : refusal.holder); }
+
+void writeRefusals(JsonWriter& json, const Context& context) {
+    json.key("refused");
+    json.beginArray();
+    for (const gr::RefusedRegistration& refusal : context.refused) {
+        json.beginObject();
+        json.member("key", refusal.key);
+        json.count("version", refusal.version);
+        json.member("file", refusal.file);
+        json.member("holder", refusal.holder);
+        json.endObject();
+    }
+    json.endArray();
+}
+
+void printRefusals(const Context& context) {
+    if (context.refused.empty()) {
+        return;
+    }
+    std::print("\n");
+    std::println("refused registrations");
+    for (const gr::RefusedRegistration& refusal : context.refused) {
+        printWrapped("  ", "    ", refusalText(refusal));
+    }
 }
 
 void reportVersionAsJson(const Context& context) {
@@ -1559,6 +1596,7 @@ void reportVersionAsJson(const Context& context) {
     json.endArray();
 
     json.strings("schedulers", context.schedulers);
+    writeRefusals(json, context);
 
     writeTotals(json, context.totals);
     json.endObject();
@@ -1670,6 +1708,8 @@ void reportVersion(const Context& context) {
         }
     }
 
+    printRefusals(context);
+
     std::print("\n");
     std::println("totals");
     constexpr std::array<Column, 2>             totalColumns{Column{.header = ""}, Column{.header = "", .align = Align::Right}};
@@ -1681,6 +1721,7 @@ void reportVersion(const Context& context) {
         {"plugins", std::to_string(context.totals.plugins)},
         {"files not loaded", std::to_string(context.totals.filesNotLoaded)},
         {"files not opened", std::to_string(context.totals.filesNotOpened)},
+        {"refused registrations", std::to_string(context.totals.refusedRegistrations)},
     };
     printTable("  ", totalColumns, totalRows);
 }
@@ -1779,6 +1820,7 @@ void reportBlocks(Context& context, const Options& options) {
             json.endObject();
         }
         json.endArray();
+        writeRefusals(json, context);
         writeTotals(json, totals);
         json.endObject();
         std::println("{}", json.text);
@@ -1837,6 +1879,8 @@ void reportBlocks(Context& context, const Options& options) {
         }
     }
 
+    printRefusals(context);
+
     std::print("\n");
     std::println("totals");
     constexpr std::array<Column, 2>             totalColumns{Column{.header = ""}, Column{.header = "", .align = Align::Right}};
@@ -1844,6 +1888,7 @@ void reportBlocks(Context& context, const Options& options) {
         {"block keys", std::to_string(totals.blockKeys)},
         {"block families", std::to_string(totals.blockFamilies)},
         {"libraries", std::to_string(libraries.size())},
+        {"refused registrations", std::to_string(totals.refusedRegistrations)},
     };
     printTable("  ", totalColumns, totalRows);
 }
@@ -1985,7 +2030,7 @@ int main(int argc, char** argv) {
     }
     gr::PluginLoader loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), paths);
 
-    Context context{.loader = loader, .directories = std::move(directories), .keys = {}, .schedulers = {}, .files = {}, .plugins = {}, .libraryFiles = {}, .program = thisProgramFile(), .totals = {}, .vocabulary = loader.vocabulary()};
+    Context context{.loader = loader, .directories = std::move(directories), .keys = {}, .schedulers = {}, .files = {}, .plugins = {}, .libraryFiles = {}, .program = thisProgramFile(), .totals = {}, .vocabulary = loader.vocabulary(), .refused = {}};
 
     context.keys = loader.availableBlocks();
     std::ranges::sort(context.keys);
@@ -2017,12 +2062,14 @@ int main(int argc, char** argv) {
     context.totals.plugins        = loader.plugins().size();
     context.totals.filesNotLoaded = loader.failedPlugins().size();
     context.totals.filesNotOpened = loader.skippedFiles().size();
+    context.refused               = loader.refusedRegistrations();
 #endif
     std::ranges::sort(context.files, [](const FileFact& left, const FileFact& right) { return left.file < right.file; });
     std::ranges::sort(context.plugins, [](const PluginFact& left, const PluginFact& right) { return left.name < right.name; });
-    context.totals.blockKeys     = context.keys.size();
-    context.totals.blockFamilies = families.size();
-    context.totals.schedulerKeys = context.schedulers.size();
+    context.totals.blockKeys            = context.keys.size();
+    context.totals.blockFamilies        = families.size();
+    context.totals.schedulerKeys        = context.schedulers.size();
+    context.totals.refusedRegistrations = context.refused.size();
 
     switch (options.command) {
     case Command::Version:
