@@ -30,7 +30,8 @@
  * - a shared object's scheduler refused at an earlier plugin ABI version
  * - a command line that cannot be used
  * - a graph file that cannot be read
- * - the plugin a block type comes from when two directories supply it
+ * - the plugin a block type comes from when two directories supply it, and the refused registration --verbose lists
+ *   then
  * - a plugin directory that cannot be read
  * - the errors a block and the scheduler report while the graph runs
  */
@@ -567,6 +568,34 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         expect(eq(described.exitCode, 0)) << described.output;
         expect(described.output.contains("librungraph_fixture_first.so") && described.output.contains(R"("first")")) << "grinfo does not name the command line's plugin" << described.output;
         expect(!described.output.contains("librungraph_fixture_second.so") && !described.output.contains(R"("second")")) << "grinfo names the environment's plugin" << described.output;
+#endif
+    };
+
+    "a registration an earlier directory holds is listed as refused, under rungraph --verbose and under grinfo"_test = [] {
+        const PluginDirectoriesVariable environment(GR_TOOLS_FIXTURE_SECOND);
+        const std::string               refusal = std::format("test::origin v1 from {}/librungraph_fixture_second.so, held by {}/librungraph_fixture_first.so", GR_TOOLS_FIXTURE_SECOND, GR_TOOLS_FIXTURE_FIRST);
+
+        const Result verbose = run({"--graph", std::string(kOriginFile), "--plugin-dir", GR_TOOLS_FIXTURE_FIRST, "--verbose"});
+        expect(eq(verbose.exitCode, 0)) << "a refused registration does not stop the run" << verbose.output;
+        expect(verbose.output.contains(std::format("rungraph: refused {}\n", refusal))) << verbose.output;
+
+        const Result quiet = run({"--graph", std::string(kOriginFile), "--plugin-dir", GR_TOOLS_FIXTURE_FIRST});
+        expect(eq(quiet.exitCode, 0)) << quiet.output;
+        expect(!quiet.output.contains("refused")) << "the refusals are listed only when asked for" << quiet.output;
+
+#ifdef GR_TOOLS_GRINFO
+        for (const std::string_view command : {"version", "blocks"}) {
+            const Result listed = runProgram(GR_TOOLS_GRINFO, {std::string(command), "--json", "--plugin-dir", GR_TOOLS_FIXTURE_FIRST});
+            expect(eq(listed.exitCode, 0)) << listed.output;
+            expect(listed.output.contains(R"("key": "test::origin")")) << command << listed.output;
+            expect(listed.output.contains(std::format(R"("file": "{}/librungraph_fixture_second.so")", GR_TOOLS_FIXTURE_SECOND))) << command << listed.output;
+            expect(listed.output.contains(std::format(R"("holder": "{}/librungraph_fixture_first.so")", GR_TOOLS_FIXTURE_FIRST))) << command << listed.output;
+
+            const Result text = runProgram(GR_TOOLS_GRINFO, {std::string(command), "--plugin-dir", GR_TOOLS_FIXTURE_FIRST});
+            expect(eq(text.exitCode, 0)) << text.output;
+            expect(text.output.contains("\nrefused registrations\n")) << command << text.output;
+            expect(text.output.contains("\n  test::origin v1 from\n")) << "the key and version open the entry, and the files follow" << command << text.output;
+        }
 #endif
     };
 
