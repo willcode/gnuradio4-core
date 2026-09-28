@@ -56,7 +56,7 @@ add_block_library(block_library block_library)
 add_block_library(block_library_second block_library)
 
 # The pair in this directory register one block under the same type name and alias, as duplicate installations of a
-# block library do. The second to load replaces the first one's entries without changing how many there are.
+# block library do. The registry refuses the registrations of the second to load.
 add_block_library(block_library_duplicate block_library_duplicate)
 add_block_library(block_library_duplicate_second block_library_duplicate)
 
@@ -69,6 +69,17 @@ add_block_library(opaque_stage_library opaque_stage_library)
 
 # blocks whose type names and setting default test the anchors and the escaping of grinfo's documents
 add_block_library(doc_probe_library doc_probe_library)
+
+# Two plugins that offer one key at one version and a third that offers it at version 2, and two block libraries that
+# register one alias at one version. Each goes in a directory of its own, so that the order of the directories a loader
+# is given sets the order they load in.
+foreach(_precedence first second newer)
+  add_non_blocklib_plugin(precedence_plugin_${_precedence})
+  set_target_properties(precedence_plugin_${_precedence}
+                        PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${TESTS_BINARY_PATH}/precedence_plugin_${_precedence})
+endforeach()
+add_block_library(precedence_library_first precedence_library_first)
+add_block_library(precedence_library_second precedence_library_second)
 
 # One plugin at two plugin ABI versions, in a directory of their own: one at the version this core implements and one at
 # version 1. A third plugin is at the version this core implements and registers a scheduler at version 1 when it loads.

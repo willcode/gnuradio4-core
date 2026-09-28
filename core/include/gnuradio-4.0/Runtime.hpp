@@ -133,15 +133,24 @@ struct GNURADIO_EXPORT RuntimePort {
 struct GNURADIO_EXPORT RuntimePluginDirectory {
     struct BlockLibrary {
         std::string file;
-        std::size_t nBlockRegistrations = 0; // block registrations the file made when it loaded
+        std::size_t nBlockRegistrations = 0; // block registrations the file added when it loaded
+    };
+
+    /// a registration of one of these files that an earlier registration in the search order holds
+    struct Refused {
+        std::string   key;
+        std::uint32_t version = 1; // the block version the registration states
+        std::string   file;        // the file that offered the registration
+        std::string   holder;      // the file of the registration that holds the key at that version, empty where none is named
     };
 
     std::string                                      directory;      // as the caller named it
     std::vector<std::string>                         plugins;        // the files that loaded as plugins
-    std::vector<BlockLibrary>                        blockLibraries; // the files that registered blocks without being plugins
+    std::vector<BlockLibrary>                        blockLibraries; // the files that offered block registrations without being plugins
     std::vector<std::pair<std::string, std::string>> failed;         // each file that did not load, with the loader's reason
     std::vector<std::string>                         skipped;        // the entries named like a shared object that were not opened
     std::vector<std::string>                         blockTypes;     // the block types these files supplied before any other file, sorted
+    std::vector<Refused>                             refused;        // the registrations of these files that were refused, as the whole search left them
     std::string                                      error;          // why the directory could not be read, empty when it was read
 };
 
@@ -272,9 +281,10 @@ public:
      * system does not let the search read reports why in `error`, and the search goes on with the next one.
      *
      * A graph built through the loader takes a block type from the block registry first, then from the plugins, then
-     * from the YAML definitions. Of two plugins that supply one type, the first loaded supplies it. Of two block
-     * libraries, the last loaded supplies it, because a registration replaces the one before it. The files of one
-     * directory load in the order the file system lists them.
+     * from the YAML definitions. The block registry holds the program's own blocks and then the block libraries in the
+     * order they load. The first registration of a key at a version in that search order holds it, and each later one is
+     * listed in `refused` under the directory of the file that offered it, once every directory is searched. A different
+     * version of the key coexists with it. The files of one directory load in the order the file system lists them.
      *
      * The loader holds no lock. Call this while no other thread uses the loader, a running scheduler whose graph came
      * through it included.

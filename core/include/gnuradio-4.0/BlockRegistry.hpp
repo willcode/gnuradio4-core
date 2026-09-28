@@ -69,6 +69,34 @@ using namespace std::string_view_literals;
 
 using BlockFactory = std::unique_ptr<BlockModel> (*)(property_map);
 
+namespace detail {
+
+/// How one registration of a key at one version fares against the registrations filed under that key.
+enum class Claim : std::uint8_t {
+    Added,    ///< no registration held the version, and this one holds it
+    Repeated, ///< the registration that holds the version was offered again
+    Refused,  ///< another registration holds the version and keeps it
+};
+
+/**
+ * @brief Files `offered` under `version` unless a registration holds that version already.
+ *
+ * Every registration of a block goes through this rule: a registry files its keys with it, and the plugin loader
+ * files the keys its plugins offer with it. The first registration of a key at a version holds it. `isSame` tells a
+ * repeat of the holder from another registration, which is refused and leaves the holder in place. The other versions
+ * of the key are untouched either way.
+ */
+template<typename TEntry, typename TSame>
+[[nodiscard]] Claim claimVersion(std::map<block::Version, TEntry>& versions, block::Version version, const TEntry& offered, TSame&& isSame) {
+    const auto [held, added] = versions.try_emplace(version, offered);
+    if (added) {
+        return Claim::Added;
+    }
+    return isSame(held->second, offered) ? Claim::Repeated : Claim::Refused;
+}
+
+} // namespace detail
+
 /**
  * @brief What a generated definition unit exports beside its factory.
  *
@@ -118,8 +146,8 @@ class GeneralRegistry {
         property_map                    attributes{};
     };
 
-    /// A key holds every version registered under it, ordered, so the newest is the last entry. Two
-    /// registrations of one key and one version collide, the last winning.
+    /// A key holds every version registered under it, ordered, so the newest is the last entry. The first
+    /// registration of a key at a version holds that version (`detail::claimVersion()`).
     struct TTypeHandler {
         std::string                               alias;
         std::map<block::Version, TVersionHandler> versions;
@@ -132,6 +160,18 @@ class GeneralRegistry {
         std::uint8_t                    abiVersion     = 0;
     };
 
+public:
+    using Factory = decltype(this_t::factoryProto)*;
+
+    /// A registration refused because an earlier registration holds its key at its version.
+    struct Refusal {
+        std::string    key;
+        block::Version version = block::kDefaultVersion;
+        Factory        refused = nullptr; ///< the factory the refused registration offered
+        Factory        holder  = nullptr; ///< the factory of the registration that holds the key at that version
+    };
+
+private:
     // `_blockTypeHandlers` and `_generation` keep the layout of a registry that records no version. A shared object
     // built against that older layout inserts into them through its own inline copy of `insert()`, which does not
     // write `_abiVersions`. A host built against the older layout cannot load a shared object built against this one.
@@ -140,6 +180,19 @@ class GeneralRegistry {
     std::size_t                                            _generation = 0UZ;
     std::map<std::string, RecordedAbiVersion, std::less<>> _abiVersions;
     block::Vocabulary                                      _vocabulary = block::coreVocabulary();
+    std::vector<Refusal>                                   _refused;
+
+    /// files `entry` under `key` at `version` by `detail::claimVersion()`, counting an addition and recording a refusal
+    detail::Claim claim(std::string_view key, block::Version version, const TVersionHandler& entry) {
+        auto [handler, isNewKey]    = _blockTypeHandlers.try_emplace(std::string(key));
+        const detail::Claim outcome = detail::claimVersion(handler->second.versions, version, entry, [](const TVersionHandler& held, const TVersionHandler& offered) { return held.createFunction == offered.createFunction; });
+        if (outcome == detail::Claim::Added) {
+            ++_generation;
+        } else if (outcome == detail::Claim::Refused) {
+            _refused.push_back({.key = handler->first, .version = version, .refused = entry.createFunction, .holder = handler->second.versions.at(version).createFunction});
+        }
+        return outcome;
+    }
 
     [[nodiscard]] const TTypeHandler* handlerFor(std::string_view blockName) const {
         const auto it = _blockTypeHandlers.find(blockName);
@@ -166,47 +219,55 @@ public:
     GeneralRegistry(const this_t& other)            = delete;
     GeneralRegistry& operator=(const this_t& other) = delete;
 
-    GeneralRegistry(this_t&& other) noexcept : _blockTypeHandlers(std::exchange(other._blockTypeHandlers, {})), _abiVersions(std::exchange(other._abiVersions, {})), _vocabulary(std::exchange(other._vocabulary, {})) {}
+    GeneralRegistry(this_t&& other) noexcept : _blockTypeHandlers(std::exchange(other._blockTypeHandlers, {})), _abiVersions(std::exchange(other._abiVersions, {})), _vocabulary(std::exchange(other._vocabulary, {})), _refused(std::exchange(other._refused, {})) {}
     GeneralRegistry& operator=(this_t&& other) noexcept {
         auto tmp = std::move(other);
         std::swap(_blockTypeHandlers, tmp._blockTypeHandlers);
         std::swap(_abiVersions, tmp._abiVersions);
+        std::swap(_refused, tmp._refused);
         std::swap(_vocabulary, tmp._vocabulary);
         return *this;
     }
     ~GeneralRegistry() = default;
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
-    /// Adds an entry a generated definition unit already produced: nothing here names the block type. The entry is
-    /// filed under the version `attributes` states, `block::kDefaultVersion` when it states none, `labels` join the
-    /// vocabulary, and the entry records `abiVersion`. Its default argument is evaluated at the call site. The entry
-    /// therefore records the `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever copy of
-    /// this function runs. Reports whether it added anything: a key, or a version under an existing key.
-    bool insert(std::string_view name, std::string_view alias, decltype(this_t::factoryProto)* factory, property_map attributes = {}, std::span<const block::Label> labels = {}, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
-        for (const block::Label& label : labels) {
-            _vocabulary.add(label);
-        }
+    /**
+     * @brief Adds an entry a generated definition unit already produced: nothing here names the block type.
+     *
+     * The entry is filed under its key and, when it has one, its alias, each at the version `attributes` states, and
+     * `block::kDefaultVersion` when it states none. Each of the two keys follows `detail::claimVersion()`: the first
+     * registration of a key at a version holds it, the same factory offered again adds nothing, and another factory is
+     * refused and recorded in `refused()`. A key names the alias of the first registration that holds both the key and
+     * the alias. The `labels` join the vocabulary when the entry adds a key or a version. A key the entry is not
+     * refused under records `abiVersion`. Its default argument is evaluated at the call site. The entry therefore
+     * records the `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever copy of this
+     * function runs. Returns whether it added a key or a version.
+     */
+    bool insert(std::string_view name, std::string_view alias, Factory factory, property_map attributes = {}, std::span<const block::Label> labels = {}, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
         const block::Version  version = block::attributesFromMap(attributes).version;
         const TVersionHandler entry{.createFunction = factory, .attributes = std::move(attributes)};
 
-        auto addVersion = [&entry, version](TTypeHandler& handler) { return handler.versions.insert_or_assign(version, entry).second; };
-
-        auto [nameIt, nameInserted] = _blockTypeHandlers.try_emplace(std::string(name));
-        const bool nameAdded        = addVersion(nameIt->second) || nameInserted;
-        nameIt->second.alias        = std::string(alias); // the last registration of a key names its alias
-        _abiVersions.insert_or_assign(std::string(name), RecordedAbiVersion{.createFunction = factory, .abiVersion = abiVersion});
-        ++_generation;
-
-        bool aliasAdded = false;
-        if (!alias.empty()) {
-            // the alias entry carries no alias of its own: typeName() reads the alias off the key it was asked about
-            auto [aliasIt, aliasInserted] = _blockTypeHandlers.try_emplace(std::string(alias));
-            aliasAdded                    = addVersion(aliasIt->second) || aliasInserted;
-            _abiVersions.insert_or_assign(std::string(alias), RecordedAbiVersion{.createFunction = factory, .abiVersion = abiVersion});
-            ++_generation;
+        const detail::Claim nameClaim = claim(name, version, entry);
+        bool                added     = nameClaim == detail::Claim::Added;
+        if (nameClaim != detail::Claim::Refused) {
+            _abiVersions.insert_or_assign(std::string(name), RecordedAbiVersion{.createFunction = factory, .abiVersion = abiVersion});
         }
-
-        return nameAdded || aliasAdded;
+        if (!alias.empty()) {
+            const detail::Claim aliasClaim = claim(alias, version, entry);
+            added                          = added || aliasClaim == detail::Claim::Added;
+            if (aliasClaim != detail::Claim::Refused) {
+                _abiVersions.insert_or_assign(std::string(alias), RecordedAbiVersion{.createFunction = factory, .abiVersion = abiVersion});
+            }
+            if (std::string& named = _blockTypeHandlers.find(name)->second.alias; named.empty() && nameClaim != detail::Claim::Refused && aliasClaim != detail::Claim::Refused) {
+                named = std::string(alias);
+            }
+        }
+        if (added) {
+            for (const block::Label& label : labels) {
+                _vocabulary.add(label);
+            }
+        }
+        return added;
     }
 
     template<BlockLike TBlock>
@@ -215,7 +276,7 @@ public:
         return insert(gr::meta::type_name<TBlock>(), makeRegistryAlias(alias, aliasParameters), defaultFactory<TBlock>, block::detail::declaredAttributesMap<TBlock>(), block::attributesOf<TBlock>().labels, abiVersion);
     }
 #else
-    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] decltype(this_t::factoryProto)* factory, [[maybe_unused]] property_map attributes = {}, [[maybe_unused]] std::span<const block::Label> labels = {}, [[maybe_unused]] std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) { return false; }
+    bool insert([[maybe_unused]] std::string_view name, [[maybe_unused]] std::string_view alias, [[maybe_unused]] Factory factory, [[maybe_unused]] property_map attributes = {}, [[maybe_unused]] std::span<const block::Label> labels = {}, [[maybe_unused]] std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) { return false; }
 
     template<BlockLike TBlock>
     requires std::is_constructible_v<TBlock, property_map>
@@ -305,8 +366,17 @@ public:
         return {view.begin(), view.end()};
     }
 
-    /// increments once per registered key, whether the key is new or replaces one already held
+    /// increments once for each key, and each version under a key, that a registration adds
     [[nodiscard]] std::size_t generation() const noexcept { return _generation; }
+
+    /// every registration this registry refused, in the order they were offered
+    [[nodiscard]] const std::vector<Refusal>& refused() const noexcept { return _refused; }
+
+    /// the factory of the registration that holds `blockName` at `version`, null when none holds it
+    [[nodiscard]] Factory factoryFor(std::string_view blockName, block::Version version) const {
+        const TVersionHandler* entry = versionHandlerFor(blockName, version);
+        return entry == nullptr ? nullptr : entry->createFunction;
+    }
 
     [[nodiscard]] bool contains(std::string_view blockName) const { return _blockTypeHandlers.contains(blockName); }
 
@@ -328,19 +398,32 @@ public:
     /// the registry holds only what is registered after this call.
     [[nodiscard]] Entries takeEntries() { return {.handlers = std::exchange(_blockTypeHandlers, {}), .abiVersions = std::exchange(_abiVersions, {})}; }
 
-    /// Puts back the entries `takeEntries()` returned. With `keepRegistered`, an entry registered since then stays and
-    /// replaces a taken one under the same key. Without it, every such entry is dropped.
+    /// Puts back the entries `takeEntries()` returned. With `keepRegistered`, each entry registered since then is a
+    /// later registration of its key and version than the taken ones and follows `detail::claimVersion()`: it stays
+    /// where no taken entry holds its key at its version, and is refused and recorded in `refused()` where one does.
+    /// A key every version of which stays keeps its alias and its recorded ABI version. Without it, every such entry is
+    /// dropped.
     void restoreEntries(Entries taken, bool keepRegistered) {
-        if (keepRegistered) {
-            for (auto& [key, handler] : _blockTypeHandlers) {
-                taken.handlers.insert_or_assign(key, std::move(handler));
+        std::map<std::string, TTypeHandler, std::less<>>       registered         = std::exchange(_blockTypeHandlers, std::move(taken.handlers));
+        std::map<std::string, RecordedAbiVersion, std::less<>> registeredVersions = std::exchange(_abiVersions, std::move(taken.abiVersions));
+        if (!keepRegistered) {
+            return;
+        }
+        for (const auto& [key, handler] : registered) {
+            bool heldAll = true;
+            for (const auto& [version, entry] : handler.versions) {
+                heldAll = claim(key, version, entry) != detail::Claim::Refused && heldAll;
             }
-            for (const auto& [key, recorded] : _abiVersions) {
-                taken.abiVersions.insert_or_assign(key, recorded);
+            if (!heldAll || handler.versions.empty()) {
+                continue;
+            }
+            if (std::string& named = _blockTypeHandlers.find(key)->second.alias; named.empty()) {
+                named = handler.alias;
+            }
+            if (const auto recorded = registeredVersions.find(key); recorded != registeredVersions.end()) {
+                _abiVersions.insert_or_assign(key, recorded->second);
             }
         }
-        _blockTypeHandlers = std::move(taken.handlers);
-        _abiVersions       = std::move(taken.abiVersions);
     }
 
     std::string typeName(const std::shared_ptr<BlockModel>& block) {
@@ -357,7 +440,18 @@ public:
             return;
         }
 
-        _blockTypeHandlers.insert(anotherRegistry._blockTypeHandlers.cbegin(), anotherRegistry._blockTypeHandlers.cend());
+        // each entry of the other registry is a later registration of its key and version
+        for (const auto& [key, handler] : anotherRegistry._blockTypeHandlers) {
+            bool heldAll = true;
+            for (const auto& [version, entry] : handler.versions) {
+                heldAll = claim(key, version, entry) != detail::Claim::Refused && heldAll;
+            }
+            if (heldAll && !handler.versions.empty()) {
+                if (std::string& named = _blockTypeHandlers.find(key)->second.alias; named.empty()) {
+                    named = handler.alias;
+                }
+            }
+        }
         _abiVersions.insert(anotherRegistry._abiVersions.cbegin(), anotherRegistry._abiVersions.cend());
         _vocabulary.merge(anotherRegistry._vocabulary);
     }
