@@ -1024,12 +1024,13 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(devices.output.contains("\"command\": \"devices\"")) << devices.output;
 
         const std::string_view unit = enclosingJsonObject(devices.output, "\"product\": \"Fake unit A\"");
-        for (const std::string_view member : {"\"family\": \"fakeplugin\"", "\"identifiers\": \"serial=FAKE0001\"", "\"selector\": \"fakeplugin:serial=FAKE0001\"", "\"receive\": true", "\"transmit\": true"}) {
+        for (const std::string_view member : {"\"family\": \"fakeplugin\"", "\"selector\": \"fakeplugin:serial=FAKE0001\"", "\"receive\": true", "\"transmit\": true"}) {
             expect(unit.contains(member)) << member << devices.output;
         }
         const std::string_view unnamed = enclosingJsonObject(devices.output, "\"product\": \"Fake unit without a serial\"");
         expect(!unnamed.empty()) << devices.output;
-        expect(!unnamed.contains("identifiers") && !unnamed.contains("selector")) << "a unit listed without a selector carries neither" << unnamed;
+        expect(!unnamed.contains("selector")) << "a unit listed without a selector carries none" << unnamed;
+        expect(!devices.output.contains("identifiers")) << "the selector is carried whole and never split" << devices.output;
 
         const std::string_view opening = enclosingJsonObject(devices.output, "\"family\": \"fakeopening\"");
         for (const std::string_view member : {"\"opens\": true", "\"listed\": false", "\"reason\": \"its listing opens a unit, and the call does not allow that\""}) {

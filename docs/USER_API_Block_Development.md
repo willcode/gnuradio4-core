@@ -740,7 +740,7 @@ it to its own instance through `static_cast<gr::DeviceListingRegistry&>(grPlugin
 `PluginLoader::listDevices()` asks every family whose listing opens no unit,
 `listDevices(gr::Opening::Allowed)` asks every family, and `grinfo devices`
 prints the result. Core passes the family word and the selector on as strings
-and reads neither. The first registration of a family word holds it, and a later
+and reads neither, and `grinfo devices` prints each selector whole. The first registration of a family word holds it, and a later
 one is refused and reported.
 
 ## Dos and don'ts

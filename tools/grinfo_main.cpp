@@ -2441,16 +2441,6 @@ void reportLabels(const Context& context, const Options& options) {
     return "no direction";
 }
 
-// a unit's selector after its own family word and a colon, and nothing where the selector does not start with them
-[[nodiscard]] std::string_view identifiersOf(const gr::ListedUnit& unit) {
-    const std::string_view selector = unit.selector;
-    const std::string_view family   = unit.family;
-    if (selector.size() > family.size() && selector.starts_with(family) && selector[family.size()] == ':') {
-        return selector.substr(family.size() + 1UZ);
-    }
-    return {};
-}
-
 void writeDevicesAsJson(const gr::DeviceList& list, const std::vector<gr::RefusedDeviceListing>& refused) {
     JsonWriter json;
     json.beginObject();
@@ -2461,7 +2451,6 @@ void writeDevicesAsJson(const gr::DeviceList& list, const std::vector<gr::Refuse
     for (const gr::ListedUnit& unit : list.units) {
         json.beginObject();
         json.member("family", unit.family);
-        json.member("identifiers", identifiersOf(unit));
         json.member("selector", unit.selector);
         json.member("product", unit.label);
         json.flag("receive", unit.receive);
