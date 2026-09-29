@@ -729,6 +729,20 @@ the fixed argument.
 Downstream examples: common blocks, math blocks, power estimators, and
 hardware-backed blocks in `gnuradio4-blocks`.
 
+### Device listings
+
+A library whose blocks drive hardware registers a `gr::DeviceListing` beside its
+blocks for each family word it serves: the word, whether listing opens a unit,
+the directions its blocks carry, and a function that returns each attached unit
+as a label and a selector. A block library adds it to
+`gr::globalDeviceListingRegistry()` from a static initializer, and a plugin adds
+it to its own instance through `static_cast<gr::DeviceListingRegistry&>(grPluginInstance())`.
+`PluginLoader::listDevices()` asks every family whose listing opens no unit,
+`listDevices(gr::Opening::Allowed)` asks every family, and `grinfo devices`
+prints the result. Core passes the family word and the selector on as strings
+and reads neither. The first registration of a family word holds it, and a later
+one is refused and reported.
+
 ## Dos and don'ts
 
 | Do                                                   | Don't                                                                                                  |

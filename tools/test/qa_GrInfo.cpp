@@ -381,6 +381,29 @@ constexpr std::array<std::string_view, 5> kExternalReferences{"<script", "<link"
 }
 #endif
 
+#ifdef GR_TOOLS_DEVICE_LISTING
+// a run over the plugin and the block library that register device listings, with the installation's plugin directory
+// left out of the search
+[[nodiscard]] std::vector<std::string> overDeviceListings(const std::vector<std::string>& arguments) {
+    std::vector<std::string> all(arguments);
+    all.emplace_back("--no-installed-dir");
+    all.emplace_back("--plugin-dir");
+    all.emplace_back(GR_TOOLS_DEVICE_LISTING);
+    return all;
+}
+
+// the text of the JSON object that holds `needle`, braces included; empty when there is none
+[[nodiscard]] std::string_view enclosingJsonObject(std::string_view text, std::string_view needle) {
+    const std::size_t at = text.find(needle);
+    if (at == std::string_view::npos) {
+        return {};
+    }
+    const std::size_t begin = text.rfind('{', at);
+    const std::size_t end   = text.find('}', at);
+    return begin == std::string_view::npos || end == std::string_view::npos ? std::string_view{} : text.substr(begin, end - begin + 1UZ);
+}
+#endif
+
 #ifdef GR_TOOLS_VERSIONED_PLUGIN
 // a run over the versioned test plugin alone, with the installation's plugin directory left out of the search
 [[nodiscard]] std::vector<std::string> overVersionedPlugin(const std::vector<std::string>& arguments) {
@@ -969,6 +992,87 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(isOneJsonDocument(json.output)) << json.output;
         expect(json.output.contains("\"label\": \"holds/testbus\"")) << json.output;
         expect(json.output.contains("\"physical\": true")) << json.output;
+    };
+#endif
+
+#ifdef GR_TOOLS_DEVICE_LISTING
+    "devices lists the units of every loaded family under its word, and why a family listed none"_test = [] {
+        const Result devices = run(overDeviceListings({"devices"}));
+        expect(eq(devices.exitCode, 0)) << devices.output;
+        expect(devices.output.contains("fakeplugin (receive and transmit)\n")) << "a plugin's family, with the directions of its blocks" << devices.output;
+        expect(hasFact(devices.output, "fakeplugin:serial=FAKE0001", "Fake unit A")) << "a unit by its selector and its label" << devices.output;
+        expect(hasFact(devices.output, "(no selector)", "Fake unit without a serial")) << devices.output;
+        expect(hasFact(devices.output, "fakelibrary:index=0", "Fake library unit")) << "a block library's family" << devices.output;
+        expect(devices.output.contains("fakeopening (opens a unit)\n  not listed: its listing opens a unit, and the call does not allow that\n")) << devices.output;
+        expect(!devices.output.contains("fakeopening:bus=1")) << "the listing that opens a unit is not called" << devices.output;
+        expect(devices.output.contains("fakethrowing\n  not listed: the fake bus does not answer\n")) << "a listing that throws, with its message" << devices.output;
+        expect(devices.output.contains("fakeempty\n  listed: the listing found no unit\n")) << devices.output;
+        expect(devices.output.contains("is asked with --allow-open")) << devices.output;
+        expect(!devices.output.contains("refused listings")) << devices.output;
+
+        const Result opened = run(overDeviceListings({"devices", "--allow-open"}));
+        expect(eq(opened.exitCode, 0)) << opened.output;
+        expect(opened.output.contains("fakeopening (receive, opens a unit)\n")) << opened.output;
+        expect(hasFact(opened.output, "fakeopening:bus=1", "Fake opened unit")) << opened.output;
+        expect(!opened.output.contains("--allow-open")) << opened.output;
+    };
+
+    "devices --json carries the units and the families in the shape a reader relies on"_test = [] {
+        const Result devices = run(overDeviceListings({"devices", "--json"}));
+        expect(eq(devices.exitCode, 0)) << devices.output;
+        expect(isOneJsonDocument(devices.output)) << devices.output;
+        expect(devices.output.contains("\"command\": \"devices\"")) << devices.output;
+
+        const std::string_view unit = enclosingJsonObject(devices.output, "\"product\": \"Fake unit A\"");
+        for (const std::string_view member : {"\"family\": \"fakeplugin\"", "\"identifiers\": \"serial=FAKE0001\"", "\"selector\": \"fakeplugin:serial=FAKE0001\"", "\"receive\": true", "\"transmit\": true"}) {
+            expect(unit.contains(member)) << member << devices.output;
+        }
+        const std::string_view unnamed = enclosingJsonObject(devices.output, "\"product\": \"Fake unit without a serial\"");
+        expect(!unnamed.empty()) << devices.output;
+        expect(!unnamed.contains("identifiers") && !unnamed.contains("selector")) << "a unit listed without a selector carries neither" << unnamed;
+
+        const std::string_view opening = enclosingJsonObject(devices.output, "\"family\": \"fakeopening\"");
+        for (const std::string_view member : {"\"opens\": true", "\"listed\": false", "\"reason\": \"its listing opens a unit, and the call does not allow that\""}) {
+            expect(opening.contains(member)) << member << devices.output;
+        }
+        const std::string_view throwing = enclosingJsonObject(devices.output, "\"family\": \"fakethrowing\"");
+        expect(throwing.contains("\"listed\": false") && throwing.contains("\"reason\": \"the fake bus does not answer\"")) << devices.output;
+        const std::string_view listed = enclosingJsonObject(devices.output, "\"family\": \"fakelibrary\",\n      \"opens\"");
+        expect(listed.contains("\"listed\": true") && !listed.contains("reason")) << "a family that listed a unit carries no reason" << devices.output;
+    };
+
+    "a family word two files register is listed once, and the file searched second is named as refused"_test = [] {
+        const Result devices = run({"devices", "--no-installed-dir", "--plugin-dir", GR_TOOLS_DEVICE_LISTING, "--plugin-dir", GR_TOOLS_DEVICE_LISTING_DUPLICATE});
+        expect(eq(devices.exitCode, 0)) << devices.output;
+        expect(hasFact(devices.output, "fakeplugin:serial=FAKE0001", "Fake unit A")) << "the first registration answers" << devices.output;
+        expect(!devices.output.contains("DUPLICATE") && !devices.output.contains("index=9")) << devices.output;
+        expect(devices.output.contains("\nrefused listings\n")) << devices.output;
+        expect(devices.output.contains("libdevice_listing_duplicate_plugin.so")) << devices.output;
+        expect(devices.output.contains("libdevice_listing_duplicate_library.so")) << devices.output;
+
+        const Result json = run({"devices", "--json", "--no-installed-dir", "--plugin-dir", GR_TOOLS_DEVICE_LISTING, "--plugin-dir", GR_TOOLS_DEVICE_LISTING_DUPLICATE});
+        expect(eq(json.exitCode, 0)) << json.output;
+        const std::string_view refusal = enclosingJsonObject(json.output, "\"file\": \"" GR_TOOLS_DEVICE_LISTING_DUPLICATE "/libdevice_listing_duplicate_plugin.so\"");
+        expect(refusal.contains("\"family\": \"fakeplugin\"")) << json.output;
+        expect(refusal.contains("\"holder\": \"" GR_TOOLS_DEVICE_LISTING "/libdevice_listing_plugin.so\"")) << json.output;
+    };
+
+    "devices over plugins that register no listing names no family and fails no plugin"_test = [] {
+        const Result devices = run({"devices", "--no-installed-dir", "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS});
+        expect(eq(devices.exitCode, 0)) << devices.output;
+        expect(devices.output.contains("no device family is registered\n")) << devices.output;
+        expect(!devices.output.contains("listed")) << devices.output;
+
+        const Result version = run({"version", "--json", "--no-installed-dir", "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS});
+        expect(version.output.contains("Good Math Plugin")) << "the plugins load" << version.output;
+    };
+
+    "no line of the device report is wider than a terminal"_test = [] {
+        for (const std::vector<std::string>& arguments : {std::vector<std::string>{"devices"}, {"devices", "--allow-open"}}) {
+            const Result report = run(overDeviceListings(arguments));
+            expect(eq(report.exitCode, 0)) << report.output;
+            expect(le(widestLine(report.output), kWidth)) << report.output;
+        }
     };
 #endif
 

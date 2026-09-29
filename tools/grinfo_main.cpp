@@ -76,6 +76,7 @@ Usage: grinfo [command] [options]
   labels             every label word core and the loaded blocks declare, by
                      class, with its meaning
   schedulers         every registered scheduler, by library, with its settings
+  devices            the attached units every loaded device family lists
 
   --plugin-dir <dir> a directory of plugins and block libraries; repeatable
   --no-installed-dir leave out the plugin directory of this installation
@@ -86,6 +87,7 @@ Usage: grinfo [command] [options]
   --label <c/w>      with blocks, only the blocks whose newest version carries
                      the label class/word; repeatable, and every one must hold
   --all-settings     also the settings the framework declares on every block
+  --allow-open       with devices, also the families whose listing opens a unit
   --help, -h         this text
 
 Blocks and schedulers come from the directories named by --plugin-dir, from the
@@ -136,7 +138,7 @@ named by --plugin-dir cannot be searched, and 2 when the command line cannot be
 used.
 )";
 
-enum class Command : std::uint8_t { Version, Blocks, Block, Labels, Schedulers };
+enum class Command : std::uint8_t { Version, Blocks, Block, Labels, Schedulers, Devices };
 
 enum class Form : std::uint8_t { Text, Json, Markdown, Html };
 
@@ -163,6 +165,7 @@ struct Options {
     std::string              formOption; // the option that selected `form`, for the line that refuses a second one
     bool                     verbose     = false;
     bool                     allSettings = false;
+    bool                     allowOpen   = false; // whether devices asks the families whose listing opens a unit
     bool                     help        = false;
     // the labels `blocks` narrows its list to, as `class/word`; nothing narrows without the option
     std::vector<std::string> labels;
@@ -196,6 +199,11 @@ struct Options {
         }
         if (argument == "--all-settings") {
             options.allSettings = true;
+            ++index;
+            continue;
+        }
+        if (argument == "--allow-open") {
+            options.allowOpen = true;
             ++index;
             continue;
         }
@@ -243,6 +251,8 @@ struct Options {
                 options.command = Command::Labels;
             } else if (argument == "schedulers") {
                 options.command = Command::Schedulers;
+            } else if (argument == "devices") {
+                options.command = Command::Devices;
             } else {
                 std::println(stderr, "{}: unknown command '{}'", kProgram, argument);
                 return std::nullopt;
@@ -2420,6 +2430,170 @@ void reportLabels(const Context& context, const Options& options) {
     }
 }
 
+// the directions of a family's blocks, as the report words them
+[[nodiscard]] std::string_view directionsText(bool receive, bool transmit) {
+    if (receive && transmit) {
+        return "receive and transmit";
+    }
+    if (receive || transmit) {
+        return receive ? "receive" : "transmit";
+    }
+    return "no direction";
+}
+
+// a unit's selector after its own family word and a colon, and nothing where the selector does not start with them
+[[nodiscard]] std::string_view identifiersOf(const gr::ListedUnit& unit) {
+    const std::string_view selector = unit.selector;
+    const std::string_view family   = unit.family;
+    if (selector.size() > family.size() && selector.starts_with(family) && selector[family.size()] == ':') {
+        return selector.substr(family.size() + 1UZ);
+    }
+    return {};
+}
+
+void writeDevicesAsJson(const gr::DeviceList& list, const std::vector<gr::RefusedDeviceListing>& refused) {
+    JsonWriter json;
+    json.beginObject();
+    json.count("schema", 2UZ);
+    json.member("command", "devices");
+    json.key("units");
+    json.beginArray();
+    for (const gr::ListedUnit& unit : list.units) {
+        json.beginObject();
+        json.member("family", unit.family);
+        json.member("identifiers", identifiersOf(unit));
+        json.member("selector", unit.selector);
+        json.member("product", unit.label);
+        json.flag("receive", unit.receive);
+        json.flag("transmit", unit.transmit);
+        json.endObject();
+    }
+    json.endArray();
+    json.key("families");
+    json.beginArray();
+    for (const gr::ListedFamily& family : list.families) {
+        json.beginObject();
+        json.member("family", family.family);
+        json.flag("opens", family.opens);
+        json.flag("listed", family.listed);
+        json.member("reason", family.reason);
+        json.endObject();
+    }
+    json.endArray();
+    json.key("refused");
+    json.beginArray();
+    for (const gr::RefusedDeviceListing& refusal : refused) {
+        json.beginObject();
+        json.member("family", refusal.family);
+        json.member("file", refusal.file);
+        json.member("holder", refusal.holder);
+        json.endObject();
+    }
+    json.endArray();
+    json.endObject();
+    std::println("{}", json.text);
+}
+
+// Each family under its word: the directions of its blocks and whether its listing opens a unit, then the selector and
+// the label of each unit it listed, or why it listed none. The refused listings follow.
+void reportDevices(const Context& context, const Options& options) {
+    const gr::DeviceList list = context.loader.listDevices(options.allowOpen ? gr::Opening::Allowed : gr::Opening::Avoided);
+#ifdef INTERNAL_ENABLE_BLOCK_PLUGINS
+    const std::vector<gr::RefusedDeviceListing> refused = context.loader.refusedDeviceListings();
+#else
+    const std::vector<gr::RefusedDeviceListing> refused;
+#endif
+    if (options.form == Form::Json) {
+        writeDevicesAsJson(list, refused);
+        return;
+    }
+
+    // each family's line, the units it listed, and why it listed none or what it noted
+    struct FamilyReport {
+        std::string                                      heading;
+        std::vector<std::pair<std::string, std::string>> units;
+        std::string                                      reason;
+    };
+    std::vector<FamilyReport> families;
+    bool                      leftOutForOpening = false;
+    for (const gr::ListedFamily& family : list.families) {
+        std::vector<std::pair<std::string, std::string>> units;
+        std::string                                      traits;
+        for (const gr::ListedUnit& unit : list.units) {
+            if (unit.family != family.family) {
+                continue;
+            }
+            if (units.empty()) {
+                traits = directionsText(unit.receive, unit.transmit);
+            }
+            units.emplace_back(unit.selector.empty() ? std::string("(no selector)") : unit.selector, unit.label);
+        }
+        if (family.opens) {
+            traits += traits.empty() ? "opens a unit" : ", opens a unit";
+        }
+        families.push_back({.heading = std::format("{}{}", family.family, traits.empty() ? std::string{} : std::format(" ({})", traits)), .units = std::move(units), .reason = family.reason.empty() ? std::string{} : std::format("{}: {}", family.listed ? "listed" : "not listed", family.reason)});
+        leftOutForOpening = leftOutForOpening || (family.opens && !family.listed && !options.allowOpen);
+    }
+    std::vector<std::string> refusals;
+    refusals.reserve(refused.size());
+    for (const gr::RefusedDeviceListing& refusal : refused) {
+        refusals.push_back(std::format("{} from {}, held by {}", refusal.family, refusal.file, refusal.holder.empty() ? "an unnamed file" : refusal.holder));
+    }
+    constexpr std::string_view kNoFamily  = "no device family is registered";
+    constexpr std::string_view kAllowOpen = "A family whose listing opens a unit is asked with --allow-open.";
+
+    if (options.form != Form::Text) {
+        DocWriter document = documentFor(options.form, "grinfo devices");
+        if (families.empty()) {
+            document.paragraph(kNoFamily);
+        }
+        for (const FamilyReport& family : families) {
+            document.heading(2UZ, family.heading, document.anchor(family.heading));
+            writeFacts(document, family.units);
+            document.paragraph(family.reason);
+        }
+        if (leftOutForOpening) {
+            document.paragraph(kAllowOpen);
+        }
+        if (!refusals.empty()) {
+            document.heading(2UZ, "Refused listings", document.anchor("refused listings"));
+            std::vector<std::string> items;
+            items.reserve(refusals.size());
+            for (const std::string& refusal : refusals) {
+                items.push_back(document.text(refusal));
+            }
+            document.rawBullets(items);
+        }
+        std::print("{}", document.finish());
+        return;
+    }
+
+    if (families.empty()) {
+        std::println("{}", kNoFamily);
+    }
+    for (const FamilyReport& family : families) {
+        if (&family != &families.front()) {
+            std::print("\n");
+        }
+        std::println("{}", family.heading);
+        printFacts("  ", family.units);
+        if (!family.reason.empty()) {
+            printWrapped("  ", "    ", family.reason);
+        }
+    }
+    if (leftOutForOpening) {
+        std::print("\n");
+        std::println("{}", kAllowOpen);
+    }
+    if (!refusals.empty()) {
+        std::print("\n");
+        std::println("refused listings");
+        for (const std::string& refusal : refusals) {
+            printWrapped("  ", "    ", refusal);
+        }
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2517,6 +2691,7 @@ int main(int argc, char** argv) {
     case Command::Block: return reportBlock(context, options);
     case Command::Labels: reportLabels(context, options); return 0;
     case Command::Schedulers: reportSchedulers(context, options); return 0;
+    case Command::Devices: reportDevices(context, options); return 0;
     }
     return 0;
 }

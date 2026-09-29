@@ -135,5 +135,16 @@ if(TARGET grinfo)
     # the attribute cases read a plugin whose newer revision of one key declares a device
     target_compile_definitions(qa_GrInfo PRIVATE GR_TOOLS_VERSIONED_PLUGIN="$<TARGET_FILE_DIR:versioned_plugin>")
     add_dependencies(qa_GrInfo versioned_plugin)
+    # the device cases read a plugin and a block library that register listings of invented units, and a second pair
+    # that registers the same family words
+    target_compile_definitions(
+      qa_GrInfo PRIVATE GR_TOOLS_DEVICE_LISTING="$<TARGET_FILE_DIR:device_listing_plugin>"
+                        GR_TOOLS_DEVICE_LISTING_DUPLICATE="$<TARGET_FILE_DIR:device_listing_duplicate_plugin>")
+    add_dependencies(
+      qa_GrInfo
+      device_listing_plugin
+      device_listing_library
+      device_listing_duplicate_plugin
+      device_listing_duplicate_library)
   endif()
 endif()
