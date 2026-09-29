@@ -119,6 +119,21 @@ target_compile_definitions(scheduler_library_v1 PRIVATE SCHEDULER_LIBRARY_ABI_VE
 add_scheduler_library(scheduler_library_unversioned)
 target_compile_definitions(scheduler_library_unversioned PRIVATE SCHEDULER_LIBRARY_UNVERSIONED)
 
+# A plugin and a block library that register device listings of invented units, and in a directory of their own a second
+# plugin and a second library that register the same two family words. A loader given the first directory and then the
+# second holds the first registration of each word and refuses the second.
+add_non_blocklib_plugin(device_listing_plugin)
+set_target_properties(device_listing_plugin PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${TESTS_BINARY_PATH}/device_listing)
+add_block_library(device_listing_library device_listing)
+add_non_blocklib_plugin(device_listing_duplicate_plugin)
+set_target_properties(device_listing_duplicate_plugin PROPERTIES LIBRARY_OUTPUT_DIRECTORY
+                                                                 ${TESTS_BINARY_PATH}/device_listing_duplicate)
+add_block_library(device_listing_duplicate_library device_listing_duplicate)
+
+# A library that registers a device listing and a scheduler at plugin ABI version 1, in a directory of its own. A loader
+# refuses it for the scheduler and closes it, and the listing goes with it.
+add_block_library(device_listing_stale_library device_listing_stale)
+
 # a name that reads as a shared object but is not one the scan opens; it is never dlopened, so an empty file suffices
 file(MAKE_DIRECTORY ${TESTS_BINARY_PATH}/block_library_skipped)
 file(TOUCH ${TESTS_BINARY_PATH}/block_library_skipped/libnotopened.so.1)

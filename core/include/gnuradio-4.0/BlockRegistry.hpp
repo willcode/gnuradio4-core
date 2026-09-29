@@ -56,11 +56,12 @@
 // port of the host, and the layout of `gr::Tag`, the tag store's element, crosses the boundary with them. The host's
 // scheduler reads the `msgIn` and `msgOut` ports of a plugin's block through typed pointers, and the layout of a port
 // crosses the boundary too. `SchedulerModel::start()` returns the refusal of a start as a `std::expected`, and a host
-// reads it from a plugin's scheduler. `gr_plugin_base` ends with `blockVersions()` and `createPinnedBlock()`, through
+// reads it from a plugin's scheduler. `gr_plugin_base` carries `blockVersions()` and `createPinnedBlock()`, through
 // which a host reaches a plugin's block at a pinned version. `BlockModel` carries no `version()` or `status()`
 // virtual: both read the block's attributes from its meta information. A block registration carries the labels of
-// its type, and the attributes cross the boundary in their map form.
-#define GR_PLUGIN_CURRENT_ABI_VERSION 13
+// its type, and the attributes cross the boundary in their map form. `gr_plugin_base` ends with `deviceListings()`,
+// and a `gr::DeviceListing` crosses the boundary through it.
+#define GR_PLUGIN_CURRENT_ABI_VERSION 14
 
 namespace gr {
 

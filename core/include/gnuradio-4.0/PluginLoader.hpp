@@ -26,6 +26,7 @@
 #include "BlockRegistry.hpp"
 
 #include <gnuradio-4.0/BlockAttributes.hpp>
+#include <gnuradio-4.0/DeviceListing.hpp>
 #include <gnuradio-4.0/PluginMetadata.hpp>
 #include <gnuradio-4.0/YamlPmt.hpp>
 
@@ -83,6 +84,19 @@ struct RefusedRegistration {
     block::Version version = block::kDefaultVersion;
     std::string    file;   ///< the file that offered the refused registration
     std::string    holder; ///< the file of the registration that holds the key at that version, empty where the linker names none
+};
+
+/**
+ * @brief A device listing a file offered while an earlier listing in the search order holds its family word.
+ *
+ * The search order is the process's device listing registry, which holds the program's own listings and then the block
+ * libraries' in the order they loaded, then the plugins' in the order they loaded. The first listing of a family word
+ * in that order holds it, and a refused listing is not an error.
+ */
+struct RefusedDeviceListing {
+    std::string family;
+    std::string file;   ///< the file that offered the refused listing
+    std::string holder; ///< the file of the listing that holds the family word, empty where the linker names none
 };
 
 namespace detail {
@@ -693,7 +707,7 @@ public:
 class PluginLoader {
 public:
     /**
-     * @brief A shared object that is not a plugin but registered blocks or schedulers when it loaded.
+     * @brief A shared object that is not a plugin but registered blocks, schedulers or device listings when it loaded.
      *
      * It carries no `gr_plugin_make`; its entries reach the registries from static initializers, and it is kept
      * mapped for the lifetime of the process because those entries point into its code. A shared object that
@@ -705,7 +719,8 @@ public:
         std::string              file;
         std::size_t              nBlockRegistrations     = 0UZ;
         std::size_t              nSchedulerRegistrations = 0UZ;
-        std::vector<std::string> blockTypes{}; ///< the keys it added to the block registries, sorted
+        std::vector<std::string> blockTypes{};          ///< the keys it added to the block registries, sorted
+        std::size_t              nDeviceListings = 0UZ; ///< the family words it added to the device listing registry
     };
 
     /// A shared object that loaded as a plugin.
@@ -730,7 +745,8 @@ private:
     std::unordered_map<std::string, gr_plugin_base*>                              _pluginForSchedulerName;
 
     /// the refusals the registries recorded while a file loaded, each with that file
-    std::vector<RefusedRegistration> _registryRefusals;
+    std::vector<RefusedRegistration>  _registryRefusals;
+    std::vector<RefusedDeviceListing> _deviceListingRefusals;
 
     BlockRegistry*     _registry;
     SchedulerRegistry* _schedulerRegistry;
@@ -780,17 +796,17 @@ private:
         return {};
     }
 
-    /// how many refusals each registry a load can reach holds: this loader's block and scheduler registries, then the
-    /// process-wide pair where they differ from them
-    [[nodiscard]] std::array<std::size_t, 4UZ> refusalMarks() const {
+    /// how many refusals each registry a load can reach holds: this loader's block and scheduler registries, the
+    /// process-wide pair where they differ from them, then the process's device listing registry
+    [[nodiscard]] std::array<std::size_t, 5UZ> refusalMarks() const {
         const BlockRegistry&     globalBlocks     = gr::globalBlockRegistry();
         const SchedulerRegistry& globalSchedulers = gr::globalSchedulerRegistry();
-        return {_registry->refused().size(), _schedulerRegistry->refused().size(), &globalBlocks != _registry ? globalBlocks.refused().size() : 0UZ, &globalSchedulers != _schedulerRegistry ? globalSchedulers.refused().size() : 0UZ};
+        return {_registry->refused().size(), _schedulerRegistry->refused().size(), &globalBlocks != _registry ? globalBlocks.refused().size() : 0UZ, &globalSchedulers != _schedulerRegistry ? globalSchedulers.refused().size() : 0UZ, gr::globalDeviceListingRegistry().refused().size()};
     }
 
     /// records as `file`'s each refusal the registries made after `marks`, and returns how many there were
-    std::size_t recordRefusals(const std::array<std::size_t, 4UZ>& marks, const std::string& file) {
-        const std::size_t before = _registryRefusals.size();
+    std::size_t recordRefusals(const std::array<std::size_t, 5UZ>& marks, const std::string& file) {
+        const std::size_t before = _registryRefusals.size() + _deviceListingRefusals.size();
         const auto        record = [this, &file](const auto& registry, std::size_t from) {
             const auto& refused = registry.refused();
             for (std::size_t i = from; i < refused.size(); ++i) {
@@ -805,7 +821,11 @@ private:
         if (const SchedulerRegistry& global = gr::globalSchedulerRegistry(); &global != _schedulerRegistry) {
             record(global, marks[3UZ]);
         }
-        return _registryRefusals.size() - before;
+        const auto& listingRefusals = gr::globalDeviceListingRegistry().refused();
+        for (std::size_t i = marks[4UZ]; i < listingRefusals.size(); ++i) {
+            _deviceListingRefusals.push_back({.family = listingRefusals[i].family, .file = file, .holder = detail::fileHoldingCode(std::bit_cast<const void*>(listingRefusals[i].holder))});
+        }
+        return _registryRefusals.size() + _deviceListingRefusals.size() - before;
     }
 
     gr_plugin_base* pluginForSchedulerName(std::string_view name) const { //
@@ -881,18 +901,47 @@ private:
         return {handed, &global};
     }
 
-    /// How many registrations the registries a load can reach have taken. A registration that replaces a key an
-    /// earlier library registered leaves the entry count where it was.
-    [[nodiscard]] std::pair<std::size_t, std::size_t> registryGenerations() const {
-        std::size_t blockGeneration = 0UZ;
+    /// the family words the process's device listing registry holds
+    [[nodiscard]] static std::vector<std::string> deviceListingFamilies() {
+        std::vector<std::string> families;
+        for (const DeviceListing& listing : gr::globalDeviceListingRegistry().listings()) {
+            families.push_back(listing.family);
+        }
+        return families;
+    }
+
+    /// removes every device listing registered since `before` was read, which a file closed after its load requires,
+    /// because those listings point into its code
+    static void dropDeviceListings(const std::vector<std::string>& before) {
+        DeviceListingRegistry&   listings = gr::globalDeviceListingRegistry();
+        std::vector<std::string> added;
+        for (const DeviceListing& listing : listings.listings()) {
+            if (!std::ranges::contains(before, listing.family)) {
+                added.push_back(listing.family);
+            }
+        }
+        for (const std::string& family : added) {
+            listings.erase(family);
+        }
+    }
+
+    struct RegistryGenerations {
+        std::size_t blocks         = 0UZ;
+        std::size_t schedulers     = 0UZ;
+        std::size_t deviceListings = 0UZ;
+    };
+
+    /// How many registrations the registries a load can reach have taken: each key, and each version under a key, a
+    /// registration added. Device listings have the process-wide registry alone.
+    [[nodiscard]] RegistryGenerations registryGenerations() const {
+        RegistryGenerations generations{.deviceListings = gr::globalDeviceListingRegistry().generation()};
         for (const BlockRegistry* registry : reachableRegistries(_registry, gr::globalBlockRegistry())) {
-            blockGeneration += registry->generation();
+            generations.blocks += registry->generation();
         }
-        std::size_t schedulerGeneration = 0UZ;
         for (const SchedulerRegistry* registry : reachableRegistries(_schedulerRegistry, gr::globalSchedulerRegistry())) {
-            schedulerGeneration += registry->generation();
+            generations.schedulers += registry->generation();
         }
-        return {blockGeneration, schedulerGeneration};
+        return generations;
     }
 
     /// the keys of the block registries a load can reach, sorted and without repeats
@@ -904,6 +953,22 @@ private:
         std::ranges::sort(keys);
         keys.erase(std::ranges::unique(keys).begin(), keys.end());
         return keys;
+    }
+
+    /// the device listing that holds each family word in the search order, with the file it came from
+    [[nodiscard]] std::vector<std::pair<DeviceListing, std::string>> heldDeviceListings() const {
+        std::vector<std::pair<DeviceListing, std::string>> held;
+        for (const DeviceListing& listing : gr::globalDeviceListingRegistry().listings()) {
+            held.emplace_back(listing, detail::fileHoldingCode(std::bit_cast<const void*>(listing.listUnits)));
+        }
+        for (std::size_t i = 0UZ; i < _pluginHandlers.size(); ++i) {
+            for (DeviceListing& listing : _pluginHandlers[i]->deviceListings()) {
+                if (std::ranges::none_of(held, [&listing](const auto& entry) { return entry.first.family == listing.family; })) {
+                    held.emplace_back(std::move(listing), _pluginFiles[i].file);
+                }
+            }
+        }
+        return held;
     }
 
 public:
@@ -957,9 +1022,10 @@ public:
                 }
                 _loadedPluginFiles.insert(fileString);
 
-                const auto [blockGenerationBefore, schedulerGenerationBefore] = registryGenerations();
-                const std::vector<std::string>     keysBefore     = registryKeys();
-                const std::array<std::size_t, 4UZ> refusalsBefore = refusalMarks();
+                const RegistryGenerations          generationsBefore     = registryGenerations();
+                const std::vector<std::string>     keysBefore            = registryKeys();
+                const std::array<std::size_t, 5UZ> refusalsBefore        = refusalMarks();
+                const std::vector<std::string>     deviceListingsBefore  = deviceListingFamilies();
                 SetAsideRegistrations              registrations(reachableRegistries(_registry, gr::globalBlockRegistry()), reachableRegistries(_schedulerRegistry, gr::globalSchedulerRegistry()));
 
                 if (PluginHandler handler(fileString); handler) {
@@ -997,13 +1063,16 @@ public:
                     _pluginFiles.push_back(std::move(loaded));
 
                 } else {
-                    const auto [blockGenerationAfter, schedulerGenerationAfter] = registryGenerations();
-                    const std::size_t blockRegistrations                        = blockGenerationAfter - blockGenerationBefore;
-                    const std::size_t schedulerRegistrations                    = schedulerGenerationAfter - schedulerGenerationBefore;
+                    const RegistryGenerations generationsAfter       = registryGenerations();
+                    const std::size_t         blockRegistrations     = generationsAfter.blocks - generationsBefore.blocks;
+                    const std::size_t         schedulerRegistrations = generationsAfter.schedulers - generationsBefore.schedulers;
+                    const std::size_t         deviceListings         = generationsAfter.deviceListings - generationsBefore.deviceListings;
 
-                    if (handler.isLoaded() && (blockRegistrations != 0UZ || schedulerRegistrations != 0UZ)) {
+                    if (handler.isLoaded() && (blockRegistrations != 0UZ || schedulerRegistrations != 0UZ || deviceListings != 0UZ)) {
                         if (std::optional<std::string> mismatch = registrations.schedulerAbiMismatch(); mismatch.has_value()) {
+                            // the file is closed, so the device listings it registered go with its other entries
                             registrations.restore(false);
+                            dropDeviceListings(deviceListingsBefore);
                             std::string warning = std::format("warning: library {} not loaded: {}", fileString, *mismatch);
                             std::println(stderr, "{}", warning);
                             handler.refuse(std::move(*mismatch), std::move(warning));
@@ -1014,11 +1083,11 @@ public:
                             // is kept as well
                             registrations.restore(true);
                             handler.keepMapped();
-                            std::ignore                                               = recordRefusals(refusalsBefore, fileString);
-                            const auto [blockGenerationKept, schedulerGenerationKept] = registryGenerations();
+                            std::ignore                               = recordRefusals(refusalsBefore, fileString);
+                            const RegistryGenerations generationsKept = registryGenerations();
                             std::vector<std::string> added;
                             std::ranges::set_difference(registryKeys(), keysBefore, std::back_inserter(added));
-                            _blockLibraries.push_back({.file = fileString, .nBlockRegistrations = blockGenerationKept - blockGenerationAfter, .nSchedulerRegistrations = schedulerGenerationKept - schedulerGenerationAfter, .blockTypes = std::move(added)});
+                            _blockLibraries.push_back({.file = fileString, .nBlockRegistrations = generationsKept.blocks - generationsAfter.blocks, .nSchedulerRegistrations = generationsKept.schedulers - generationsAfter.schedulers, .blockTypes = std::move(added), .nDeviceListings = deviceListings});
                         }
                     } else {
                         handler.refuse(handler.status());
@@ -1074,6 +1143,40 @@ public:
         for (const auto& [name, file] : _yamlRegistry.offeredDefinitions()) {
             if (std::string holder = holderFile(name, block::kDefaultVersion); holder != file) {
                 refused.push_back({.key = name, .version = block::kDefaultVersion, .file = file, .holder = std::move(holder)});
+            }
+        }
+        return refused;
+    }
+
+    /**
+     * @brief The attached units of every device family the program and the loaded files register, and a report of
+     * every family.
+     *
+     * The listing that holds a family word answers for it (`RefusedDeviceListing` states the order). With
+     * `Opening::Avoided` a family whose listing opens a unit is not asked, and its report says so. A family whose
+     * listing throws is reported as not listed, with the exception's message as the reason. A plugin that registers no
+     * listing adds nothing.
+     */
+    [[nodiscard]] DeviceList listDevices(Opening opening = Opening::Avoided) const {
+        std::vector<DeviceListing> listings;
+        for (std::pair<DeviceListing, std::string>& held : heldDeviceListings()) {
+            listings.push_back(std::move(held.first));
+        }
+        return detail::listDevices(std::move(listings), opening);
+    }
+
+    /// Every device listing a loaded file offered under a family word an earlier listing holds: the block libraries'
+    /// first, in the order they loaded, then the plugins' in the order they loaded.
+    [[nodiscard]] std::vector<RefusedDeviceListing> refusedDeviceListings() const {
+        std::vector<RefusedDeviceListing>                        refused = _deviceListingRefusals;
+        const std::vector<std::pair<DeviceListing, std::string>> held    = heldDeviceListings();
+        for (std::size_t i = 0UZ; i < _pluginHandlers.size(); ++i) {
+            const std::string& file = _pluginFiles[i].file;
+            for (const DeviceListing& listing : _pluginHandlers[i]->deviceListings()) {
+                const auto holder = std::ranges::find(held, listing.family, [](const auto& entry) -> const std::string& { return entry.first.family; });
+                if (holder != held.end() && holder->second != file) {
+                    refused.push_back({.family = listing.family, .file = file, .holder = holder->second});
+                }
             }
         }
         return refused;
@@ -1325,6 +1428,9 @@ public:
 
     /// see the non-WASM PluginLoader::nSkippedAssets
     [[nodiscard]] std::size_t nSkippedAssets() const noexcept { return _yamlRegistry.nSkippedAssets(); }
+
+    /// see the non-WASM PluginLoader::listDevices; the process's device listing registry answers alone
+    [[nodiscard]] DeviceList listDevices(Opening opening = Opening::Avoided) const { return detail::listDevices(gr::globalDeviceListingRegistry().listings(), opening); }
 };
 #endif
 
