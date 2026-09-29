@@ -801,7 +801,9 @@ void collectSettings(const gr::BlockModel& block, std::vector<Setting>& into) {
     fact.family     = parts.family;
     fact.name       = parts.name;
     fact.parameters = splitParameters(parts.parameters);
-    fact.attributes = context.loader.blockAttributes(key).value_or(gr::property_map{});
+    if (registry == Registry::Blocks) {
+        fact.attributes = context.loader.blockAttributes(key).value_or(gr::property_map{});
+    }
     // The map of a declaring type holds its version and the role its ports read, so a type whose factory fails
     // still has both, and a dynamic port collection counts as a port even where an instance holds none.
     const gr::block::AttributesRead declared = gr::block::attributesFromMap(fact.attributes);

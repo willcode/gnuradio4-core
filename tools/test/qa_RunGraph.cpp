@@ -687,7 +687,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         set.insert(set.end(), {"--set", "twin.event_count=1000"});
         const Result sharedSet = run(set);
         expect(eq(sharedSet.exitCode, 1)) << sharedSet.output;
-        expect(sharedSet.output.contains("'twin', which is the name of 2 blocks")) << sharedSet.output;
+        expect(sharedSet.output.contains("settings are given for block 'twin', and 2 blocks carry that unique_name or name")) << sharedSet.output;
     };
 
     "a block type two directories supply comes from the command line's, under rungraph and under grinfo"_test = [] {

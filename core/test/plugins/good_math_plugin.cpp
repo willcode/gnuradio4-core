@@ -88,7 +88,7 @@ namespace good {
 
 class GoodMathScheduler : public gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::multiThreaded> {
 public:
-    explicit GoodMathScheduler(const gr::property_map& = {}) : gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::multiThreaded>({}) {}
+    explicit GoodMathScheduler(const gr::property_map& parameters = {}) : gr::scheduler::Simple<gr::scheduler::ExecutionPolicy::multiThreaded>(parameters) {}
 };
 
 } // namespace good

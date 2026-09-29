@@ -661,9 +661,7 @@ std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::fromYaml(std::shared_ptr
         impl->owned  = std::make_unique<Graph>(*impl->loader);
         impl->view   = impl->owned.get();
 
-        detail::OverrideUse        use{overrides};
-        const detail::LoadedBlocks loaded = detail::loadGraphFromMap(*impl->loader, *impl->owned, *parsed, std::addressof(use));
-        use.checkAllTaken(loaded.byName | std::views::keys | std::ranges::to<std::vector<std::string>>());
+        const detail::LoadedBlocks loaded = detail::loadGraphFromMap(*impl->loader, *impl->owned, *parsed, overrides);
         for (const auto& [uniqueName, block] : loaded.byUniqueName) {
             impl->documentUniqueNames.emplace(uniqueName, block);
         }
