@@ -154,9 +154,8 @@ struct Expression {
 
 namespace detail {
 
-/// User text echoed into an error is shown and never interpreted. Control characters are
-/// replaced and the echo is bounded. A definition cannot pass terminal escape sequences or
-/// unbounded text through a refusal message.
+/// Returns user text fit to quote in an error message. Each control character becomes '?', and
+/// text longer than kMaxEcho characters is cut and ends in "...".
 [[nodiscard]] inline std::string printableEcho(std::string_view text) {
     constexpr std::size_t kMaxEcho = 120;
     std::string           echo;
