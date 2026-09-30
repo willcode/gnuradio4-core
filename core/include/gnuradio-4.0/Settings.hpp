@@ -214,8 +214,8 @@ template<typename T>
             using TValue      = typename T::value_type;
             using TTensorElem = std::conditional_t<std::is_same_v<TValue, std::string> || std::is_same_v<TValue, std::pmr::string>, pmt::Value, TValue>;
 
-            // an untagged YAML list parses to a sequence of type-erased values, and each element of such
-            // a sequence converts by the rule of a scalar setting of the element type
+            // an untagged YAML list parses to a sequence of type-erased values. Each element converts, or
+            // is refused, as a scalar setting of the element type would be.
             if constexpr (!std::is_same_v<TTensorElem, pmt::Value>) {
                 if (const auto* elements = value.get_if<Tensor<pmt::Value>>(); elements != nullptr) {
                     T converted;
