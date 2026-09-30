@@ -1351,9 +1351,11 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         expect(eq(readNumber(settings.get(), "sample_rate"), 96000.0f));
         expect(eq(readNumber(settings.get(), "deviation"), 2500.0f)) << "the refused value never came into force";
 
-        const std::string byStaged = refusalOf([&] { std::ignore = settings.setStaged({{"deviation", 0.0f}, {"name", std::string("staged")}}); });
+        // the context activated above stages the name the file gave, so the refused call is judged by what it adds
+        const gr::property_map stagedBefore = settings.stagedParameters();
+        const std::string      byStaged     = refusalOf([&] { std::ignore = settings.setStaged({{"deviation", 0.0f}, {"name", std::string("staged")}}); });
         expect(byStaged.contains("recipe_expression_conversion")) << byStaged;
-        expect(!settings.stagedParameters().contains("name")) << "the framework setting of the refused call is not staged";
+        expect(settings.stagedParameters() == stagedBefore) << "the framework setting of the refused call is not staged";
         expect(eq(stagedNumber(inner, "gain"), derivedGain(96000.0, 2500.0))) << "the interior holds the last derivation the recipe accepted";
     };
 
