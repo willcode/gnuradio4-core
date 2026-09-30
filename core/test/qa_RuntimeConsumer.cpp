@@ -6,10 +6,10 @@
 #include <cstdlib>
 
 /**
- * The wiring half of the demo consumer: it builds and runs a three-block graph and includes
- * Runtime.hpp as its only GNU Radio header.
+ * The wiring half of the demo consumer. It builds and runs a three-block graph. Runtime.hpp is its
+ * only GNU Radio header.
  *
- * check_runtime_cascade.sh compiles this file with clang -ftime-trace and asserts that it
+ * check_runtime_cascade.sh compiles this file with clang -ftime-trace. It asserts that the file
  * instantiates no Block<T>, CtxSettings<T>, Port<T, ...> or SchedulerBase<...>. Nothing here may
  * include another GNU Radio header, and nothing may name a framework type.
  */

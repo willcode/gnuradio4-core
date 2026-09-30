@@ -31,15 +31,15 @@ public:
     virtual std::vector<std::string>            availableSchedulers() const                                           = 0;
     virtual std::unique_ptr<gr::SchedulerModel> createScheduler(std::string_view name, const gr::property_map& param) = 0;
 
-    // an entry appends here, so that abiVersion() keeps the slot a plugin built against an older ABI gave it, and
-    // carries a name of its own, so that an implementor overriding one of them does not hide another
+    // A new entry is appended here. abiVersion() then keeps the slot a plugin built against an older ABI gave it.
+    // Each entry has a name of its own. An implementor that overrides one entry then hides no other.
     virtual std::vector<gr::block::Version> blockVersions(std::string_view name) const                                                           = 0;
     virtual std::unique_ptr<gr::BlockModel> createPinnedBlock(std::string_view name, gr::block::Version version, const gr::property_map& params) = 0;
-    /// the attributes map of one registered version, empty for a type that declares none; nothing when the plugin does not hold that version
+    /// the attributes map of one registered version, empty for a type that declares none. Returns std::nullopt when the plugin does not hold that version.
     virtual std::optional<gr::property_map> blockAttributes(std::string_view name, gr::block::Version version) const = 0;
     /// the words the plugin's blocks declare and core's, in the form of `gr::block::vocabularyToMap()`
     virtual gr::property_map blockVocabulary() const = 0;
-    /// the device listings the plugin registers, at most one per family word; empty for a plugin that registers none
+    /// the device listings the plugin registers, at most one per family word, empty for a plugin that registers none
     virtual std::vector<gr::DeviceListing> deviceListings() const = 0;
 };
 

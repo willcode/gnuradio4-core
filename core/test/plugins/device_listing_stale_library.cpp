@@ -8,11 +8,10 @@
 #include <gnuradio-4.0/SchedulerModel.hpp>
 
 /**
- * @brief A shared object that registers a device listing and a scheduler recorded at plugin ABI version 1, and is not
- * a plugin.
+ * @brief A shared object, not a plugin, that registers a device listing and a scheduler at plugin ABI version 1.
  *
- * A loader refuses it for the scheduler's version and closes it, so the listing it registered has to leave the
- * process's registry with it, because the listing points into its code.
+ * A loader refuses it for the scheduler's version and closes it. The listing it registered points into its code. The
+ * listing therefore has to leave the process's registry with it.
  */
 namespace {
 

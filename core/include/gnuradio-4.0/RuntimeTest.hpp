@@ -21,17 +21,16 @@ namespace gr::test {
  * @brief A test graph wired through gr::Runtime, with its blocks still reachable as their own types.
  *
  * Wiring a test graph with gr::Graph and gr::scheduler::Simple instantiates the graph, settings and
- * scheduler cascade in the test's own translation unit, once for every block type it names. Wiring it
- * here reaches that cascade through the copy already compiled into libgnuradio-core, so a test parses
- * its own block definitions and little else.
+ * scheduler templates in the test's own translation unit. It does so once for every block type the
+ * test names. Wiring it here uses the copy of those templates already compiled into libgnuradio-core.
+ * A test then parses its own block definitions and little else.
  *
- * What a test verifies does not change with it: emplace() builds the block and hands back TBlock&, so
- * assertions read the block's own members exactly as they did before. The reference is stable for the
- * lifetime of the RuntimeTest, because the block lives in a heap-allocated BlockWrapper that cannot
- * be moved.
+ * A test makes the same assertions either way. emplace() builds the block and returns TBlock&.
+ * Assertions read the block's own members as they do with gr::Graph. The reference is stable for the
+ * lifetime of the RuntimeTest. The block lives in a heap-allocated BlockWrapper that cannot be moved.
  *
- * A test that names no block type of its own should use gr::Runtime directly instead: building a block
- * needs BlockModel.hpp, which the by-name runtime path does not.
+ * A test that names no block type of its own should use gr::Runtime directly. Building a block needs
+ * BlockModel.hpp, and the by-name runtime path does not.
  */
 class RuntimeTest {
 public:
@@ -42,7 +41,7 @@ public:
     RuntimeTest(RuntimeTest&&)                 = delete;
     RuntimeTest& operator=(RuntimeTest&&)      = delete;
 
-    /// Builds `TBlock` from `parameters` -- "name" among them, as for Graph::emplaceBlock -- and adds it.
+    /// Builds `TBlock` from `parameters` and adds it. `parameters` may hold "name", as for Graph::emplaceBlock.
     template<typename TBlock>
     TBlock& emplace(property_map parameters = {}) {
         auto    model = std::make_shared<BlockWrapper<TBlock>>(std::move(parameters));
@@ -113,7 +112,7 @@ public:
         return inTime;
     }
 
-    /// Starts on a scheduler-owned thread and returns; stop() or the destructor ends the run.
+    /// Starts on a scheduler-owned thread and returns. stop() or the destructor ends the run.
     [[nodiscard]] std::expected<void, RuntimeError> start(std::string_view scheduler = Runtime::kDefaultScheduler, property_map schedulerParameters = {}) {
         if (auto created = create(scheduler, std::move(schedulerParameters)); !created.has_value()) {
             return created;
@@ -156,7 +155,7 @@ private:
             return std::unexpected(*_error);
         }
         if (_runtime.has_value()) {
-            return {}; // already created: start() then state(), or a second run of the same graph
+            return {}; // already created, by start() then state() or by an earlier run of the same graph
         }
         auto runtime = Runtime::create(std::move(_graph), scheduler, std::move(schedulerParameters));
         if (!runtime.has_value()) {

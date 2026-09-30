@@ -17,13 +17,13 @@
 /**
  * @brief What the erased entry costs at run time against the typed API.
  *
- * Both arms build the identical graph -- one source, N gain blocks, one counting sink, identical
- * parameters, identical edge sizes, identical scheduler and policy -- and both are executed by the
- * same JobLists of shared_ptr<BlockModel>, so the expectation is equality rather than a tolerance.
- * The gate exists to detect a design leak: something in the entry being consulted during the run.
+ * Both arms build the same graph of one source, N gain blocks and one counting sink. The
+ * parameters, edge sizes, scheduler and policy are the same in both. The same JobLists of
+ * shared_ptr<BlockModel> execute both arms. The expected result is equality, not a tolerance.
+ * A difference shows that the run consults something in the entry.
  *
- * Arms are interleaved in one process and the warm-up repetition is discarded, so host variation
- * cancels between them.
+ * The arms are interleaved in one process. The warm-up repetition is discarded. Host variation
+ * cancels between the arms.
  */
 
 namespace bm_runtime {
@@ -125,7 +125,8 @@ std::chrono::nanoseconds runTyped(std::size_t nChain, std::size_t ringSize, bool
     gr::scheduler::Simple<> scheduler;
     std::ignore = scheduler.exchange(std::move(flow));
 
-    // the erased entry always holds one, so the diagnostic arm can tell its cost from the erasure's
+    // The erased entry holds a subscriber to the scheduler's messages in every run. The diagnostic
+    // arm connects one here to measure its cost apart from the cost of erasure.
     gr::MsgPortIn subscriber;
     if (withMessageSubscriber) {
         std::ignore = scheduler.msgOut.connect(subscriber);
@@ -229,7 +230,7 @@ const boost::ut::suite<"erased runtime throughput"> erasedRuntimeThroughput = []
             };
             const double typed  = bestOf(false);
             const double erased = bestOf(true);
-            const double ratio  = typed / erased; // throughput ratio: ns/input is inverse
+            const double ratio  = typed / erased; // a throughput ratio, the inverse of the ns-per-input ratio
             std::println("ring={}Ki: erased/typed throughput {:.3f}x", ring / 1024UZ, ratio);
             expect(ge(ratio, 0.98)) << std::format("the erased arm lost throughput at ring={}Ki: {:.3f}x", ring / 1024UZ, ratio);
         }

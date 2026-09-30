@@ -119,8 +119,8 @@ struct RadioSink : gr::Block<RadioSink> {
     void processOne(float) const noexcept {}
 };
 
-/// a processing block on the radio's FPGA: it holds the device and has stream inputs and outputs, and declares no
-/// role; the labels are given out of class order
+/// a processing block on the radio's FPGA. It holds the device, has stream inputs and outputs, and declares no role.
+/// The labels are given out of class order.
 struct FpgaTransform : gr::Block<FpgaTransform> {
     static constexpr auto attributes = gr::block::describe(2U, labels::status::experimental, labels::compute::fpga, labels::holds::device, kQaFamily);
 
@@ -134,7 +134,7 @@ struct FpgaTransform : gr::Block<FpgaTransform> {
     [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
 };
 
-/// a device source with a message input of its own; only its type is read
+/// a device source with a message input of its own. Only its type is read.
 struct RadioControlledSource : gr::Block<RadioControlledSource> {
     static constexpr auto attributes = gr::block::describe(1U, kQaFamily, labels::holds::device);
 
@@ -146,7 +146,7 @@ struct RadioControlledSource : gr::Block<RadioControlledSource> {
     [[nodiscard]] constexpr float processOne() const noexcept { return 0.0f; }
 };
 
-/// a device sink whose inputs are one dynamic collection; only its type is read
+/// a device sink whose inputs are one dynamic collection. Only its type is read.
 struct RadioCombiningSink : gr::Block<RadioCombiningSink> {
     static constexpr auto attributes = gr::block::describe(1U, kQaFamily, labels::holds::device);
 
@@ -160,8 +160,8 @@ struct RadioCombiningSink : gr::Block<RadioCombiningSink> {
     }
 };
 
-/// a rotator controller: a declared transceiver with no stream port, acting through messages alone; only its type is
-/// read
+/// a rotator controller, a declared transceiver with no stream port that acts through messages alone. Only its type is
+/// read.
 struct RotatorController : gr::Block<RotatorController> {
     static constexpr auto attributes = gr::block::describe(1U, labels::role::transceiver, labels::plane::control, labels::holds::device, labels::emits::motion, labels::ingests::motion);
 
@@ -193,7 +193,7 @@ struct Antenna : gr::Block<Antenna> {
     [[nodiscard]] constexpr gr::work::Status processBulk() const noexcept { return gr::work::Status::DONE; }
 };
 
-/// a declared source whose stream ports read sink; the framework carries both and refuses neither
+/// a declared source whose stream ports read sink. The framework carries both and refuses neither.
 struct ContradictedSource : gr::Block<ContradictedSource> {
     static constexpr auto attributes = gr::block::describe(1U, labels::role::source);
 

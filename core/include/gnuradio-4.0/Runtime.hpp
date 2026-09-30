@@ -4,14 +4,14 @@
 /**
  * @brief Build and run a GNU Radio 4 flow graph without naming a framework template.
  *
- * Blocks and schedulers are named by string, parameters and ports by name, so this header
- * instantiates no `Block<T>`, `CtxSettings<T>`, `Port<T, ...>` or `SchedulerBase<...>`. Everything it
- * declares is compiled once into `libgnuradio-core`. The typed API is unchanged and remains the
- * choice where compile-time port checking matters; this is the choice for application wiring.
+ * Blocks and schedulers are selected by a string. Parameters and ports are selected by name. This
+ * header therefore instantiates no `Block<T>`, `CtxSettings<T>`, `Port<T, ...>` or
+ * `SchedulerBase<...>`. Everything it declares is compiled once into `libgnuradio-core`. The typed
+ * API remains the choice where compile-time port checking matters. This header is the choice for
+ * application wiring.
  *
- * One constraint follows from linking the compiled library: a consumer must be built with the same
- * compiler family as the installed `libgnuradio-core`, because constrained-template explicit
- * instantiations mangle differently between GCC and clang.
+ * A consumer must be built with the same compiler family as the installed `libgnuradio-core`.
+ * Constrained-template explicit instantiations mangle differently between GCC and clang.
  */
 
 #include <gnuradio-4.0/Export.hpp>
@@ -34,13 +34,13 @@
 
 namespace gr {
 
-/// Declared, never defined here: RuntimeGraph::add takes a shared_ptr to one and Runtime::create takes
-/// an rvalue reference to the other, neither of which needs a definition, so a consumer that builds no
-/// block of its own and loads no graph of its own pays nothing for them.
+/// Declared and not defined here. RuntimeGraph::add takes a shared_ptr to one, and Runtime::create
+/// takes an rvalue reference to the other. Neither needs a definition. A consumer that builds no block
+/// of its own and loads no graph of its own does not compile them.
 class BlockModel;
 struct Graph;
 
-/// Declared, never defined here: a program that builds its own loader includes `PluginLoader.hpp` for it.
+/// Declared and not defined here. A program that builds its own loader includes `PluginLoader.hpp`.
 class PluginLoader;
 
 struct GNURADIO_EXPORT RuntimeError {
@@ -58,8 +58,9 @@ struct GNURADIO_EXPORT EdgeSpec {
 /**
  * @brief One block inside a RuntimeGraph.
  *
- * Copyable and cheap. It keeps the graph's block alive but exposes no framework type, and it carries
- * no back-reference to its graph: passing a handle to a different RuntimeGraph is not diagnosed.
+ * A handle is copyable, and a copy costs one shared_ptr copy. It keeps the graph's block alive and
+ * exposes no framework type. It carries no back-reference to its graph. Passing a handle to a
+ * different RuntimeGraph is not diagnosed.
  */
 class GNURADIO_EXPORT BlockHandle {
 public:
@@ -71,8 +72,8 @@ public:
     [[nodiscard]] std::string_view typeName() const;
 
     /// Stages parameters without touching stored settings and returns the pairs the block does not declare. A value
-    /// that does not convert to its setting's type, or one a declared parameter refuses, is an error carrying the
-    /// block's reason, and the call stages nothing.
+    /// that does not convert to its setting's type is an error carrying the block's reason. So is a value a declared
+    /// parameter refuses. The call then stages nothing.
     [[nodiscard]] std::expected<property_map, RuntimeError> setStaged(const property_map& parameters);
 
     [[nodiscard]] property_map              get(std::span<const std::string> keys = {}) const;
@@ -80,7 +81,7 @@ public:
     [[nodiscard]] property_map              stagedParameters() const;
     [[nodiscard]] property_map              defaultParameters() const;
 
-    /// The keys `setStaged()` accepts: the type's writable members and the parameters the block declared.
+    /// The keys `setStaged()` accepts, the type's writable members and the parameters the block declared.
     [[nodiscard]] std::set<std::string> writableMembers() const;
 
     /// Reads the block's members into the settings `get()` returns. `get()` returns the values of the last settings
@@ -115,13 +116,13 @@ struct GNURADIO_EXPORT RuntimeEdge {
 /// `minSamples` and `maxSamples` are the requirement the port declared when its block's ports were first
 /// listed.
 struct GNURADIO_EXPORT RuntimePort {
-    std::string name;     // the name connect() accepts: "out", or "in#1" for element 1 of a collection
+    std::string name;     // the name connect() accepts, such as "out", or "in#1" for element 1 of a collection
     std::string typeName; // the value type, as the port spells it
     bool        isInput       = false;
     bool        isMessage     = false;
     bool        isOptional    = false;
     bool        isSynchronous = false;
-    bool        isConnected   = false; // true while a running scheduler holds the port connected; false before a run and after its blocks stop
+    bool        isConnected   = false; // true while a running scheduler holds the port connected, false before a run and after its blocks stop
     std::string domain;
     std::string collection;     // the collection's name for one of its elements, empty otherwise
     std::size_t index      = 0; // the element's position in its collection, 0 otherwise
@@ -158,13 +159,13 @@ struct GNURADIO_EXPORT RuntimePluginDirectory {
  * @brief A flow graph built by name.
  *
  * A RuntimeGraph either owns its graph or views one owned by a subgraph block or a scheduler.
- * `interior()` and `Runtime::graph()` return views; a view does not destroy what it names, and an
- * edit through a view edits the viewed graph.
+ * `interior()` and `Runtime::graph()` return views. A view does not destroy what it names. An edit
+ * through a view edits the viewed graph.
  *
- * From another thread, call edges(), inputPorts() and outputPorts() on a running graph only while no
- * edit is in flight, whether made through a view or by the scheduler's edit messages (quiesce() does
- * not hold those back), and call the port lists only while the scheduler is neither starting nor
- * stopping.
+ * Another thread may call edges(), inputPorts() and outputPorts() on a running graph only while no
+ * edit is in flight. That holds for an edit through a view and for the scheduler's edit messages.
+ * quiesce() does not hold those messages back. Another thread may read the port lists only while
+ * the scheduler is neither starting nor stopping.
  */
 class GNURADIO_EXPORT RuntimeGraph {
 public:
@@ -189,12 +190,12 @@ public:
     /// A parameter the block does not declare or refuses is an error carrying the block's refusal.
     [[nodiscard]] std::expected<BlockHandle, RuntimeError> emplace(std::string_view type, std::string_view name, property_map parameters = {});
 
-    /// Adds a block the caller built, so that a factory can keep its own typed pointer and hand the
-    /// graph the erased one. `name` renames the block when it is not empty. Requires BlockModel.hpp. A block
+    /// Adds a block the caller built. A factory can then keep its own typed pointer and pass the graph
+    /// the erased one. `name` renames the block when it is not empty. Requires BlockModel.hpp. A block
     /// whose settings refuse a key or a value's type when the graph initializes it is an error carrying the reason.
     [[nodiscard]] std::expected<BlockHandle, RuntimeError> add(std::shared_ptr<BlockModel> block, std::string_view name = {});
 
-    /// Adds a nested graph. The handle names it as a block here; `interior()` opens it for wiring.
+    /// Adds a nested graph. The handle names it as a block here. `interior()` opens it for wiring.
     [[nodiscard]] std::expected<BlockHandle, RuntimeError> emplaceSubgraph(std::string_view name, property_map parameters = {});
 
     /// A non-owning view of a subgraph's interior, or of a nested scheduler's graph.
@@ -215,7 +216,7 @@ public:
     [[nodiscard]] std::expected<void, RuntimeError> disconnect(const BlockHandle& sourceBlock, std::string_view sourcePort, //
         const BlockHandle& destinationBlock, std::string_view destinationPort);
 
-    /// The edges of this level of the graph; a subgraph's own edges are read through `interior()`.
+    /// The edges of this level of the graph. A subgraph's own edges are read through `interior()`.
     [[nodiscard]] std::vector<RuntimeEdge> edges() const;
 
     [[nodiscard]] std::vector<std::string> inputPortNames(const BlockHandle& block) const;
@@ -225,8 +226,8 @@ public:
     [[nodiscard]] std::vector<RuntimePort> inputPorts(const BlockHandle& block) const;
     [[nodiscard]] std::vector<RuntimePort> outputPorts(const BlockHandle& block) const;
 
-    /// Exports `innerBlock`'s port under `exportedName`. Call on the view of a subgraph's interior;
-    /// the exported port then appears on the subgraph's own handle in the parent.
+    /// Exports `innerBlock`'s port under `exportedName`. Call it on the view of a subgraph's interior.
+    /// The exported port then appears on the subgraph's own handle in the parent.
     [[nodiscard]] std::expected<void, RuntimeError> exportPort(const BlockHandle& innerBlock, bool isInput, std::string_view portName, std::string_view exportedName);
 
     [[nodiscard]] std::expected<void, RuntimeError> unexportPort(const BlockHandle& innerBlock, bool isInput, std::string_view portName);
@@ -241,10 +242,10 @@ public:
     /// know is one naming the type. For a document that does not parse, the message is the reader's sentence headed by
     /// the line and column.
     ///
-    /// `overrides` puts the caller's settings in place of the document's: each key names a block at the document's top
-    /// level by its `unique_name` or name, and its values replace those of the block's parameters before the block
-    /// reads them, as `gr::loadGrc` with a `gr::BlockSettings` does. A name no block carries, a name two blocks share
-    /// and a key a block does not declare are errors.
+    /// `overrides` puts the caller's settings in place of the document's. Each key names a block at the document's top
+    /// level by its `unique_name` or name. Its values replace those of the block's parameters before the block reads
+    /// them, as `gr::loadGrc` with a `gr::BlockSettings` does. A name no block carries, a name two blocks share and a
+    /// key a block does not declare are errors.
     [[nodiscard]] static std::expected<RuntimeGraph, RuntimeError> fromYaml(std::shared_ptr<PluginLoader> loader, std::string_view document, const std::map<std::string, property_map, std::less<>>& overrides = {});
 
     /// `fromYaml` through the process's loader.
@@ -258,7 +259,7 @@ public:
     /// scheduler's "GraphGRC" endpoint holds the document under `value`.
     [[nodiscard]] std::expected<std::string, RuntimeError> toYaml() const;
 
-    /// The block types `loader` can build: those of the block registry it reads and those of its plugins, sorted.
+    /// The block types `loader` can build, from the block registry it reads and from its plugins, sorted.
     [[nodiscard]] static std::vector<std::string> availableBlockTypes(const PluginLoader& loader);
 
     /// `availableBlockTypes` of the process's loader, which is built on the first call that uses it.
@@ -273,21 +274,21 @@ public:
     [[nodiscard]] static std::vector<std::string> availableSchedulerTypes();
 
     /**
-     * @brief Searches each directory for YAML block definitions, plugins and block libraries with `loader`, and reports
-     * what the loader holds from each directory, in the order given.
+     * @brief Searches each directory with `loader` and reports what the loader holds from each, in the order given.
      *
-     * A directory the loader searched before, at its construction or in an earlier call, is not searched again, and its
-     * report lists what the first search found. A directory that does not exist reports nothing. A directory the file
-     * system does not let the search read reports why in `error`, and the search goes on with the next one.
+     * The search finds YAML block definitions, plugins and block libraries. A directory the loader searched before, at
+     * its construction or in an earlier call, is not searched again. Its report lists what the first search found. A
+     * directory that does not exist reports nothing. A directory the file system does not let the search read reports
+     * why in `error`. The search goes on with the next one.
      *
      * A graph built through the loader takes a block type from the block registry first, then from the plugins, then
      * from the YAML definitions. The block registry holds the program's own blocks and then the block libraries in the
-     * order they load. The first registration of a key at a version in that search order holds it, and each later one is
+     * order they load. The first registration of a key at a version in that search order holds it. Each later one is
      * listed in `refused` under the directory of the file that offered it, once every directory is searched. A different
      * version of the key coexists with it. The files of one directory load in the order the file system lists them.
      *
-     * The loader holds no lock. Call this while no other thread uses the loader, a running scheduler whose graph came
-     * through it included.
+     * The loader holds no lock. Call this while no other thread uses the loader. That includes a running scheduler
+     * whose graph came through the loader.
      */
     [[nodiscard]] static std::vector<RuntimePluginDirectory> loadPlugins(PluginLoader& loader, std::span<const std::string> directories);
 
@@ -303,7 +304,7 @@ private:
     std::unique_ptr<Impl> _impl;
 };
 
-/// A message-plane command: the enumerators and values of the framework's `message::Command`.
+/// A message-plane command, with the enumerators and values of the framework's `message::Command`.
 enum class RuntimeCommand : std::uint8_t { Invalid, Get, Set, Partial, Final, Ready, Disconnect, Subscribe, Unsubscribe, Notify, Heartbeat };
 
 /// One report the running graph made on the message plane.
@@ -322,13 +323,13 @@ struct GNURADIO_EXPORT RuntimeEvent {
 /**
  * @brief A scheduler holding a graph, and the subscriber on its message plane.
  *
- * The subscriber exists from `create()` until destruction whether or not the caller polls: a
+ * The subscriber exists from `create()` until destruction, whether or not the caller polls. A
  * scheduler whose msgOut has no reader turns a child block's error into an exception thrown on its
- * own worker thread, and the reason the block gave is lost with it.
+ * own worker thread. The reason the block gave is then lost.
  *
- * A Runtime holds one run of its graph at a time, by `runAndWait()` on the calling thread or by
- * `start()` on a thread of its own, and keeps the last run's result. The destructor stops the run in
- * progress and waits for it to end.
+ * A Runtime holds one run of its graph at a time. `runAndWait()` makes the run on the calling
+ * thread, and `start()` makes it on a thread of its own. The Runtime keeps the last run's result.
+ * The destructor stops the run in progress and waits for it to end.
  *
  * A stop is requested on another thread the Runtime owns. A run ends once the scheduler has returned
  * from it and the stop requested of it has returned. A block whose stop() is slow delays the end of
@@ -340,16 +341,16 @@ public:
 
     static constexpr std::string_view kDefaultScheduler = "gr::scheduler::Simple<singleThreaded>";
 
-    /// Instantiates scheduler `type` through the plugin loader `graph` holds, hands it `graph` and takes ownership of
-    /// both and of the graph's share of the loader; `graph` is consumed when a runtime is returned and left as it was
-    /// on an error. A parameter the scheduler does not declare, or a value its
-    /// constructor refuses, is an error; a value it accepts at construction and rejects later, such as an unknown
-    /// `poolName`, is reported as an error event instead.
+    /// Instantiates scheduler `type` through the plugin loader `graph` holds and passes it `graph`. The Runtime takes
+    /// ownership of both and of the graph's share of the loader. `graph` is consumed when a runtime is returned and
+    /// left as it was on an error. A parameter the scheduler does not declare is an error. So is a value its
+    /// constructor refuses. A value it accepts at construction and rejects later, such as an unknown `poolName`, is
+    /// reported as an error event instead.
     [[nodiscard]] static std::expected<Runtime, RuntimeError> create(RuntimeGraph&& graph, std::string_view type = kDefaultScheduler, property_map schedulerParameters = {});
 
-    /// The same, for a graph that was not built through a RuntimeGraph -- one loaded by `gr::loadGrc`, or
-    /// one built with the typed API. A caller that has a `gr::Graph` to pass has `Graph.hpp` already. The scheduler
-    /// comes from the loader the graph names, which the caller keeps alive until the Runtime is destroyed.
+    /// The same, for a graph that was not built through a RuntimeGraph, such as one loaded by `gr::loadGrc` or one
+    /// built with the typed API. A caller that has a `gr::Graph` to pass has `Graph.hpp` already. The scheduler comes
+    /// from the loader the graph names. The caller keeps that loader alive until the Runtime is destroyed.
     [[nodiscard]] static std::expected<Runtime, RuntimeError> create(gr::Graph&& graph, std::string_view type = kDefaultScheduler, property_map schedulerParameters = {});
 
     ~Runtime();
@@ -387,7 +388,7 @@ public:
     [[nodiscard]] State                             state() const noexcept;
     [[nodiscard]] std::expected<void, RuntimeError> requestState(State newState);
 
-    /// A non-owning view of the running graph; `create()` moved it into the scheduler.
+    /// A non-owning view of the running graph. `create()` moved the graph into the scheduler.
     [[nodiscard]] RuntimeGraph graph() const;
 
     /// Returns the scheduler as a block handle. Its own settings (`timeout_ms`, `poolName` and the rest)

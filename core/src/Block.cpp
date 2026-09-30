@@ -256,8 +256,8 @@ std::optional<Message> BlockBase::propertyCallbackStagedSettings(std::string_vie
 
         if (notSet.empty()) {
             if (!message.clientRequestID.empty()) {
-                // A parameter the instance declares applies when it is staged and never enters the staged map. The reply
-                // names it at its value in force.
+                // A parameter the instance declares applies when it is staged. It does not enter the staged map. The
+                // reply names it at its value in force.
                 for (const auto& key : std::views::keys(*message.data)) {
                     if (stagedParameter.contains(key)) {
                         continue;

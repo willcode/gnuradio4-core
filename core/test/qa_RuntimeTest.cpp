@@ -12,12 +12,12 @@
 #include "RuntimeTest.hpp"
 
 /**
- * The harness the migrated qa tier is built on: a graph wired through gr::test::RuntimeTest must
- * deliver what the same graph wired with gr::Graph and gr::scheduler::Simple delivers -- the same
+ * Tests the gr::test::RuntimeTest harness. A graph wired through the harness must deliver what the
+ * same graph wired with gr::Graph and gr::scheduler::Simple delivers. Both must give the same
  * samples, the same tags, the same settings on the blocks afterwards, and the same scheduler outcome
  * on a graph that fails.
  *
- * This is the one test that names both paths on purpose; every migrated test names only the erased one.
+ * This test names both paths on purpose.
  */
 
 namespace qa_runtime_test {

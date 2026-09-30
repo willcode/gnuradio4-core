@@ -118,7 +118,7 @@ const boost::ut::suite<"PluginBlockLibrary"> pluginBlockLibraryTests = [] {
         const std::filesystem::path directory = std::filesystem::path(TESTS_BINARY_PATH) / "unmappable_library";
         std::filesystem::create_directories(directory);
         const std::filesystem::path file = directory / "libempty.so";
-        { std::ofstream(file).flush(); } // an empty file: dlopen refuses it and dlerror() says why
+        { std::ofstream(file).flush(); } // an empty file, which dlopen refuses with the reason in dlerror()
         expect(fatal(std::filesystem::exists(file)));
 
         const std::vector<std::string> directories{directory.string()};

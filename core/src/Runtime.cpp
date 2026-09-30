@@ -69,8 +69,8 @@ std::shared_ptr<PluginLoader> loaderOrGlobal(std::shared_ptr<PluginLoader> loade
     return std::shared_ptr<PluginLoader>(std::shared_ptr<void>{}, std::addressof(gr::globalPluginLoader()));
 }
 
-// a collection is listed element by element, as "base#index", because that is the spelling
-// dynamicPortFromName resolves and the only one an edge to a collection can carry
+// A collection is listed element by element, as "base#index". dynamicPortFromName resolves that
+// spelling. It is the one spelling an edge to a collection can carry.
 std::vector<std::string> portNamesOf(BlockModel& model, bool isInput) {
     model.initDynamicPorts();
     const BlockModel::DynamicPorts& ports = isInput ? model.dynamicInputPorts() : model.dynamicOutputPorts();
@@ -154,8 +154,8 @@ std::string commaSeparated(const std::vector<std::string>& names) {
     return joined;
 }
 
-// resolves exactly what Graph::connect's edge resolution resolves, so the pre-check can neither
-// refuse a name that would have worked nor admit one that fails once the graph starts
+// Resolves exactly what Graph::connect's edge resolution resolves. The pre-check cannot refuse a
+// name that would have worked. It cannot admit one that fails once the graph starts.
 std::expected<void, RuntimeError> checkPortExists(BlockModel& model, bool isInput, std::string_view portName, std::string_view where) {
     model.initDynamicPorts();
     const PortDefinition definition{std::string(portName)};
@@ -171,7 +171,7 @@ std::expected<void, RuntimeError> checkPortExists(BlockModel& model, bool isInpu
 } // namespace
 
 struct RuntimeGraph::Impl {
-    std::shared_ptr<PluginLoader> loader;         // set with `owned`; declared first so that it outlives the blocks it made
+    std::shared_ptr<PluginLoader> loader;         // set with `owned`, and declared first to outlive the blocks it made
     std::unique_ptr<Graph>        owned;          // set when this RuntimeGraph owns the graph
     Graph*                        view = nullptr; // the graph in use, owned or not
     std::shared_ptr<void>         ownerModel;     // the BlockModel that owns a viewed graph, for port export
@@ -180,8 +180,8 @@ struct RuntimeGraph::Impl {
 };
 
 struct Runtime::Impl {
-    std::shared_ptr<PluginLoader>   loader;   // the graph's share; declared first so that it outlives the scheduler and the blocks
-    MsgPortIn                       events;   // declared first so that it outlives the scheduler writing to it
+    std::shared_ptr<PluginLoader>   loader;   // the graph's share, declared first to outlive the scheduler and the blocks
+    MsgPortIn                       events;   // declared first to outlive the scheduler writing to it
     MsgPortOut                      commands; // feeds the scheduler's msgIn
     std::mutex                      mutex;
     std::deque<RuntimeEvent>        pending;
@@ -190,8 +190,8 @@ struct Runtime::Impl {
 
     std::mutex                        runMutex; // guards the members below
     std::condition_variable           runEnded;
-    std::thread                       runThread;  // start()'s run; joined by the next start() and the destructor
-    std::thread                       stopThread; // a run's stop request; joined by the next request and the destructor
+    std::thread                       runThread;  // start()'s run, joined by the next start() and the destructor
+    std::thread                       stopThread; // a run's stop request, joined by the next request and the destructor
     std::uint64_t                     nRunsStarted   = 0ULL;
     std::uint64_t                     nRunsReturned  = 0ULL; // runs whose scheduler call has returned
     std::uint64_t                     nRunsEnded     = 0ULL;
@@ -238,8 +238,8 @@ struct Runtime::Impl {
         return result;
     }
 
-    // A run ends once its scheduler call has returned and a stop request made of it has returned, so that no block of
-    // the run is still inside its stop() when the next run starts.
+    // A run ends once its scheduler call has returned and a stop request made of it has returned. No block of the run
+    // is then still inside its stop() when the next run starts.
     void endRun(std::expected<void, RuntimeError> result) {
         std::unique_lock lock(runMutex);
         ++nRunsReturned;
@@ -250,9 +250,9 @@ struct Runtime::Impl {
         runEnded.notify_all();
     }
 
-    // Requests the stop of the run in progress, once for each run, and waits until that run has ended, for at most
-    // `timeout` when one is given. Returns whether the run has ended. The request runs on stopThread, where a block's
-    // slow stop() holds up that thread and not the caller. When the thread cannot start, the caller makes the request.
+    // Requests the stop of the run in progress, once for each run. Waits until that run has ended, for at most
+    // `timeout` when one is given. Returns whether the run has ended. The request runs on stopThread. A block's slow
+    // stop() then holds up that thread and not the caller. When the thread cannot start, the caller makes the request.
     [[nodiscard]] bool stopRun(std::optional<std::chrono::nanoseconds> timeout) {
         std::unique_lock    lock(runMutex);
         const std::uint64_t run   = nRunsStarted;
@@ -260,7 +260,7 @@ struct Runtime::Impl {
         if (!ended() && stoppedRun != run) {
             stoppedRun     = run;
             requestingStop = true;
-            if (stopThread.joinable()) { // the thread of an earlier run's request, which takes runMutex no more
+            if (stopThread.joinable()) { // the thread of an earlier run's request, which does not take runMutex again
                 stopThread.join();
             }
             try {
@@ -282,8 +282,8 @@ struct Runtime::Impl {
     // Requests the stop of run `run` once the scheduler is active, unless the run's scheduler call returns first. Until
     // then it reads the state the run before it left, or a state runAndWait() passes on its way to RUNNING. A
     // transition to REQUESTED_STOP from STOPPED has no effect, and from a state before RUNNING it can collide with the
-    // run's own transition. The request is the transition alone: the scheduler's stop() moves a scheduler that
-    // refuses it to ERROR. `lock` holds runMutex and releases it during the transition.
+    // run's own transition. The request makes the transition alone and does not call the scheduler's stop(). That
+    // stop() moves a scheduler that refuses it to ERROR. `lock` holds runMutex and releases it during the transition.
     void requestStop(std::unique_lock<std::mutex>& lock, std::uint64_t run) {
         const auto returned = [this, run] { return nRunsReturned >= run; };
         while (!returned()) {
@@ -395,8 +395,8 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplace(std::string_view 
     }
     PluginLoader& loader = loaderFor(*_impl->view);
 
-    // a type the loader knows but cannot build, such as a recipe missing a required parameter, is an error
-    // with the loader's reason; only a type nothing knows falls through to the scheduler registry
+    // A type the loader knows but cannot build, such as a recipe missing a required parameter, is an error
+    // with the loader's reason. Only a type nothing knows falls through to the scheduler registry.
     std::expected<std::shared_ptr<BlockModel>, gr::Error> built = loader.instantiateOrError(type, parameters);
     if (!built.has_value()) {
         return std::unexpected(localError(std::format("block type '{}' could not be built: {}", type, built.error().message), "RuntimeGraph::emplace"));
@@ -414,7 +414,7 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplace(std::string_view 
         return std::unexpected(localError(std::format("unknown block type '{}' -- {} types are available, see availableBlockTypes()", type, loader.availableBlocks().size()), "RuntimeGraph::emplace"));
     }
 
-    model->setName(std::string(name)); // before addBlock, so that init() sees the final name
+    model->setName(std::string(name)); // before addBlock, for init() to see the final name
     try {
         _impl->view->addBlock(model);
     } catch (const gr::exception& error) { // init() throws for a parameter the block refuses
@@ -434,7 +434,7 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::add(std::shared_ptr<Block
     }
 
     if (!name.empty()) {
-        block->setName(std::string(name)); // before addBlock, so that init() sees the final name
+        block->setName(std::string(name)); // before addBlock, for init() to see the final name
     }
     try {
         _impl->view->addBlock(block);
@@ -456,8 +456,8 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplaceSubgraph(std::stri
         auto wrapper = std::make_shared<GraphWrapper<Graph>>(std::move(parameters));
         wrapper->setName(std::string(name));
 
-        // Graph(property_map) always takes the global loader, so a nested graph would not inherit
-        // whichever loader its parent was given
+        // Graph(property_map) always takes the global loader. A nested graph built that way would not
+        // inherit the loader its parent was given.
         if (Graph* inner = wrapper->graph(); inner != nullptr) {
             inner->_pluginLoader = _impl->view->_pluginLoader;
         }
@@ -477,8 +477,8 @@ std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::interior(const BlockHand
         return std::unexpected(localError("block handle is empty", "RuntimeGraph::interior"));
     }
 
-    // graph() is non-null exactly on the graph-like wrappers, which is a cheaper and wider test than
-    // comparing typeName(): it also answers for a nested scheduler
+    // graph() is non-null exactly on the graph-like wrappers. That test costs less than comparing
+    // typeName() and covers more. It also answers for a nested scheduler.
     Graph* inner = modelOf(block._model)->graph();
     if (inner == nullptr) {
         return std::unexpected(localError(std::format("block '{}' is not a graph", block.uniqueName()), "RuntimeGraph::interior"));
@@ -579,8 +579,8 @@ std::expected<void, RuntimeError> RuntimeGraph::connect(const BlockHandle& sourc
         return std::unexpected(localError("graph handle or block handle is empty", "RuntimeGraph::connect"));
     }
 
-    // Graph::connect only records the edge; a name that resolves to nothing would surface at
-    // edge-resolution time, long after the typo was made
+    // Graph::connect only records the edge. A name that resolves to nothing would surface at
+    // edge-resolution time, long after the typo was made.
     if (auto ok = checkPortExists(*modelOf(sourceBlock._model), false, sourcePort, "RuntimeGraph::connect"); !ok) {
         return ok;
     }
@@ -754,7 +754,7 @@ std::vector<RuntimePluginDirectory> RuntimeGraph::loadPlugins(PluginLoader& load
         reports.push_back(std::move(report));
     }
 #ifdef INTERNAL_ENABLE_BLOCK_PLUGINS
-    // a registration is refused against whatever the whole search holds, so the refusals are read once it is over
+    // A registration is refused against whatever the whole search holds. The refusals are read once the search is over.
     for (const RefusedRegistration& refusal : loader.refusedRegistrations()) {
         const std::filesystem::path offeredIn = (std::filesystem::path(refusal.file).parent_path() / "").lexically_normal();
         for (RuntimePluginDirectory& report : reports) {
@@ -819,8 +819,8 @@ std::expected<Runtime, RuntimeError> Runtime::create(gr::Graph&& graph, std::str
         }
     }
 
-    // subscribe before the graph starts: an unread msgOut turns a child's error into an exception
-    // thrown on a worker thread, taking the reason with it
+    // Subscribe before the graph starts. An unread msgOut turns a child's error into an exception
+    // thrown on a worker thread, and the reason is lost with it.
     if (auto connected = impl->schedulerBlock->msgOut->connect(impl->events); !connected) {
         return std::unexpected(toRuntimeError(connected.error()));
     }
@@ -860,7 +860,7 @@ std::optional<RuntimeError> Runtime::start() {
     if (impl.runInProgress()) {
         return localError("a run is in progress", where);
     }
-    if (impl.runThread.joinable()) { // the thread of an ended run, which takes runMutex no more
+    if (impl.runThread.joinable()) { // the thread of an ended run, which does not take runMutex again
         impl.runThread.join();
     }
     ++impl.nRunsStarted;

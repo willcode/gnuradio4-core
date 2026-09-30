@@ -16,10 +16,10 @@
 #include "build_configure.hpp"
 
 /**
- * Which registration answers for a key that several files offer. The search order is the block registry, which holds
- * the program's own blocks and then the block libraries in the order they load, then the plugins in the order they
- * load. The first registration of a key at a version in that order holds it, a later one is refused and listed with
- * the file that holds it, and a different version of the key coexists with it.
+ * Tests which registration answers for a key that several files offer. The search order is the block registry first,
+ * then the plugins in the order they load. The block registry holds the program's own blocks and then the block
+ * libraries in the order they load. The first registration of a key at a version in that order holds it. A later one
+ * is refused and listed with the file that holds it. A different version of the key coexists with it.
  */
 namespace qa_plugin_precedence {
 

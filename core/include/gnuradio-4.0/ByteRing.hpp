@@ -12,15 +12,15 @@ namespace gr {
 /**
  * @brief A fixed-capacity byte queue over one contiguous allocation, dropping the oldest bytes on overrun.
  *
- * For a stream arriving in whole messages and leaving in whatever sizes a consumer asks for, where both ends move
- * bulk bytes and the queue itself should cost nothing but the copy. `std::deque<std::byte>` does the same job, but
- * its storage is a chain of 512-byte segments, so every insert and every read walks segment boundaries instead of
- * issuing a memcpy -- measured 39 % slower than this over a consumer's shapes (64 KiB in, 256 KiB out).
+ * The queue serves a stream that arrives in whole messages and leaves in the sizes a consumer asks for. Both ends move
+ * bulk bytes. The queue is meant to cost nothing beyond the copy. `std::deque<std::byte>` does the same job over a
+ * chain of 512-byte segments. Every insert and every read there walks segment boundaries instead of issuing a memcpy.
+ * It measured 39 % slower than this queue with 64 KiB writes and 256 KiB reads.
  *
- * Here the storage is one buffer and an offset pair: a read is at most two memcpys, a write is at most two, and
- * where nothing wraps it is one of each.
+ * The storage is one buffer and an offset pair. A read is at most two memcpys, and a write is at most two. Where
+ * nothing wraps, each is one memcpy.
  *
- * Not thread-safe: serialization is the caller's, which typically already holds a lock for other reasons.
+ * The queue is not thread-safe. The caller serializes access.
  */
 class ByteRing {
     std::vector<std::byte> _buffer;
@@ -46,8 +46,8 @@ public:
         _size = 0UZ;
     }
 
-    // on overrun the newest bytes are the ones a live stream needs, so a push larger than the capacity keeps only
-    // its own tail
+    // On overrun the newest bytes are the ones a live stream needs. A push larger than the capacity keeps only its
+    // own tail.
     void push(std::span<const std::byte> src) noexcept {
         if (_buffer.empty() || src.empty()) {
             return;
@@ -79,7 +79,7 @@ public:
         return take;
     }
 
-    // pop without dropping, for a caller that has to know it can commit before it does
+    // copies as pop() does and drops nothing, for a caller that checks it can commit before it pops
     std::size_t peek(std::byte* dst, std::size_t bytes) const noexcept {
         if (_buffer.empty() || dst == nullptr) {
             return 0UZ;

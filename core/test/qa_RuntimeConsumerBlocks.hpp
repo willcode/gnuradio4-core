@@ -3,7 +3,7 @@
 
 #include <cstddef>
 
-/// Declared without a single GNU Radio include, so that the consumer half stays on Runtime.hpp alone.
+/// Declared without a single GNU Radio include. The consumer half then stays on Runtime.hpp alone.
 namespace qa_consumer {
 
 bool registerDemoBlocks();

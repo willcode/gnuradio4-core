@@ -32,9 +32,9 @@
 #include "build_configure.hpp"
 
 /**
- * Parity between a graph built through gr::Runtime and the same graph built with the typed API:
- * every writable member is settable through the erased path, the two arms deliver identical samples
- * and tags, and a subgraph is transparent to both.
+ * Parity between a graph built through gr::Runtime and the same graph built with the typed API.
+ * Every writable member is settable through the erased path. The two arms deliver identical samples
+ * and tags. A subgraph is transparent to both.
  *
  * gnuradio4-core carries no standard block library, so the blocks are defined and registered here.
  */
@@ -135,7 +135,7 @@ struct Scale : Block<Scale> {
     [[nodiscard]] constexpr float processOne(float value) const noexcept { return enabled ? value * gain : value; }
 };
 
-/// the shape of a multi-input arithmetic block: its inputs are one collection port, addressed "in#0"
+/// the shape of a multi-input arithmetic block, whose inputs are one collection port addressed as "in#0"
 struct SumInputs : Block<SumInputs> {
     std::vector<PortIn<float>> in;
     PortOut<float>             out;
@@ -388,9 +388,9 @@ inline std::size_t collectedSize(const std::string& sinkName) {
 /**
  * Runs until the sink holds `nExpected` samples, then stops, and reports how long that took.
  *
- * A graph containing a transparent subgroup never reports DONE: graph::flatten puts the group block
- * itself in the execution order, and Block::work returns OK for every non-NormalBlock category, so
- * the scheduler always sees an unfinished block. runAndWait() would not return.
+ * A graph containing a transparent subgroup never reports DONE. graph::flatten puts the group block
+ * itself in the execution order. Block::work returns OK for every non-NormalBlock category. The
+ * scheduler therefore always sees an unfinished block, and runAndWait() would not return.
  */
 inline std::chrono::microseconds runUntilCollected(gr::Runtime& runtime, const std::string& sinkName, std::size_t nExpected) {
     constexpr auto kCap    = std::chrono::seconds(3);
@@ -526,11 +526,11 @@ blocks:
 /**
  * The type lists over a loader the program builds, which read that loader and not the process's one.
  *
- * The suites of this file run in the order they appear, and this one runs first, before any case builds the process's
- * loader. That loader reads GNURADIO4_PLUGIN_DIRECTORIES once, when it is built. The case names a directory that does
- * not exist while it calls the lists, and names the versioned plugin's directory after them, which neither that value
- * nor the test's environment names. The process's loader holds the versioned plugin's block only if it is built after
- * the calls.
+ * The suites of this file run in the order they appear, and this one runs first. It runs before any case builds the
+ * process's loader. That loader reads GNURADIO4_PLUGIN_DIRECTORIES once, when it is built. The case names a directory
+ * that does not exist while it calls the lists. After the calls it names the versioned plugin's directory, which
+ * neither that value nor the test's environment names. The process's loader holds the versioned plugin's block only
+ * if it is built after the calls.
  */
 const boost::ut::suite<"type lists over a loader"> typeListTests = [] {
     using namespace boost::ut;
@@ -573,8 +573,8 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(eq(collected.samples.back(), 2.0f * 1023.0f));
     };
 
-    // a graph that did not come from a RuntimeGraph -- loaded by gr::loadGrc, or built with the typed
-    // API -- runs on the same runtime path as one that did
+    // A graph loaded by gr::loadGrc or built with the typed API runs on the same runtime path as one
+    // built through a RuntimeGraph.
     "a graph the caller already owns runs through the entry"_test = [] {
         registerTestBlocks();
 
@@ -627,14 +627,14 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(graph.inputPorts(*scale).front().typeName.find("float") != std::string::npos) << graph.inputPorts(*scale).front().typeName;
     };
 
-    // a block the caller built is indistinguishable from an emplaced one. A factory therefore keeps
-    // its own typed pointer and hands the graph the erased one
+    // A block the caller built is indistinguishable from an emplaced one. A factory therefore keeps
+    // its own typed pointer and passes the graph the erased one.
     "an added block behaves exactly as an emplaced one"_test = [] {
         registerTestBlocks();
         runTyped(typedChain("add-reference", 4096U, 3.0f));
         const Collected reference = takeCollected("add-reference");
 
-        // built here, where the type is named, and kept: this is the pair a factory produces
+        // built here, where the type is named, and kept. This is the pair a factory produces.
         auto         scaleBlock = std::make_shared<BlockWrapper<Scale>>(property_map{{"gain", 3.0f}});
         Scale* const typedScale = static_cast<Scale*>(scaleBlock->raw());
         auto         sinkBlock  = std::make_shared<BlockWrapper<RecordingSink>>();
@@ -649,13 +649,13 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(!scale->uniqueName().empty());
         expect(scale->typeName().find("Scale") != std::string_view::npos) << scale->typeName();
 
-        // settings: the same forwards reach the same SettingsBase, and a staged value lands on the
-        // caller's own object -- which is the live-control path the handle exists for
+        // Settings. The same forwards reach the same SettingsBase. A staged value lands on the caller's
+        // own object. The handle exists for that live-control path.
         expect(scale->get().contains(convert_string_domain(std::string("gain"))));
         expect(scale->setStaged(property_map{{"taps", std::vector<float>{2.0f}}}) == property_map{});
         expect(scale->setStaged(property_map{{"label", std::string("adopted")}}) == property_map{});
 
-        // connect: an added block is addressable by name like any other
+        // An added block is addressable by name in connect() like any other.
         expect(graph.inputPortNames(*scale) == std::vector<std::string>{"in"});
         expect(graph.connect(*source, "out", *scale, "in").has_value());
         expect(graph.connect(*scale, "out", *sink, "in").has_value());
@@ -673,7 +673,7 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(reference.samples == added.samples) << "an added block changed the stream";
         expect(sameTags(reference.tags, added.tags)) << "an added block changed the tag sequence";
 
-        // the caller's own pointer stayed valid throughout, which is the whole point
+        // The caller's own pointer stayed valid throughout. The case exists to check that.
         expect(eq(typedScale->label.value, std::string("adopted")));
         expect(eq(typedScale->gain.value, 3.0f));
     };
@@ -805,8 +805,8 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         expect(eq(nTypedA, 512UZ));
         expect(eq(nTypedA, nTypedB)) << "an all-typed fan-out must feed both consumers equally";
 
-        // one output port addressed both ways, in both orders: the by-name edge records a
-        // string-based PortDefinition and the typed one an index-based definition
+        // One output port addressed both ways, in both orders. The by-name edge records a
+        // string-based PortDefinition, and the typed one an index-based definition.
         const auto runMixed = [](bool nameFirst, std::string_view suffix) {
             gr::Graph mixed;
             auto&     source  = mixed.emplaceBlock<RampSource>({{"name", std::string("source")}, {"n_samples", gr::Size_t{512U}}});
@@ -902,8 +902,8 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
             fromEntry.push_back(typeOf(handle.uniqueName()));
         }
 
-        // the same nesting, built typed, is the reference: the entry does not hand out its gr::Graph,
-        // so the two are compared by what each block is rather than by its process-unique id
+        // The same nesting, built typed, is the reference. The entry does not hand out its gr::Graph.
+        // The two are therefore compared by what each block is, not by its process-unique id.
         gr::Graph reference;
         reference.emplaceBlock<RampSource>({{"name", std::string("source")}});
         auto  referenceSubgraph = std::make_shared<GraphWrapper<gr::Graph>>();
@@ -965,8 +965,8 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         registerTestBlocks();
         constexpr gr::Size_t kSamples = 100000U;
 
-        // both arms are timed the same way -- start, wait for the whole stream, stop -- because the
-        // nested one cannot use runAndWait()
+        // Both arms are timed the same way. Each starts, waits for the whole stream and stops. The
+        // nested arm cannot use runAndWait().
         const auto timeFlat = [] {
             auto runtime = erasedChain("e4-timing-flat", kSamples, 2.0f, gr::Runtime::kDefaultScheduler);
             expect(runtime.has_value());
@@ -1047,7 +1047,7 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         auto runtime = Runtime::create(std::move(graph));
         expect(fatal(runtime.has_value()));
 
-        // queued before the run, handled by its first sweeps: the staged gain is applied while the graph runs
+        // Queued before the run and handled by its first sweeps. The staged gain is applied while the graph runs.
         const std::string settings(gr::block::property::kSetting);
         expect(runtime->send(RuntimeCommand::Get, scaleName, settings, {}, "get-1").has_value());
         expect(runtime->send(RuntimeCommand::Subscribe, scaleName, settings, {}, "subscribe-2").has_value());
@@ -1509,8 +1509,8 @@ connections:
     };
 };
 
-// start() runs the graph on the Runtime's own thread; stop() and stopFor() end that run, and wait(), waitFor() and
-// result() report it
+// start() runs the graph on the Runtime's own thread. stop() and stopFor() end that run. wait(), waitFor() and
+// result() report it.
 const boost::ut::suite<"background run"> backgroundRunTests = [] {
     using namespace boost::ut;
     using namespace gr;

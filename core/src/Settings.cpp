@@ -717,7 +717,7 @@ property_map CtxSettingsBase::setStagedImpl(const property_map& parameters) {
             }
         }
     }
-    // a refusal stages nothing: every value converts, and the declared change applies, before any member is staged
+    // A refusal stages nothing. Every value converts, and the declared change applies, before any member is staged.
     applyDeclaredImpl(declared);
     for (auto& [key, value] : members) {
         if (const auto tagged = _taggedKeys.find(std::string_view(key)); tagged != _taggedKeys.end()) {

@@ -14,9 +14,9 @@
 #include "build_configure.hpp"
 
 /**
- * A plugin and a block library register device listings of invented units, and the loader lists the units of every
- * family they register. The block library registers into the process's registry and stays mapped, so the cases share
- * one loader over its directory, and the first case is the one that loads it.
+ * A plugin and a block library register device listings of fixed test units. The loader lists the units of every
+ * family they register. The block library registers into the process's registry and stays mapped. The cases therefore
+ * share one loader over its directory, and the first case loads it.
  */
 namespace qa_device_listing {
 

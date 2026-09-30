@@ -26,18 +26,18 @@
 /**
  * @brief What a block type represents, declared once on the type as labels and read without building an instance.
  *
- * A label is a class and a word, written `class/word`. The eight classes are fixed here. A word is a `Label` constant
- * that its declarer defines with its class, a one-sentence meaning and, for a medium, whether it is physical; core's
- * words are the constants in `gr::block::labels`. A block declares its labels and its version once:
+ * A label is a class and a word, written `class/word`. The eight classes are fixed here. A word is a `Label` constant.
+ * Its declarer gives it a class and a one-sentence meaning. A medium word also states whether it is physical. Core's
+ * words are the constants in `gr::block::labels`. A block declares its labels and its version once.
  *
  *     static constexpr auto attributes = gr::block::describe(2U, kFamily, gr::block::labels::holds::device);
  *
- * A registry collects the labels of every block it registers into a `Vocabulary`, so a listing prints the meaning of
- * every word it meets. The framework keeps, carries and prints the labels and never acts on one.
+ * A registry collects the labels of every block it registers into a `Vocabulary`. A listing prints the meaning of
+ * every word it meets from that vocabulary. The framework keeps, carries and prints the labels. It never acts on one.
  *
- * Outside C++ the attributes travel as a `property_map`: `version` as an integer, `labels` as a list of `class/word`
- * strings in class order, and `role` as the role word the stream ports read. `kLabelClassNames` and `isWord()` hold
- * the spelling of the classes and the word grammar.
+ * Outside C++ the attributes travel as a `property_map`. The map holds `version` as an integer, `labels` as a list of
+ * `class/word` strings in class order, and `role` as the role word the stream ports read. `kLabelClassNames` and
+ * `isWord()` hold the spelling of the classes and the word grammar.
  */
 namespace gr::block {
 
@@ -60,7 +60,7 @@ inline constexpr std::array<std::string_view, 8UZ> kLabelClassNames{"family", "r
     return std::nullopt;
 }
 
-/// whether a block carries at most one word of `cls`: `family`, `role` and `compute` take one, the others many
+/// whether a block carries at most one word of `cls`. `family`, `role` and `compute` take one word, the others many.
 [[nodiscard]] constexpr bool takesOneWord(LabelClass cls) noexcept { return cls == LabelClass::Family || cls == LabelClass::Role || cls == LabelClass::Compute; }
 
 /// whether `word` is a lower-case letter followed by lower-case letters and digits, the grammar of every word
@@ -76,7 +76,7 @@ struct Label {
     LabelClass       cls{};
     std::string_view word{};
     std::string_view meaning{};
-    bool             physical = false; ///< a medium of matter or energy in the world outside the host; set on emits and ingests words
+    bool             physical = false; ///< a medium of matter or energy in the world outside the host, set on emits and ingests words
 
     /// two labels are the same label when their class and word agree, whatever their meanings
     [[nodiscard]] constexpr bool operator==(const Label& other) const noexcept { return cls == other.cls && word == other.word; }
@@ -90,7 +90,7 @@ using Version = std::uint32_t;
 
 inline constexpr Version kDefaultVersion = 1U;
 
-/// what a block type declares: its version and its labels
+/// what a block type declares, its version and its labels
 struct Attributes {
     Version                version = kDefaultVersion;
     std::span<const Label> labels{};
@@ -112,8 +112,11 @@ struct Declaration {
 /**
  * @brief The declaration of `version` and `labels`, the labels in class order and each class in the order given.
  *
- * The call does not compile for more than `kMaxLabels` labels, for a label given twice, for a second word in a class
- * that takes one and for a word outside the grammar of `isWord()`.
+ * The call does not compile for any of these.
+ * - more than `kMaxLabels` labels
+ * - a label given twice
+ * - a second word in a class that takes one
+ * - a word outside the grammar of `isWord()`
  */
 template<std::same_as<Label>... TLabels>
 requires(sizeof...(TLabels) <= kMaxLabels)
@@ -145,8 +148,8 @@ requires(sizeof...(TLabels) <= kMaxLabels)
 /// Core's words, one namespace per class. A medium word exists once in `emits` and once in `ingests`, with one meaning.
 namespace labels {
 
-/// A family word names a library; a device selector finds the library's blocks by it. `family` is the one class whose
-/// words core does not define.
+/// A family word names a library. A device selector finds the library's blocks by that word. Core defines words for
+/// every class except `family`.
 [[nodiscard]] constexpr Label family(std::string_view word, std::string_view meaning) noexcept { return {LabelClass::Family, word, meaning, false}; }
 
 namespace role {
@@ -257,8 +260,8 @@ template<typename TBlock>
  * @brief The role a block's stream ports read.
  *
  * Stream outputs alone read `source`, stream inputs alone `sink` and both `processor`. A block with no stream port reads
- * `notation` when it is `plane/notation` and no role otherwise. The ports never read `transceiver`: a block that carries
- * signals both ways across its own boundary declares it.
+ * `notation` when it is `plane/notation` and no role otherwise. The ports never read `transceiver`. A block that
+ * carries signals both ways across its own boundary declares that role.
  */
 [[nodiscard]] constexpr std::optional<Label> roleFromPorts(bool hasStreamInputs, bool hasStreamOutputs, bool isNotation) noexcept {
     if (hasStreamInputs && hasStreamOutputs) {
@@ -273,8 +276,8 @@ template<typename TBlock>
     return isNotation ? std::optional<Label>{labels::role::notation} : std::nullopt;
 }
 
-/// `roleFromPorts()` for the stream ports `TBlock` declares: a dynamic port collection counts as one port, and message
-/// ports count for nothing
+/// `roleFromPorts()` for the stream ports `TBlock` declares. A dynamic port collection counts as one port. Message
+/// ports do not count.
 template<typename TBlock>
 [[nodiscard]] constexpr std::optional<Label> portRoleOf() noexcept {
     if constexpr (!PortReflectable<TBlock>) {
@@ -352,7 +355,7 @@ public:
         return it != _entries.cend() && it->cls == cls && it->word == word ? std::addressof(*it) : nullptr;
     }
 
-    /// whether the word is physical; true for a word the vocabulary lacks, since nothing tells what it stands for
+    /// whether the word is physical. It is true for a word the vocabulary lacks, whose medium is unknown.
     [[nodiscard]] bool physical(LabelClass cls, std::string_view word) const noexcept {
         const VocabularyEntry* entry = find(cls, word);
         return entry == nullptr || entry->physical;
@@ -393,7 +396,7 @@ inline constexpr std::string_view kVersionKey = "version";
 inline constexpr std::string_view kLabelsKey  = "labels";
 inline constexpr std::string_view kRoleKey    = "role";
 
-/// a label read from a map: its class and word, and whether the vocabulary it was read against holds the word
+/// a label read from a map, with its class and word and whether the vocabulary it was read against holds the word
 struct LabelRead {
     LabelClass  cls{};
     std::string word;
@@ -408,7 +411,7 @@ struct LabelRead {
 struct AttributesRead {
     Version                version = kDefaultVersion;
     std::vector<LabelRead> labels;   ///< in class order, each class in the order the map lists it
-    std::string            readRole; ///< the role word the stream ports read; empty when the map carries none
+    std::string            readRole; ///< the role word the stream ports read, or empty when the map carries none
 
     [[nodiscard]] bool has(LabelClass cls, std::string_view word) const noexcept {
         return std::ranges::any_of(labels, [cls, word](const LabelRead& label) { return label.cls == cls && label.word == word; });
@@ -426,7 +429,7 @@ struct AttributesRead {
         return found;
     }
 
-    /// the role word declared, else the role word the ports read; empty when neither is known
+    /// the role word declared, else the role word the ports read, else empty
     [[nodiscard]] std::string_view role() const noexcept {
         const auto declared = std::ranges::find(labels, LabelClass::Role, &LabelRead::cls);
         return declared != labels.cend() ? std::string_view(declared->word) : std::string_view(readRole);
@@ -491,7 +494,7 @@ namespace detail {
     return std::pair{*cls, word};
 }
 
-/// the map form of `attributes`: `version` always, `labels` when there is one, and `role` for the role the ports read
+/// the map form of `attributes`, with `version` always, `labels` when there is a label and `role` for the ports' role
 [[nodiscard]] inline property_map attributesToMap(const Attributes& attributes, std::optional<Label> readRole) {
     property_map map;
     map.insert_or_assign(std::pmr::string(kVersionKey), pmt::Value(attributes.version));
@@ -512,7 +515,7 @@ namespace detail {
     return map;
 }
 
-/// the map form of attributes read from another map; `attributesFromMap()` reads it back unchanged
+/// the map form of attributes read from another map. `attributesFromMap()` reads it back unchanged.
 [[nodiscard]] inline property_map attributesToMap(const AttributesRead& attributes) {
     property_map map;
     map.insert_or_assign(std::pmr::string(kVersionKey), pmt::Value(attributes.version));
@@ -532,12 +535,18 @@ namespace detail {
 /**
  * @brief The attributes a map written by `attributesToMap()` or declared in a file states.
  *
- * An absent `version` reads 1 and an absent `labels` no label. A well-formed label of a known class is kept whatever
- * word it names, and marked known when `vocabulary` holds the word. The reader skips, with one line in `rejected`
- * naming the entry and the form allowed: an entry that is not a string of the form `class/word`, a class outside the
- * eight, a word outside the grammar of `isWord()`, a label given twice, and a second word in a class that takes one,
- * where the first is kept. A `version` that is not an integer from 0 to 4294967295 reads 1 and adds a line, and so
- * does a `labels` value that is not a list and a `role` value that is not a word.
+ * An absent `version` reads 1. An absent `labels` reads no label. A well-formed label of a known class is kept whatever
+ * word it names. It is marked known when `vocabulary` holds the word.
+ *
+ * The reader skips each of these entries and adds one line to `rejected` naming the entry and the form allowed.
+ * - an entry that is not a string of the form `class/word`
+ * - a class outside the eight
+ * - a word outside the grammar of `isWord()`
+ * - a label given twice
+ * - a second word in a class that takes one, where the first is kept
+ *
+ * A `version` that is not an integer from 0 to 4294967295 reads 1 and adds a line. A `labels` value that is not a list
+ * adds a line. A `role` value that is not a word adds a line.
  */
 [[nodiscard]] inline AttributesRead attributesFromMap(const property_map& map, const Vocabulary& vocabulary, std::vector<std::string>& rejected) {
     AttributesRead read;
@@ -602,7 +611,7 @@ namespace detail {
     return attributesFromMap(map, vocabulary, discarded);
 }
 
-/// The map form of a vocabulary, which crosses the plugin boundary: the key is `class/word`, the value a map of
+/// The map form of a vocabulary, which crosses the plugin boundary. The key is `class/word`. The value is a map of
 /// `meaning` (a string, or a list of strings for a word with several) and `physical` (a bool).
 [[nodiscard]] inline property_map vocabularyToMap(const Vocabulary& vocabulary) {
     property_map map;
@@ -619,8 +628,8 @@ namespace detail {
     return map;
 }
 
-/// the vocabulary `vocabularyToMap()` wrote; a key that is not a well-formed `class/word` or a value that is not a map
-/// is skipped with one line in `rejected`
+/// the vocabulary `vocabularyToMap()` wrote. A key that is not a well-formed `class/word` or a value that is not a map
+/// is skipped with one line in `rejected`.
 [[nodiscard]] inline Vocabulary vocabularyFromMap(const property_map& map, std::vector<std::string>& rejected) {
     Vocabulary vocabulary;
     for (const auto& [key, value] : map) {
@@ -652,7 +661,7 @@ namespace detail {
 
 namespace detail {
 
-/// the map a registration and an instance of `TBlock` carry: empty when the type declares no attributes
+/// the map a registration and an instance of `TBlock` carry, empty when the type declares no attributes
 template<typename TBlock>
 [[nodiscard]] property_map declaredAttributesMap() {
     if constexpr (HasDeclaredAttributes<TBlock>) {

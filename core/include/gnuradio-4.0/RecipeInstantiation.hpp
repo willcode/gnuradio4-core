@@ -53,8 +53,8 @@ inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> readR
     return declarations;
 }
 
-/// the parameters a definition exports: the declarations on the composite entry it is built
-/// around, and none for a definition that carries no composite or declares nothing
+/// the parameters a definition exports, read from the composite entry it is built around. The
+/// list is empty for a definition that carries no composite or declares nothing.
 inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> recipeDeclarationsOf(const property_map& definition) {
     const auto blocksIt = definition.find("blocks");
     if (blocksIt == definition.end()) {
@@ -75,15 +75,15 @@ inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> recip
 /**
  * @brief A block's parameters, split the way the type that receives them consumes them.
  *
- * A block built from a YAML definition takes only the parameters that definition exports: its
- * interior is derived from them, so their values have to be known before the interior exists, and
- * it refuses anything else by name -- including the `name` every caller supplies. Those parameters
- * therefore travel with the instantiation and leave the settings map, while `remaining` takes the
- * settings path it always took. Anything else keeps `exported` empty.
+ * A block built from a YAML definition takes only the parameters that definition exports. Its
+ * interior is derived from them. Their values must therefore be known before the interior exists.
+ * The block refuses any other parameter by name, the `name` parameter included. The exported
+ * parameters travel with the instantiation and leave the settings map. `remaining` goes through
+ * the settings as for any other block. Every other block type keeps `exported` empty.
  *
- * `fromDefinition` says which of the two the type is, because an empty `exported` does not: a
- * definition that declares nothing still refuses an undeclared parameter, so the caller that
- * hands a registered block its whole map at construction must not hand one to a definition.
+ * `fromDefinition` states which of the two the type is. An empty `exported` cannot tell them
+ * apart. A definition that declares nothing still refuses an undeclared parameter. A caller that
+ * passes a registered block its whole map at construction must not pass that map to a definition.
  */
 struct RecipeParameterSplit {
     bool         fromDefinition = false;
@@ -91,9 +91,9 @@ struct RecipeParameterSplit {
     property_map remaining;
 };
 
-/// splits `parameters` for `blockType` as read from `loader`'s definitions; a definition whose
-/// declarations cannot be read is left to the instantiation to refuse, which is where the reason
-/// is reported
+/// splits `parameters` for `blockType` as read from `loader`'s definitions. A definition whose
+/// declarations cannot be read is left for the instantiation to refuse. The instantiation reports
+/// the reason.
 inline RecipeParameterSplit splitRecipeParameters(PluginLoader& loader, std::string_view blockType, property_map parameters) {
     RecipeParameterSplit split;
 
@@ -117,8 +117,8 @@ inline RecipeParameterSplit splitRecipeParameters(PluginLoader& loader, std::str
     return split;
 }
 
-/// loads a split's `remaining` keys into `block`'s settings; a value the block refuses throws `gr::exception` with the
-/// block's name, its type and the refusal, which names the key
+/// loads a split's `remaining` keys into `block`'s settings. A value the block refuses throws `gr::exception` with the
+/// block's name, its type and the refusal. The refusal names the key.
 inline void loadRemainingSettings(BlockModel& block, std::string_view blockName, std::string_view blockType, const property_map& remaining) {
     try {
         block.settings().loadParametersFromPropertyMap(remaining);

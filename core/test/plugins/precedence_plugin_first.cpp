@@ -2,7 +2,7 @@
 
 GR_PLUGIN("Precedence Plugin First", "Unknown", "MIT", "v1")
 
-/// one of two plugins that offer one key at one version; the loader holds the key for the one it loads first
+/// one of two plugins that offer one key at one version. The loader holds the key for the one it loads first.
 namespace precedence {
 
 struct First : gr::Block<First> {

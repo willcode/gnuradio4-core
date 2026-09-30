@@ -17,12 +17,12 @@
 #include "build_configure.hpp"
 
 /**
- * RuntimeGraph::loadPlugins and RuntimeGraph::fromYaml over core's own test plugins and block libraries, through the
- * process's loader and through a loader the program builds.
+ * Tests RuntimeGraph::loadPlugins and RuntimeGraph::fromYaml over core's own test plugins and block libraries. The
+ * cases go through the process's loader and through a loader the program builds.
  *
  * The process's loader is built on first use from GNURADIO4_PLUGIN_DIRECTORIES. The suite sets that variable to the
- * block-library directory before any case runs, so that loader searches the block libraries at its construction, and a
- * case's own call searches the plugin directory.
+ * block-library directory before any case runs. That loader therefore searches the block libraries at its
+ * construction. A case's own call searches the plugin directory.
  */
 namespace qa_runtime_plugins {
 

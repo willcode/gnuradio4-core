@@ -8,9 +8,9 @@
 #include <string>
 
 /**
- * The factory half of the demo consumer: the only translation unit that names a block type.
- * qa_RuntimeConsumer.cpp wires and runs the same blocks by string and includes Runtime.hpp alone,
- * which is the split the compile-time gate measures.
+ * The factory half of the demo consumer, and the only translation unit that names a block type.
+ * qa_RuntimeConsumer.cpp wires and runs the same blocks by string and includes Runtime.hpp alone.
+ * The compile-time gate measures that split.
  */
 
 namespace qa_consumer {

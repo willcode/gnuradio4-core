@@ -23,21 +23,21 @@
 namespace gr::recipe {
 
 /**
- * @brief The recipe parameter dialect: exported parameter declarations and the bounded
- * arithmetic expressions that derive interior settings from them.
+ * @brief Exported recipe parameters and the bounded arithmetic that derives interior settings from them.
  *
- * One engine with two front ends — the YAML definitions loader compiles a recipe document
- * into these types, and generated typed headers compile the same bindings statically — so a
- * composite behaves identically however it was made. The grammar is deliberately small:
- * numbers, parameter references, the named constants `pi` and `tau_circle` (2·pi), the four
- * arithmetic operators, unary sign, parentheses, and one function, `clamp(x, low, high)`. No
- * chaining: an expression reads exported parameters and constants only, so evaluation is one
- * pass by construction. docs/specs/spec-recipe-parameters.md is the contract.
+ * The dialect has one engine and two front ends. The YAML definitions loader compiles a recipe
+ * document into these types. Generated typed headers compile the same bindings statically. A
+ * composite behaves the same way however it was made.
+ *
+ * The grammar is small by design. It holds numbers, parameter references, the named constants
+ * `pi` and `tau_circle` (2·pi), the four arithmetic operators, unary sign, parentheses, and one
+ * function, `clamp(x, low, high)`. An expression reads exported parameters and constants only. It
+ * reads no other derived value. Evaluation is therefore one pass.
  */
 
-/// One exported parameter of a recipe. A declaration without a default is REQUIRED at
-/// instantiation: a default hides behavior from a user unaware of the parameter, so a
-/// general recipe states none and a well-defined recipe states genuinely normal values.
+/// One exported parameter of a recipe. A declaration without a default is required at
+/// instantiation. A default hides behavior from a user unaware of the parameter. A general
+/// recipe therefore states no default. A well-defined recipe states values that are normal in use.
 struct ParameterDeclaration {
     std::string               name;
     std::string               type; // dialect type word: bool, int8..int64, uint8..uint64, float32, float64, string
@@ -56,13 +56,12 @@ namespace detail {
 
 [[nodiscard]] constexpr bool numericTypeWord(std::string_view type) noexcept { return integralTypeWord(type) || type == "float32" || type == "float64"; }
 
-/// A vector type word is a scalar one with `[]` after it: `float64[]`, `int32[]`, `string[]`.
+/// A vector type word is a scalar type word followed by `[]`, as in `float64[]`, `int32[]` and `string[]`.
 [[nodiscard]] constexpr bool vectorTypeWord(std::string_view type) noexcept { return type.ends_with("[]") && (numericTypeWord(type.substr(0UZ, type.size() - 2UZ)) || type.substr(0UZ, type.size() - 2UZ) == "bool" || type.substr(0UZ, type.size() - 2UZ) == "string"); }
 
-/// True for a declared type that is handed through rather than computed. Strings, booleans and vectors are handed
-/// through: a recipe exports one for a caller to set, and then places the value unchanged.
-/// A boolean belongs here rather than with the numbers because the arithmetic that would make it an operand —
-/// adding two toggles, scaling one — has no meaning a recipe should be able to write.
+/// True for a declared type whose value is placed unchanged and never computed. Strings, booleans and vectors are such
+/// types. A recipe exports one for a caller to set and places the value unchanged. A boolean is not a number here.
+/// Arithmetic on it, such as adding two toggles or scaling one, has no meaning a recipe should be able to write.
 [[nodiscard]] constexpr bool substitutedTypeWord(std::string_view type) noexcept { return type == "string" || type == "bool" || vectorTypeWord(type); }
 
 [[nodiscard]] constexpr bool knownTypeWord(std::string_view type) noexcept { return numericTypeWord(type) || type == "bool" || type == "string" || vectorTypeWord(type); }
@@ -102,8 +101,8 @@ namespace detail {
     return std::nullopt;
 }
 
-/// the integral content of a parameter value; the integer evaluation path uses this so an
-/// index-grade value never passes through a double (the SigMF 2^53 + 1 lesson)
+/// the integral content of a parameter value. The integer evaluation path uses it. An index-grade
+/// value then never passes through a double, which holds integers exactly only up to 2^53.
 [[nodiscard]] inline std::optional<std::int64_t> integerOf(const pmt::Value& value) noexcept {
     if (const auto* v = value.get_if<std::int64_t>()) {
         return *v;
@@ -148,16 +147,16 @@ struct Expression {
 
     std::vector<Op> ops;
     std::string     source;
-    // every operand integral and no division: evaluated in int64 so integer-grade values
-    // never round-trip through a double
+    // true when every operand is integral and there is no division. The expression is then
+    // evaluated in int64, and integer-grade values never round-trip through a double.
     bool integerMode = false;
 };
 
 namespace detail {
 
-/// user text echoed into an error is display data, never a channel: control characters are
-/// replaced and the echo is bounded, so a hostile definition cannot smuggle terminal escape
-/// sequences or unbounded text through a refusal message
+/// User text echoed into an error is shown and never interpreted. Control characters are
+/// replaced and the echo is bounded. A definition cannot pass terminal escape sequences or
+/// unbounded text through a refusal message.
 [[nodiscard]] inline std::string printableEcho(std::string_view text) {
     constexpr std::size_t kMaxEcho = 120;
     std::string           echo;
@@ -173,9 +172,9 @@ namespace detail {
 
 inline constexpr std::size_t kMaxExpressionDepth = 64;
 
-/// What the '=' sentinel makes of one string scalar. The dialect's escape is a run rule — a
-/// leading backslash run before '=' loses exactly one backslash — so every literal spelling
-/// stays expressible wherever an expression may appear.
+/// What the '=' sentinel makes of one string scalar. The dialect's escape removes exactly one
+/// backslash from a leading backslash run before '='. Every literal spelling therefore stays
+/// expressible wherever an expression may appear.
 enum class SentinelKind : std::uint8_t { plainText, escapedLiteral, expression };
 
 [[nodiscard]] inline SentinelKind sentinelOf(std::string_view text) noexcept {
@@ -249,8 +248,8 @@ struct Parser {
     }
 
     [[nodiscard]] std::expected<void, gr::Error> parseFactor() {
-        // the depth guard bounds recursion, so hostile nesting from a remote catalog is a
-        // refusal rather than a stack overflow
+        // The depth guard bounds recursion. Deep nesting from a remote catalog is refused and
+        // cannot overflow the stack.
         if (depth >= kMaxExpressionDepth) {
             return fail("expression nested too deeply");
         }
@@ -367,9 +366,9 @@ struct Parser {
         return std::unexpected(gr::Error(std::format("recipe_unknown_identifier: '{}' in '{}' — declared parameters: [{}]", printableEcho(name), printableEcho(text), printableEcho(declared))));
     }
 
-    /// An identifier followed by '(' is a call. `clamp(x, low, high)` is the whole function
-    /// vocabulary: the arity is checked here, since a call is the only place the grammar takes
-    /// more than one operand, and the bounds' order is checked at evaluation, where their
+    /// An identifier followed by '(' is a call. `clamp(x, low, high)` is the one function the
+    /// dialect has. The arity is checked here, since a call is the only place the grammar takes
+    /// more than one operand. The order of the bounds is checked at evaluation, where their
     /// values are known.
     [[nodiscard]] std::expected<void, gr::Error> parseCall(std::string_view name) {
         if (name != "clamp") {
@@ -416,8 +415,8 @@ struct Parser {
 }
 
 /// Evaluates against values aligned with the declarations the expression was parsed with.
-/// Integer-mode expressions evaluate in int64 throughout; everything else in float64. A
-/// non-finite result is refused — no downstream conversion can make it honest.
+/// An integer-mode expression evaluates in int64 throughout. Every other expression evaluates
+/// in float64. A non-finite result is refused, since no later conversion can make it valid.
 [[nodiscard]] inline std::expected<pmt::Value, gr::Error> evaluate(const Expression& expression, std::span<const pmt::Value> parameterValues) {
     auto operandError = [&](std::size_t index) { return std::unexpected(gr::Error(std::format("recipe_expression_conversion: parameter #{} holds no numeric value for '{}'", index, detail::printableEcho(expression.source)))); };
 
@@ -458,8 +457,8 @@ struct Parser {
                 const std::int64_t right = stack.back();
                 stack.pop_back();
                 std::int64_t& left = stack.back();
-                // checked arithmetic: a hostile or mistaken expression overflows into a
-                // refusal, never into undefined behavior or a silently wrapped setting
+                // Checked arithmetic. An expression that overflows is refused. It never causes
+                // undefined behavior or a silently wrapped setting.
                 std::int64_t result{};
                 const bool   overflowed = op.kind == Expression::OpKind::add ? __builtin_add_overflow(left, right, &result) : op.kind == Expression::OpKind::subtract ? __builtin_sub_overflow(left, right, &result) : __builtin_mul_overflow(left, right, &result);
                 if (overflowed) {
@@ -498,8 +497,8 @@ struct Parser {
             stack.pop_back();
             const double low = stack.back();
             stack.pop_back();
-            // spelled against `<=` so a bound that arrived as a NaN is refused here rather than
-            // passing the value through untouched
+            // The test is spelled with `<=`. A bound that arrived as a NaN fails it and is refused
+            // here. The value does not pass through unclamped.
             if (!(low <= high)) {
                 return std::unexpected(gr::Error(std::format("recipe_expression_domain: clamp bounds {} and {} are not ordered low, high in '{}'", low, high, detail::printableEcho(expression.source))));
             }
@@ -524,13 +523,14 @@ struct Parser {
     return pmt::Value(stack.back());
 }
 
-/// Validates a recipe's declaration list at definition load: duplicates, reserved spellings
-/// (framework settings and the expression constants), unknown type words, mistyped defaults.
+/// Validates a recipe's declaration list at definition load. It refuses duplicates, reserved
+/// spellings (framework settings and the expression constants), unknown type words and mistyped
+/// defaults.
 namespace detail {
 
 /// Whether a vector-typed declaration's default holds the vector its type word names. The element word is the
-/// type word without its `[]`; a sequence reaches a recipe as a Tensor of that element type, and a vector of
-/// strings as a Tensor of Values.
+/// type word without its `[]`. A sequence reaches a recipe as a Tensor of that element type. A vector of strings
+/// reaches it as a Tensor of Values.
 [[nodiscard]] inline bool vectorDefaultAgrees(std::string_view type, const pmt::Value& value) noexcept {
     const std::string_view element = type.substr(0UZ, type.size() - 2UZ);
     if (element == "float64") {
@@ -572,7 +572,7 @@ namespace detail {
 } // namespace detail
 
 [[nodiscard]] inline std::expected<void, gr::Error> validateDeclarations(std::span<const ParameterDeclaration> declarations) {
-    // a parameter may not shadow a word the grammar already spells: the constants, and the one function
+    // A parameter may not shadow a word the grammar already spells, such as the constants and the one function.
     static constexpr std::array<std::string_view, 9> kReservedNames{"name", "compute_domain", "disconnect_on_done", "enabled", "ui_constraints", "meta_information", "pi", "tau_circle", "clamp"};
     for (std::size_t index = 0; index < declarations.size(); ++index) {
         const auto& declaration = declarations[index];
@@ -660,8 +660,8 @@ template<typename T>
     return std::move(*held);
 }
 
-/// Overlays supplied values on declared defaults, each held in its parameter's declared type. Unknown names are
-/// refused by name; missing required parameters are refused together, all named in one error.
+/// Overlays supplied values on declared defaults, each held in its parameter's declared type. An unknown name is
+/// refused by name. Missing required parameters are refused together, all named in one error.
 [[nodiscard]] inline std::expected<std::vector<pmt::Value>, gr::Error> resolveParameters(std::span<const ParameterDeclaration> declarations, const property_map& supplied) {
     for (const auto& [name, value] : supplied) {
         const bool declared = std::ranges::any_of(declarations, [&](const ParameterDeclaration& declaration) { return std::string_view(declaration.name) == std::string_view(name); });
@@ -697,25 +697,25 @@ template<typename T>
     return values;
 }
 
-/// One element of a sequence-valued setting: an expression to evaluate, or a value spelled
-/// literally beside the expressions in the same sequence.
+/// One element of a sequence-valued setting, either an expression to evaluate or a value
+/// spelled literally beside the expressions in the same sequence.
 struct SequenceElement {
     std::optional<Expression> expression;
     pmt::Value                literal;
 };
 
-/// One derived interior setting: which block (as a name path from the composite's interior
-/// downward, through nested subgraphs), which setting, and the expression that derives it.
+/// One derived interior setting. It names the block by a name path from the composite's interior
+/// downward through nested subgraphs. It names the setting and holds the expression that derives it.
 struct Binding {
     std::vector<std::string> namePath;
     std::string              settingKey;
     Expression               expression;
-    /// Set instead of `expression` when the setting takes a parameter's value unchanged: a string or a vector
-    /// carries no arithmetic, so what a recipe can do with one is hand it through.
+    /// Set instead of `expression` when the setting takes a parameter's value unchanged. A string or a vector
+    /// carries no arithmetic. A recipe can only pass one through.
     std::optional<std::size_t> substituted;
     /// Set instead of `expression` when the setting is a sequence with derived elements. A setting is staged
-    /// whole, so the binding carries the whole sequence and rebuilds it on every change; one binding per key
-    /// keeps the transaction and the refusal exactly as they are for a scalar.
+    /// whole. The binding therefore carries the whole sequence and rebuilds it on every change. With one binding
+    /// per key, the transaction and the refusal stay exactly as they are for a scalar.
     std::vector<SequenceElement> sequence;
 };
 
@@ -746,11 +746,11 @@ struct Binding {
     return evaluate(binding.expression, values);
 }
 
-/// True when two derived values are equal. `pmt::Value` compares a Tensor by identity,
-/// so a sequence — rebuilt whole on every evaluation — is compared element by element here;
-/// every other alternative defers to the value's own equality. Where equality cannot tell, the
-/// answer is "differs", so the engine restages a key it need not have rather than skipping one
-/// it owed.
+/// True when two derived values are equal. `pmt::Value` compares a Tensor by identity. A
+/// sequence is rebuilt whole on every evaluation, so it is compared element by element here.
+/// Every other alternative uses the value's own equality. Where equality cannot decide, the
+/// answer is "differs". The engine may then restage a key it did not need to. It never skips a
+/// key it had to stage.
 [[nodiscard]] inline bool derivedValuesAgree(const pmt::Value& left, const pmt::Value& right) {
     const auto* leftElements  = left.get_if<Tensor<pmt::Value>>();
     const auto* rightElements = right.get_if<Tensor<pmt::Value>>();
@@ -760,16 +760,16 @@ struct Binding {
     return left == right;
 }
 
-/// What a live composite carries: its declarations, its bindings, the current parameter values,
-/// and what was last staged for each binding. A staged change to an exported parameter
-/// re-evaluates against a TRIAL copy of the values and commits only when every binding
-/// evaluated — a refusal rejects the change whole and the running values stand.
+/// The state of a live composite. It holds the declarations, the bindings, the current parameter
+/// values and what was last staged for each binding. A staged change to an exported parameter
+/// re-evaluates against a trial copy of the values. It commits only when every binding evaluated.
+/// A refusal rejects the whole change, and the running values stay.
 struct AttachedBindings {
     std::vector<ParameterDeclaration> declarations;
     std::vector<Binding>              bindings;
     std::vector<pmt::Value>           values;
-    /// aligned with `bindings`: the value the engine last staged for each, so a change stages
-    /// only the keys that moved. Empty before the first application, which therefore stages
+    /// aligned with `bindings`, the value the engine last staged for each. A change stages only
+    /// the keys whose values changed. Empty before the first application, which therefore stages
     /// every bound key.
     std::vector<std::optional<pmt::Value>> lastStaged;
 };

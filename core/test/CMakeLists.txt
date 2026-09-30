@@ -170,7 +170,7 @@ set_tests_properties(
              300)
 
 if(GR_ENABLE_BLOCK_REGISTRY)
-  # the wiring half includes Runtime.hpp alone; the factory half is the only place a block type is named
+  # The wiring half includes Runtime.hpp alone. The factory half is the only place a block type is named.
   add_executable(qa_RuntimeConsumer qa_RuntimeConsumer.cpp qa_RuntimeConsumerBlocks.cpp)
   setup_test(qa_RuntimeConsumer)
 
@@ -277,8 +277,8 @@ if(GR_ENABLE_BLOCK_REGISTRY AND INTERNAL_ENABLE_BLOCK_PLUGINS)
     block_library_duplicate
     block_library_duplicate_second)
 
-  # A block library registers into the process's registry and stays mapped, so one process loads the two precedence
-  # libraries in one order only: the second run reverses it.
+  # A block library registers into the process's registry and stays mapped. One process therefore loads the two
+  # precedence libraries in one order only. The second run reverses the order.
   add_ut_test(qa_PluginPrecedence)
   add_dependencies(
     qa_PluginPrecedence

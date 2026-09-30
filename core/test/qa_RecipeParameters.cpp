@@ -27,7 +27,7 @@ using gr::recipe::validateDeclarations;
 namespace {
 
 // boost.ut runs a suite from its runner's destructor, after the objects of this translation unit have been
-// destroyed, so anything a test body reads is held by a function-local static and outlives the run.
+// destroyed. Anything a test body reads is therefore held by a function-local static and outlives the run.
 [[nodiscard]] const std::vector<ParameterDeclaration>& nbfmDeclarations() {
     static const std::vector<ParameterDeclaration> declarations{
         {.name = "sample_rate", .type = "float32", .defaultValue = std::nullopt, .doc = ""},
@@ -40,8 +40,8 @@ namespace {
 [[nodiscard]] double evaluated(std::string_view source, const std::vector<gr::pmt::Value>& values) {
     const auto expression = parseExpression(source, nbfmDeclarations());
     expect(expression.has_value()) << source;
-    // expect() does not abort, so a refusal must be answered with a value that fails every
-    // comparison after it, never with a dereference of the error
+    // expect() does not abort. A refusal must therefore be answered with a value that fails every
+    // comparison after it, never with a dereference of the error.
     if (!expression.has_value()) {
         return std::numeric_limits<double>::quiet_NaN();
     }
@@ -50,7 +50,7 @@ namespace {
     if (!result.has_value()) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    // integer-mode expressions return an int64 value; read whichever numeric arrived
+    // An integer-mode expression returns an int64 value. Read whichever numeric type arrived.
     return gr::recipe::detail::doubleOf(*result).value_or(0.0);
 }
 
@@ -194,8 +194,8 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
     };
 
     "a string or vector parameter is substituted, not evaluated"_test = [] {
-        // D3's whole surface: these types carry no arithmetic, so a recipe hands one through unchanged. The
-        // engine's part is to name them as substituted and to produce the value; the grammar stays numeric.
+        // These types carry no arithmetic, so a recipe passes one through unchanged. The engine names them
+        // as substituted and produces the value. The grammar stays numeric.
         const std::vector<ParameterDeclaration> declarations{
             {.name = "detector", .type = "string", .defaultValue = gr::pmt::Value(std::pmr::string("zero_crossing")), .doc = ""},
             {.name = "carriers", .type = "int32[]", .defaultValue = std::nullopt, .doc = ""},
@@ -223,7 +223,7 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
         expect(carriers.has_value());
         expect(carriers->get_if<gr::Tensor<std::int32_t>>() != nullptr) << "the sequence arrives whole";
 
-        // an index past the values is a refusal rather than a read off the end
+        // an index past the values is refused and does not read off the end
         const gr::recipe::Binding outOfRange{.namePath = {"inner"}, .settingKey = "x", .expression = {}, .substituted = 9UZ, .sequence = {}};
         expect(!gr::recipe::bindingValue(outOfRange, std::span<const gr::pmt::Value>(values)).has_value());
     };
@@ -241,10 +241,10 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
     };
 
     "a boolean parameter is substituted, and refuses to be an operand"_test = [] {
-        // A toggle is a value to hand through, not one to compute with: adding two of them or scaling one has no
-        // meaning a recipe should be able to write, so it joins the strings and vectors on the substitution path.
-        // The exported name cannot be `enabled`: that is one of the framework's own settings and is reserved. The
-        // interior setting it binds to is another matter — `settingKey` below is exactly that `enabled`.
+        // A toggle is a value to pass through and never to compute with. Adding two of them or scaling one has no
+        // meaning a recipe should be able to write. A toggle therefore joins the strings and vectors on the
+        // substitution path. The exported name cannot be `enabled`, one of the framework's own settings and reserved.
+        // The interior setting it binds to may be `enabled`, and `settingKey` below is exactly that.
         const std::vector<ParameterDeclaration> declarations{
             {.name = "dc_block_enabled", .type = "bool", .defaultValue = gr::pmt::Value(true), .doc = ""},
             {.name = "rate", .type = "float64", .defaultValue = gr::pmt::Value(48000.0), .doc = ""},
@@ -653,8 +653,8 @@ blocks:
     return composite->graph()->blocks().front();
 }
 
-/// the parameterized fixture at sample_rate 48000 and deviation 2500; the loader outlives the composite,
-/// which keeps a pointer to it
+/// the parameterized fixture at sample_rate 48000 and deviation 2500. The loader outlives the composite,
+/// which keeps a pointer to it.
 [[nodiscard]] std::shared_ptr<gr::BlockModel> parameterizedComposite(gr::PluginLoader& loader) {
     registerRecipeTestBlock();
     gr::property_map parameters;
@@ -668,7 +668,7 @@ blocks:
 /// the fixture's discriminator gain at one parameter point, in the interior member's own type
 [[nodiscard]] float derivedGain(double sampleRate, double deviation) { return static_cast<float>(sampleRate / (2.0 * std::numbers::pi * deviation)); }
 
-/// a numeric value staged on `block` under `key`, NaN when none is staged; a missing key fails every comparison
+/// a numeric value staged on `block` under `key`, NaN when none is staged. A missing key fails every comparison.
 [[nodiscard]] float stagedNumber(const std::shared_ptr<gr::BlockModel>& block, std::string_view key) {
     const gr::property_map staged = block->settings().stagedParameters();
     const auto             it     = staged.find(std::pmr::string(key));
@@ -684,9 +684,9 @@ blocks:
 /**
  * A definitions root holding one recipe, `qa::HalvingRecipe`, written to a temporary directory.
  *
- * Its one exported parameter, `level`, has no default and is therefore required, and its interior block `inner`
- * derives `gain = 1000 / level`. A recipe reaches another recipe's interior only by its registry name, and a loader
- * reads this one from its definition roots.
+ * Its one exported parameter, `level`, has no default and is therefore required. Its interior block `inner` derives
+ * `gain = 1000 / level`. A recipe reaches another recipe's interior only by its registry name. A loader reads this one
+ * from its definition roots.
  */
 struct HalvingRecipeRoot {
     std::filesystem::path path = std::filesystem::temp_directory_path() / "gr4_qa_recipe_parameters_nested";
@@ -748,7 +748,7 @@ blocks:
         - [first, OUTPUT, out, out]
 )yaml";
 
-/// the nesting fixture at `rate`, built through a loader that reads `root`; the loader outlives the composite
+/// the nesting fixture at `rate`, built through a loader that reads `root`. The loader outlives the composite.
 [[nodiscard]] std::shared_ptr<gr::BlockModel> nestingComposite(gr::PluginLoader& loader, float rate) {
     registerRecipeTestBlock();
     const auto composite = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kNestingRecipe), {{"rate", rate}});
@@ -871,7 +871,7 @@ const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
         const auto gainIt = staged.find("gain");
         expect(gainIt != staged.end()) << "the derived setting is staged on the interior block";
         if (gainIt != staged.end()) {
-            // setStaged converts to the member's own float; read whichever numeric arrived
+            // setStaged converts to the member's own float. Read whichever numeric type arrived.
             const double stagedGain = gr::recipe::detail::doubleOf(gainIt->second).value_or(0.0);
             expect(eq(static_cast<float>(stagedGain), static_cast<float>(48000.0 / (2.0 * std::numbers::pi * 5000.0)))) << "re-evaluated with the changed parameter";
         }
@@ -1111,8 +1111,8 @@ const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
     };
 };
 
-// A composite's exported parameters are its settings: every consumer that lists, reads or writes a block's settings
-// reaches them through the one settings object, and none reaches the interior.
+// A composite's exported parameters are its settings. Listing, reading and writing a block's settings all go through
+// the one settings object. That object does not reach the interior.
 const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
     "a composite lists its exported parameters beside the framework's settings, and nothing of its interior"_test = [] {
         auto       loader    = recipeTestLoader();
@@ -1201,7 +1201,7 @@ const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
         };
         gr::SettingsBase& settings = (*composite)->settings();
 
-        // the first application after a load stages every bound key; the case settles it before it counts anything
+        // The first application after a load stages every bound key. The case settles it before it counts anything.
         std::ignore = settings.setStaged({{"level", 1.0f}});
         applyInterior();
         recipeWatches().clear();

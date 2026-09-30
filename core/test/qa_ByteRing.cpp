@@ -83,8 +83,8 @@ const boost::ut::suite<"gr::ByteRing"> _byteRing = [] {
         expect(sameAs(tail, 50, 100UZ)) << "and the hundred that crossed the end follow them, in order";
     };
 
-    // A sender outpacing the consumer is the case this is bounded for, and which end it drops is a behavior rather
-    // than an implementation detail: the newest samples are the ones worth keeping.
+    // A sender that outpaces the consumer is the case this queue is bounded for. The end it drops is part of its
+    // behavior, not an implementation detail. The newest samples are the ones worth keeping.
     "a sender that outpaces the consumer"_test = [] {
         ByteRing r(100UZ);
         r.push(run(0, 80UZ));
@@ -93,8 +93,8 @@ const boost::ut::suite<"gr::ByteRing"> _byteRing = [] {
 
         std::vector<std::byte> out(100UZ);
         r.pop(out.data(), 100UZ);
-        // 140 bytes of one counting run went in and the last 100 stayed, so what survives starts at 40 -- the oldest
-        // 40 were dropped, not the newest.
+        // 140 bytes of one counting run went in and the last 100 stayed. The bytes that remain start at 40. The
+        // oldest 40 were dropped, not the newest.
         expect(sameAs(out, 40, 100UZ)) << "and what survived is the newest hundred bytes";
     };
 
@@ -132,7 +132,7 @@ const boost::ut::suite<"gr::ByteRing"> _byteRing = [] {
         expect(r.empty()) << "dropping more than is held empties it rather than underflowing";
     };
 
-    // peek must leave the bytes in place: a caller uses it to check it can commit before consuming.
+    // peek must leave the bytes in place. A caller uses it to check that it can commit before consuming.
     "peek does not consume"_test = [] {
         ByteRing r(256UZ);
         r.push(run(11, 90UZ));

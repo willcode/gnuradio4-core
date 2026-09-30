@@ -9,8 +9,8 @@ GR_PLUGIN("Device Listing Plugin", "Unknown", "MIT", "v1")
 /**
  * @brief A plugin that registers device listings and no block.
  *
- * Its families list invented units and open nothing. One lists units, one of them without a selector; one states that
- * its listing opens a unit; one throws; one finds no unit.
+ * Its families list fixed test units and open nothing. One family lists units, one of them without a selector. One
+ * states that its listing opens a unit. One throws. One finds no unit.
  */
 namespace {
 

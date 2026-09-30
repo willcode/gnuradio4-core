@@ -19,7 +19,7 @@ Graph::Graph(property_map settings) : gr::Block<Graph>(std::move(settings)), _pl
     if (!emplaced.has_value()) {
         throw gr::exception(emplaced.error().message);
     }
-    return _blocks.back(); // addBlock() appended it; a caller binds to the graph's own entry
+    return _blocks.back(); // addBlock() appended it. A caller binds to the graph's own entry.
 }
 
 std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::string_view type, std::optional<block::Version> pinnedVersion, property_map initialSettings) {
@@ -41,12 +41,12 @@ std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::strin
         return addBlock(std::move(subGraphModel));
     }
 
-    // a block built from a YAML definition consumes only the parameters that definition exports --
-    // its interior is derived from them, so their values have to be known before the interior
-    // exists -- and refuses everything else by name, including the `name` a caller supplies. Those
-    // parameters therefore travel with the instantiation and the rest is staged afterwards. The
-    // reader treats the same block written in a file the same way. A registered or plugin-provided
-    // type declares nothing and takes its whole map at construction.
+    // A block built from a YAML definition consumes only the parameters that definition exports.
+    // Its interior is derived from them. Their values must therefore be known before the interior
+    // exists. The block refuses everything else by name, the `name` a caller supplies included.
+    // Those parameters travel with the instantiation, and the rest is staged afterwards. The reader
+    // treats the same block written in a file the same way. A registered or plugin-provided type
+    // declares nothing and takes its whole map at construction.
     detail::RecipeParameterSplit split = detail::splitRecipeParameters(*_pluginLoader, type, std::move(initialSettings));
     if (split.fromDefinition) {
         const auto nameIt       = split.remaining.find("name");
@@ -57,9 +57,10 @@ std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::strin
         }
         if (*instantiated) {
             const std::shared_ptr<BlockModel>& newBlock = *instantiated;
-            // the label takes setName(), as the reader applies a file's label; the exported parameters are in
-            // force from the instantiation, and the remaining keys load as settings before the block joins the
-            // graph: a value the block refuses throws, and the graph holds the blocks it held before the call
+            // The label is applied with setName(), as the reader applies a file's label. The exported
+            // parameters are in force from the instantiation. The remaining keys load as settings before the
+            // block joins the graph. A value the block refuses throws, and the graph then holds the blocks it
+            // held before the call.
             if (!blockName.empty()) {
                 newBlock->setName(std::string(blockName));
             }
@@ -103,10 +104,10 @@ std::expected<std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>
         }
         newBlock = std::move(*pinned);
     } else {
-        // the replacement is instantiated the way emplaceBlock instantiates a new block: a type built
+        // The replacement is instantiated the way emplaceBlock instantiates a new block. A type built
         // from a YAML definition takes only the parameters that definition exports and refuses
-        // everything else by name, so those travel with the instantiation and the rest is staged
-        // afterwards, while any other type takes its whole map at construction
+        // everything else by name. Those parameters travel with the instantiation, and the rest is
+        // staged afterwards. Any other type takes its whole map at construction.
         detail::RecipeParameterSplit split = detail::splitRecipeParameters(*_pluginLoader, type, properties);
         if (split.fromDefinition) {
             const auto nameIt       = split.remaining.find("name");

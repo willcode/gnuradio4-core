@@ -2,8 +2,9 @@
 
 GR_PLUGIN("Versioned Plugin", "Unknown", "MIT", "v1")
 
-/// a plugin carrying two revisions of one alias, which only the versioned plugin interface can tell apart, a notation
-/// block, a block whose declared role its ports contradict, one whose declared role its ports confirm and a transceiver
+/// a plugin carrying two revisions of one alias, which only the versioned plugin interface can tell apart. It also
+/// carries a notation block, a block whose declared role its ports contradict, one whose declared role its ports
+/// confirm, and a transceiver.
 namespace good {
 
 inline constexpr gr::block::Label kVersionedFamily = gr::block::labels::family("versioned", "Blocks of the versioned test plugin.");

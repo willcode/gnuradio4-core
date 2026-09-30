@@ -39,10 +39,10 @@ struct Directory {
 /**
  * @brief The directories a tool searches for blocks, in the order it searches them.
  *
- * The command line comes first, then the colon-separated list in GNURADIO4_PLUGIN_DIRECTORIES,
- * then `installed`, the plugin directory of the installation the caller was built for. An empty
- * `installed` adds no directory, and the search then covers the named directories alone. A
- * directory named twice is searched once.
+ * The command line comes first. The colon-separated list in GNURADIO4_PLUGIN_DIRECTORIES comes
+ * next. `installed` comes last, the plugin directory of the installation the caller was built for.
+ * An empty `installed` adds no directory, and the search then covers the named directories alone.
+ * A directory named twice is searched once.
  */
 [[nodiscard]] inline std::vector<Directory> searchDirectories(std::span<const std::string> fromCommandLine, std::string_view installed) {
     std::vector<Directory> directories;
@@ -78,11 +78,11 @@ struct OutputPort {
 /**
  * @brief The type of the items a block's output port carries, read from an instance of the block.
  *
- * A registry key is all a graph file gives, and only a block itself knows what its ports carry, so
- * the answer comes from a default-constructed instance: `settings().init()` copies the annotations
- * into the meta information and fills the port descriptions, and the block is never started. A key
- * no registry holds, a factory that refuses, and a port name the block does not declare each answer
- * with an empty string. The caller then prints no type at all, never a guess.
+ * A graph file gives only a registry key. The block itself declares what its ports carry. The type
+ * is therefore read from a default-constructed instance. `settings().init()` copies the annotations
+ * into the meta information and fills the port descriptions. The block is never started. A key no
+ * registry holds, a factory that refuses, and a port name the block does not declare each yield an
+ * empty string. The caller then prints no type at all.
  *
  * Every key is read once and kept, because a graph names the same block on many connections.
  */
@@ -93,8 +93,8 @@ class OutputPortTypes {
 public:
     explicit OutputPortTypes(PluginLoader& loader) : _loader(loader) {}
 
-    /// `port` is the port as a connection spells it: its name, its name and index within a
-    /// collection, or its position among the block's output ports with an optional sub-index
+    /// `port` is the port as a connection spells it, by name, by name and index within a collection,
+    /// or by position among the block's output ports with an optional sub-index
     [[nodiscard]] std::string operator()(std::string_view blockKey, std::string_view port) {
         const std::vector<OutputPort>& ports = outputsOf(blockKey);
         if (ports.empty()) {
@@ -170,10 +170,10 @@ struct LabelText {
 }
 
 /**
- * @brief The text a tool prints beside a label: its meanings, and a mark for what a reader must not miss.
+ * @brief The text a tool prints beside a label, its meanings and a mark for what a reader must not miss.
  *
- * Several meanings are joined by "; ". A word outside the loaded vocabulary reads "(outside the loaded vocabulary)",
- * and an `emits` word the vocabulary reads as physical ends in "(physical)", an unknown one included.
+ * Several meanings are joined by "; ". A word outside the loaded vocabulary reads "(outside the loaded vocabulary)".
+ * An `emits` word the vocabulary reads as physical ends in "(physical)". An unknown `emits` word ends in it too.
  */
 [[nodiscard]] inline std::string meaningText(const LabelText& text) {
     std::string meaning;
@@ -189,7 +189,7 @@ struct LabelText {
     return meaning;
 }
 
-/// the role the stream ports of `block` read; `isNotation` states whether its labels hold `plane/notation`
+/// the role the stream ports of `block` read. `isNotation` states whether its labels hold `plane/notation`.
 [[nodiscard]] inline std::optional<block::Label> portRoleOf(BlockModel& block, bool isNotation) {
     const auto holdsStream = [](BlockModel::DynamicPorts& ports) {
         const auto isStream = [](const DynamicPort& port) { return port::isStream(port.portMaskInfo()); };
@@ -220,7 +220,7 @@ struct LabelText {
     return std::format("{} declared; the stream ports read {}", block::Label{block::LabelClass::Role, declared}.text(), read.empty() ? std::string_view("no role") : read);
 }
 
-/// the role a tool prints on one line: the declared word marked declared, else the word the stream ports read
+/// the role a tool prints on one line, the declared word marked as declared, else the word the stream ports read
 [[nodiscard]] inline std::string roleText(std::string_view declared, std::string_view read) {
     if (!declared.empty()) {
         return std::format("{}, declared", declared);
