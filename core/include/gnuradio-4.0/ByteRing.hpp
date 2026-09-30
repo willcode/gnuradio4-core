@@ -15,7 +15,7 @@ namespace gr {
  * The queue serves a stream that arrives in whole messages and leaves in the sizes a consumer asks for. Both ends move
  * bulk bytes. The queue is meant to cost nothing beyond the copy. `std::deque<std::byte>` does the same job over a
  * chain of 512-byte segments. Every insert and every read there walks segment boundaries instead of issuing a memcpy.
- * It measured 39 % slower than this queue with 64 KiB writes and 256 KiB reads.
+ * It is 39 % slower than this queue with 64 KiB writes and 256 KiB reads.
  *
  * The storage is one buffer and an offset pair. A read is at most two memcpys, and a write is at most two. Where
  * nothing wraps, each is one memcpy.
@@ -79,7 +79,7 @@ public:
         return take;
     }
 
-    // copies as pop() does and drops nothing, for a caller that checks it can commit before it pops
+    // copies as pop() does and drops nothing
     std::size_t peek(std::byte* dst, std::size_t bytes) const noexcept {
         if (_buffer.empty() || dst == nullptr) {
             return 0UZ;

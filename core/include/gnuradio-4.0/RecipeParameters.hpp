@@ -25,9 +25,8 @@ namespace gr::recipe {
 /**
  * @brief Exported recipe parameters and the bounded arithmetic that derives interior settings from them.
  *
- * The dialect has one engine and two front ends. The YAML definitions loader compiles a recipe
- * document into these types. Generated typed headers compile the same bindings statically. A
- * composite behaves the same way however it was made.
+ * The YAML definitions loader compiles a recipe document into these types. A binding ties one
+ * interior setting to the expression that derives it from the exported parameters.
  *
  * The grammar is small by design. It holds numbers, parameter references, the named constants
  * `pi` and `tau_circle` (2·pi), the four arithmetic operators, unary sign, parentheses, and one
@@ -36,8 +35,7 @@ namespace gr::recipe {
  */
 
 /// One exported parameter of a recipe. A declaration without a default is required at
-/// instantiation. A default hides behavior from a user unaware of the parameter. A general
-/// recipe therefore states no default. A well-defined recipe states values that are normal in use.
+/// instantiation. A default hides behavior from a user who does not know the parameter.
 struct ParameterDeclaration {
     std::string               name;
     std::string               type; // dialect type word: bool, int8..int64, uint8..uint64, float32, float64, string
@@ -60,7 +58,7 @@ namespace detail {
 [[nodiscard]] constexpr bool vectorTypeWord(std::string_view type) noexcept { return type.ends_with("[]") && (numericTypeWord(type.substr(0UZ, type.size() - 2UZ)) || type.substr(0UZ, type.size() - 2UZ) == "bool" || type.substr(0UZ, type.size() - 2UZ) == "string"); }
 
 /// True for a declared type whose value is placed unchanged and never computed. Strings, booleans and vectors are such
-/// types. A recipe exports one for a caller to set and places the value unchanged. A boolean is not a number here.
+/// types. A recipe exports one for a caller to set. A boolean is not a number here.
 /// Arithmetic on it, such as adding two toggles or scaling one, has no meaning a recipe should be able to write.
 [[nodiscard]] constexpr bool substitutedTypeWord(std::string_view type) noexcept { return type == "string" || type == "bool" || vectorTypeWord(type); }
 
@@ -101,7 +99,7 @@ namespace detail {
     return std::nullopt;
 }
 
-/// the integral content of a parameter value. The integer evaluation path uses it. An index-grade
+/// The integral content of a parameter value. The integer evaluation path uses it. An index-grade
 /// value then never passes through a double, which holds integers exactly only up to 2^53.
 [[nodiscard]] inline std::optional<std::int64_t> integerOf(const pmt::Value& value) noexcept {
     if (const auto* v = value.get_if<std::int64_t>()) {
@@ -147,7 +145,7 @@ struct Expression {
 
     std::vector<Op> ops;
     std::string     source;
-    // true when every operand is integral and there is no division. The expression is then
+    // True when every operand is integral and there is no division. The expression is then
     // evaluated in int64, and integer-grade values never round-trip through a double.
     bool integerMode = false;
 };
@@ -155,7 +153,8 @@ struct Expression {
 namespace detail {
 
 /// Returns user text fit to quote in an error message. Each control character becomes '?', and
-/// text longer than kMaxEcho characters is cut and ends in "...".
+/// text longer than kMaxEcho characters is cut and ends in "...". A terminal escape sequence in a
+/// definition therefore never reaches the message.
 [[nodiscard]] inline std::string printableEcho(std::string_view text) {
     constexpr std::size_t kMaxEcho = 120;
     std::string           echo;
@@ -247,7 +246,7 @@ struct Parser {
     }
 
     [[nodiscard]] std::expected<void, gr::Error> parseFactor() {
-        // The depth guard bounds recursion. Deep nesting from a remote catalog is refused and
+        // The depth guard bounds recursion. Nesting deeper than kMaxExpressionDepth is refused and
         // cannot overflow the stack.
         if (depth >= kMaxExpressionDepth) {
             return fail("expression nested too deeply");
@@ -522,9 +521,6 @@ struct Parser {
     return pmt::Value(stack.back());
 }
 
-/// Validates a recipe's declaration list at definition load. It refuses duplicates, reserved
-/// spellings (framework settings and the expression constants), unknown type words and mistyped
-/// defaults.
 namespace detail {
 
 /// Whether a vector-typed declaration's default holds the vector its type word names. The element word is the
@@ -570,6 +566,9 @@ namespace detail {
 
 } // namespace detail
 
+/// Validates a recipe's declaration list at definition load. It refuses duplicates, reserved
+/// spellings (framework settings and the expression constants), unknown type words and mistyped
+/// defaults.
 [[nodiscard]] inline std::expected<void, gr::Error> validateDeclarations(std::span<const ParameterDeclaration> declarations) {
     // A parameter may not shadow a word the grammar already spells, such as the constants and the one function.
     static constexpr std::array<std::string_view, 9> kReservedNames{"name", "compute_domain", "disconnect_on_done", "enabled", "ui_constraints", "meta_information", "pi", "tau_circle", "clamp"};
@@ -767,7 +766,7 @@ struct AttachedBindings {
     std::vector<ParameterDeclaration> declarations;
     std::vector<Binding>              bindings;
     std::vector<pmt::Value>           values;
-    /// aligned with `bindings`, the value the engine last staged for each. A change stages only
+    /// Aligned with `bindings`, the value the engine last staged for each. A change stages only
     /// the keys whose values changed. Empty before the first application, which therefore stages
     /// every bound key.
     std::vector<std::optional<pmt::Value>> lastStaged;

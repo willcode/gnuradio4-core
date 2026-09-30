@@ -53,7 +53,7 @@ inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> readR
     return declarations;
 }
 
-/// the parameters a definition exports, read from the composite entry it is built around. The
+/// The parameters a definition exports, read from the composite entry it is built around. The
 /// list is empty for a definition that carries no composite or declares nothing.
 inline std::expected<std::vector<recipe::ParameterDeclaration>, gr::Error> recipeDeclarationsOf(const property_map& definition) {
     const auto blocksIt = definition.find("blocks");
@@ -91,7 +91,7 @@ struct RecipeParameterSplit {
     property_map remaining;
 };
 
-/// splits `parameters` for `blockType` as read from `loader`'s definitions. A definition whose
+/// Splits `parameters` for `blockType` as read from `loader`'s definitions. A definition whose
 /// declarations cannot be read is left for the instantiation to refuse. The instantiation reports
 /// the reason.
 inline RecipeParameterSplit splitRecipeParameters(PluginLoader& loader, std::string_view blockType, property_map parameters) {
@@ -117,7 +117,7 @@ inline RecipeParameterSplit splitRecipeParameters(PluginLoader& loader, std::str
     return split;
 }
 
-/// loads a split's `remaining` keys into `block`'s settings. A value the block refuses throws `gr::exception` with the
+/// Loads a split's `remaining` keys into `block`'s settings. A value the block refuses throws `gr::exception` with the
 /// block's name, its type and the refusal. The refusal names the key.
 inline void loadRemainingSettings(BlockModel& block, std::string_view blockName, std::string_view blockType, const property_map& remaining) {
     try {

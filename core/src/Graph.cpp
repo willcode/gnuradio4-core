@@ -19,7 +19,7 @@ Graph::Graph(property_map settings) : gr::Block<Graph>(std::move(settings)), _pl
     if (!emplaced.has_value()) {
         throw gr::exception(emplaced.error().message);
     }
-    return _blocks.back(); // addBlock() appended it. A caller binds to the graph's own entry.
+    return _blocks.back(); // addBlock() appended it. The reference is the graph's own entry.
 }
 
 std::expected<std::shared_ptr<BlockModel>, Error> Graph::emplaceBlock(std::string_view type, std::optional<block::Version> pinnedVersion, property_map initialSettings) {

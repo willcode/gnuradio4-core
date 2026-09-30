@@ -155,7 +155,7 @@ private:
             return std::unexpected(*_error);
         }
         if (_runtime.has_value()) {
-            return {}; // already created, by start() then state() or by an earlier run of the same graph
+            return {}; // already created by an earlier start() or run of the same graph
         }
         auto runtime = Runtime::create(std::move(_graph), scheduler, std::move(schedulerParameters));
         if (!runtime.has_value()) {

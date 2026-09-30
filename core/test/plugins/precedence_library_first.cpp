@@ -1,7 +1,7 @@
 #include <gnuradio-4.0/Block.hpp>
 #include <gnuradio-4.0/BlockRegistry.hpp>
 
-/// one of two block libraries that register one alias at one version. The registry holds the alias for the one mapped
+/// One of two block libraries that register one alias at one version. The registry holds the alias for the one mapped
 /// first.
 namespace gr::testing {
 

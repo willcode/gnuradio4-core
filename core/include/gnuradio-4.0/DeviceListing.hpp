@@ -26,7 +26,7 @@ struct DeviceUnit {
  * A listing holds the family word, three flags and the function that lists the attached units. Core carries `family`
  * and each unit's `selector` as strings and reads neither. `opens` states whether `listUnits` opens a unit to find it.
  * `receive` and `transmit` state the directions of the family's blocks, not those of a unit's hardware. `listUnits`
- * may throw. A device listing then reports the family as not listed, with the exception's message.
+ * may throw. The family is then reported as not listed, with the exception's message.
  */
 struct DeviceListing {
     using ListFunction = std::vector<DeviceUnit> (*)();
@@ -42,10 +42,10 @@ struct DeviceListing {
  * @brief The device listings of a program or of one plugin, at most one per family word.
  *
  * A program and its block libraries register into `globalDeviceListingRegistry()`. A plugin registers into its own
- * instance, which the plugin interface returns from `deviceListings()`. The first registration of a family word holds
- * it. The same function offered again under that word adds nothing. Another function under that word is refused and
- * recorded in `refused()`. A listing states no version, and the family word alone is the key. A listing version would
- * join the word in that key, as a block's version joins its name in `detail::claimVersion()`.
+ * instance. The plugin interface returns that instance's listings from `deviceListings()`. The first registration of a
+ * family word holds it. The same function offered again under that word adds nothing. Another function under that
+ * word is refused and recorded in `refused()`. A listing states no version, and the family word alone is the key. A
+ * listing version would join the word in that key, as a block's version joins its name in `detail::claimVersion()`.
  */
 class DeviceListingRegistry {
 public:
@@ -61,7 +61,7 @@ private:
     std::vector<Refusal>       _refused;
 
 public:
-    /// files `listing` under its family word unless a registration holds that word. Returns whether it was added.
+    /// Files `listing` under its family word unless a registration holds that word. Returns whether it was added.
     bool add(DeviceListing listing) {
         const auto held = std::ranges::find(_listings, listing.family, &DeviceListing::family);
         if (held == _listings.end()) {
@@ -77,11 +77,11 @@ public:
     /// the listings held, in the order they were registered
     [[nodiscard]] const std::vector<DeviceListing>& listings() const noexcept { return _listings; }
 
-    /// the number of family words held. A registration that adds a word raises it by one. An erase lowers it.
+    /// The number of family words held. A registration that adds a word raises it by one. An erase lowers it.
     [[nodiscard]] std::size_t generation() const noexcept { return _listings.size(); }
 
-    /// removes the listing that holds `family`, before the file whose code the listing points into is closed. The
-    /// recorded refusals stay.
+    /// Removes the listing that holds `family`. The recorded refusals stay. A listing must be erased before the file
+    /// that holds its function is closed.
     void erase(std::string_view family) { std::erase_if(_listings, [family](const DeviceListing& listing) { return listing.family == family; }); }
 
     /// every registration this registry refused, in the order they were offered

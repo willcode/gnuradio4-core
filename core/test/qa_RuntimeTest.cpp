@@ -16,8 +16,6 @@
  * same graph wired with gr::Graph and gr::scheduler::Simple delivers. Both must give the same
  * samples, the same tags, the same settings on the blocks afterwards, and the same scheduler outcome
  * on a graph that fails.
- *
- * This test names both paths on purpose.
  */
 
 namespace qa_runtime_test {

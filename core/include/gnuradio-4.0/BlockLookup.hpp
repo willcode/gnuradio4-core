@@ -189,7 +189,7 @@ struct LabelText {
     return meaning;
 }
 
-/// the role the stream ports of `block` read. `isNotation` states whether its labels hold `plane/notation`.
+/// The role the stream ports of `block` read. `isNotation` states whether its labels hold `plane/notation`.
 [[nodiscard]] inline std::optional<block::Label> portRoleOf(BlockModel& block, bool isNotation) {
     const auto holdsStream = [](BlockModel::DynamicPorts& ports) {
         const auto isStream = [](const DynamicPort& port) { return port::isStream(port.portMaskInfo()); };

@@ -396,7 +396,8 @@ std::expected<BlockHandle, RuntimeError> RuntimeGraph::emplace(std::string_view 
     PluginLoader& loader = loaderFor(*_impl->view);
 
     // A type the loader knows but cannot build, such as a recipe missing a required parameter, is an error
-    // with the loader's reason. Only a type nothing knows falls through to the scheduler registry.
+    // with the loader's reason. Only a type neither the loader nor its plugins can name falls through to the
+    // scheduler registry.
     std::expected<std::shared_ptr<BlockModel>, gr::Error> built = loader.instantiateOrError(type, parameters);
     if (!built.has_value()) {
         return std::unexpected(localError(std::format("block type '{}' could not be built: {}", type, built.error().message), "RuntimeGraph::emplace"));
@@ -478,7 +479,7 @@ std::expected<RuntimeGraph, RuntimeError> RuntimeGraph::interior(const BlockHand
     }
 
     // graph() is non-null exactly on the graph-like wrappers. That test costs less than comparing
-    // typeName() and covers more. It also answers for a nested scheduler.
+    // typeName() and covers more. It is also non-null for a nested scheduler.
     Graph* inner = modelOf(block._model)->graph();
     if (inner == nullptr) {
         return std::unexpected(localError(std::format("block '{}' is not a graph", block.uniqueName()), "RuntimeGraph::interior"));

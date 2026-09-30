@@ -390,7 +390,7 @@ inline std::size_t collectedSize(const std::string& sinkName) {
  *
  * A graph containing a transparent subgroup never reports DONE. graph::flatten puts the group block
  * itself in the execution order. Block::work returns OK for every non-NormalBlock category. The
- * scheduler therefore always sees an unfinished block, and runAndWait() would not return.
+ * scheduler therefore always finds an unfinished block, and runAndWait() would not return.
  */
 inline std::chrono::microseconds runUntilCollected(gr::Runtime& runtime, const std::string& sinkName, std::size_t nExpected) {
     constexpr auto kCap    = std::chrono::seconds(3);
@@ -634,7 +634,7 @@ const boost::ut::suite<"erased runtime"> erasedRuntimeTests = [] {
         runTyped(typedChain("add-reference", 4096U, 3.0f));
         const Collected reference = takeCollected("add-reference");
 
-        // built here, where the type is named, and kept. This is the pair a factory produces.
+        // Built here, where the type is named, and kept. This is the pair a factory produces.
         auto         scaleBlock = std::make_shared<BlockWrapper<Scale>>(property_map{{"gain", 3.0f}});
         Scale* const typedScale = static_cast<Scale*>(scaleBlock->raw());
         auto         sinkBlock  = std::make_shared<BlockWrapper<RecordingSink>>();

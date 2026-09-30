@@ -740,11 +740,12 @@ A block library adds its listings to `gr::globalDeviceListingRegistry()` from a
 static initializer. A plugin adds them to its own instance through
 `static_cast<gr::DeviceListingRegistry&>(grPluginInstance())`.
 
-`PluginLoader::listDevices()` asks every family whose listing opens no unit.
-`listDevices(gr::Opening::Allowed)` asks every family. `grinfo devices` prints
-the result, each selector whole. Core passes the family word and the selector on
-as strings and reads neither. The first registration of a family word holds it.
-A later registration of the same word is refused and reported.
+`PluginLoader::listDevices()` calls the list function of every family whose
+listing opens no unit. `listDevices(gr::Opening::Allowed)` calls the list
+function of every family. `grinfo devices` prints the result, each selector
+whole. Core passes the family word and the selector on as strings and reads
+neither. The first registration of a family word holds it. A later registration
+of the same word is refused and reported.
 
 ## Dos and don'ts
 

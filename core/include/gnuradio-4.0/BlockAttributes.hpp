@@ -60,7 +60,8 @@ inline constexpr std::array<std::string_view, 8UZ> kLabelClassNames{"family", "r
     return std::nullopt;
 }
 
-/// whether a block carries at most one word of `cls`. `family`, `role` and `compute` take one word, the others many.
+/// Returns whether a block carries at most one word of `cls`. `family`, `role` and `compute` take one word, the others
+/// many.
 [[nodiscard]] constexpr bool takesOneWord(LabelClass cls) noexcept { return cls == LabelClass::Family || cls == LabelClass::Role || cls == LabelClass::Compute; }
 
 /// whether `word` is a lower-case letter followed by lower-case letters and digits, the grammar of every word
@@ -355,7 +356,7 @@ public:
         return it != _entries.cend() && it->cls == cls && it->word == word ? std::addressof(*it) : nullptr;
     }
 
-    /// whether the word is physical. It is true for a word the vocabulary lacks, whose medium is unknown.
+    /// Returns whether the word is physical. It is true for a word the vocabulary lacks, whose medium is unknown.
     [[nodiscard]] bool physical(LabelClass cls, std::string_view word) const noexcept {
         const VocabularyEntry* entry = find(cls, word);
         return entry == nullptr || entry->physical;
@@ -515,7 +516,7 @@ namespace detail {
     return map;
 }
 
-/// the map form of attributes read from another map. `attributesFromMap()` reads it back unchanged.
+/// The map form of attributes read from another map. `attributesFromMap()` reads it back unchanged.
 [[nodiscard]] inline property_map attributesToMap(const AttributesRead& attributes) {
     property_map map;
     map.insert_or_assign(std::pmr::string(kVersionKey), pmt::Value(attributes.version));
@@ -628,7 +629,7 @@ namespace detail {
     return map;
 }
 
-/// the vocabulary `vocabularyToMap()` wrote. A key that is not a well-formed `class/word` or a value that is not a map
+/// The vocabulary `vocabularyToMap()` wrote. A key that is not a well-formed `class/word` or a value that is not a map
 /// is skipped with one line in `rejected`.
 [[nodiscard]] inline Vocabulary vocabularyFromMap(const property_map& map, std::vector<std::string>& rejected) {
     Vocabulary vocabulary;

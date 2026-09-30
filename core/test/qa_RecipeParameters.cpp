@@ -243,7 +243,7 @@ const boost::ut::suite<"RecipeParameters"> recipeParameterTests = [] {
     "a boolean parameter is substituted, and refuses to be an operand"_test = [] {
         // A toggle is a value to pass through and never to compute with. Adding two of them or scaling one has no
         // meaning a recipe should be able to write. A toggle therefore joins the strings and vectors on the
-        // substitution path. The exported name cannot be `enabled`, one of the framework's own settings and reserved.
+        // substitution path. The exported name cannot be `enabled`. That name is a framework setting and is reserved.
         // The interior setting it binds to may be `enabled`, and `settingKey` below is exactly that.
         const std::vector<ParameterDeclaration> declarations{
             {.name = "dc_block_enabled", .type = "bool", .defaultValue = gr::pmt::Value(true), .doc = ""},
@@ -653,7 +653,7 @@ blocks:
     return composite->graph()->blocks().front();
 }
 
-/// the parameterized fixture at sample_rate 48000 and deviation 2500. The loader outlives the composite,
+/// The parameterized fixture at sample_rate 48000 and deviation 2500. The loader outlives the composite,
 /// which keeps a pointer to it.
 [[nodiscard]] std::shared_ptr<gr::BlockModel> parameterizedComposite(gr::PluginLoader& loader) {
     registerRecipeTestBlock();
@@ -668,7 +668,7 @@ blocks:
 /// the fixture's discriminator gain at one parameter point, in the interior member's own type
 [[nodiscard]] float derivedGain(double sampleRate, double deviation) { return static_cast<float>(sampleRate / (2.0 * std::numbers::pi * deviation)); }
 
-/// a numeric value staged on `block` under `key`, NaN when none is staged. A missing key fails every comparison.
+/// A numeric value staged on `block` under `key`, NaN when none is staged. A missing key fails every comparison.
 [[nodiscard]] float stagedNumber(const std::shared_ptr<gr::BlockModel>& block, std::string_view key) {
     const gr::property_map staged = block->settings().stagedParameters();
     const auto             it     = staged.find(std::pmr::string(key));
@@ -748,7 +748,7 @@ blocks:
         - [first, OUTPUT, out, out]
 )yaml";
 
-/// the nesting fixture at `rate`, built through a loader that reads `root`. The loader outlives the composite.
+/// The nesting fixture at `rate`, built through a loader that reads `root`. The loader outlives the composite.
 [[nodiscard]] std::shared_ptr<gr::BlockModel> nestingComposite(gr::PluginLoader& loader, float rate) {
     registerRecipeTestBlock();
     const auto composite = gr::detail::instantiateBlockFromYamlDefinition(loader, definitionFrom(kNestingRecipe), {{"rate", rate}});
@@ -1111,8 +1111,9 @@ const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
     };
 };
 
-// A composite's exported parameters are its settings. Listing, reading and writing a block's settings all go through
-// the one settings object. That object does not reach the interior.
+// A composite's exported parameters are its settings. Listing, reading and writing them go through the one settings
+// object. None of them exposes an interior block's own settings. A value set and activated there re-derives the
+// interior settings bound to it.
 const boost::ut::suite<"RecipeSettings"> recipeSettingsTests = [] {
     "a composite lists its exported parameters beside the framework's settings, and nothing of its interior"_test = [] {
         auto       loader    = recipeTestLoader();

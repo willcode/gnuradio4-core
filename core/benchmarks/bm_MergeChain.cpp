@@ -187,7 +187,7 @@ struct Quantize : gr::Block<Quantize> {
     }
 };
 
-/// a one-pole low-pass. Each filtered sample depends on the one before it.
+/// A one-pole low-pass. Each filtered sample depends on the one before it.
 struct OnePole : gr::Block<OnePole> {
     gr::PortIn<float>  in;
     gr::PortOut<float> out;
@@ -227,7 +227,7 @@ struct MergeChain<TFirst, TSecond, TRest...> {
 template<typename... TStages>
 using MergeChainT = typename MergeChain<TStages...>::type;
 
-// A member that carries state can be merged. It puts the merged block on the scalar path.
+// OnePole carries state and still merges. It has no vector path. The merged block therefore takes the scalar path.
 static_assert(gr::traits::block::can_processOne_simd<MergeChainT<Scale, Offset, Clip, Quantize>>);
 static_assert(!gr::traits::block::can_processOne_simd<gr::Merge<OnePole, "out", Scale, "in">>);
 
@@ -329,7 +329,7 @@ template<std::size_t NStages>
 
 void pinToFirstCore() {
 #ifdef __linux__
-    // Two cores of this machine differ from each other by more than the arms differ.
+    // Pins the run to core 0. Two cores can differ by more than the arms differ.
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(0, &set);
