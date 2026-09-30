@@ -48,7 +48,7 @@ if(GR_ENABLE_BLOCK_REGISTRY)
   if(TARGET gnuradio-plugin)
     target_link_libraries(grinfo PRIVATE gnuradio-plugin)
   endif()
-  # what this installation is; the project version is not in config.hpp, so the build hands it over too
+  # grinfo reports the installation's version and prefix. config.hpp does not hold the project version.
   target_compile_definitions(grinfo PRIVATE GR_TOOLS_CORE_VERSION="${PROJECT_VERSION}"
                                             GR_TOOLS_INSTALLED_PREFIX="${CMAKE_INSTALL_PREFIX}")
   set_target_properties(grinfo PROPERTIES INSTALL_RPATH "${GR_TOOLS_INSTALL_RPATH}")
