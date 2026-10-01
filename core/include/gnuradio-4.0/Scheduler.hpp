@@ -1218,23 +1218,45 @@ protected:
         } while (isCurrent() && _nRunningJobs->value() > 0UZ);
     }
 
-    // The report is a notification, not an error: a parent scheduler turns an error from a child into an exception
-    // when nothing reads its msgOut. The watchdog thread publishes while the workers do. It uses a writer of its own on
-    // the multi-producer ring of msgOut.
-    void emitStallReport(std::size_t nPeriods, std::size_t periodMs) {
-        auto    writer = this->msgOut.buffer().streamBuffer.new_writer();
-        Message message;
-        message.cmd              = message::Command::Notify;
-        message.serviceName      = this->unique_name;
-        message.endpoint         = "watchdog";
-        message.data             = property_map{{"stalled_periods", static_cast<gr::Size_t>(nPeriods)}, {"period_ms", static_cast<gr::Size_t>(periodMs)}};
-        WriterSpanLike auto span = writer.template tryReserve<SpanReleasePolicy::ProcessAll>(1UZ);
+    // publishes one message on msgOut through a writer of its own. The ring of msgOut takes several producers, but
+    // one writer serves one thread at a time. A worker forwards the children's messages through the port's writer,
+    // and a second thread that reserves on that writer at the same time loses a message
+    void publishOnOwnWriter(Message message) {
+        auto                writer = this->msgOut.buffer().streamBuffer.new_writer();
+        WriterSpanLike auto span   = writer.template tryReserve<SpanReleasePolicy::ProcessAll>(1UZ);
         if (span.empty()) {
             message::droppedMessageCount().fetch_add(1UZ, std::memory_order_relaxed);
             return;
         }
         span[0] = std::move(message);
         span.publish(1UZ);
+    }
+
+    // The report is a notification, not an error: a parent scheduler turns an error from a child into an exception
+    // when nothing reads its msgOut. The watchdog thread publishes while the workers do.
+    void emitStallReport(std::size_t nPeriods, std::size_t periodMs) {
+        Message message;
+        message.cmd         = message::Command::Notify;
+        message.serviceName = this->unique_name;
+        message.endpoint    = "watchdog";
+        message.data        = property_map{{"stalled_periods", static_cast<gr::Size_t>(nPeriods)}, {"period_ms", static_cast<gr::Size_t>(periodMs)}};
+        publishOnOwnWriter(std::move(message));
+    }
+
+    // adoptBlock() runs on its caller's thread while the workers run, and its errors use a writer of their own
+    void emitAdoptionError(std::string_view endpoint, Error error) {
+        Message message;
+        message.cmd         = message::Command::Notify;
+        message.serviceName = this->unique_name;
+        message.endpoint    = endpoint;
+        message.data        = std::unexpected(std::move(error));
+        publishOnOwnWriter(std::move(message));
+    }
+
+    void emitAdoptionErrorIfAny(std::string_view endpoint, std::expected<void, Error> result) {
+        if (!result.has_value()) {
+            emitAdoptionError(endpoint, std::move(result.error()));
+        }
     }
 
     // a worker parked in waitUntilChanged(progress) resumes when progress moves or its timeout expires,
@@ -1366,20 +1388,20 @@ protected:
         using enum lifecycle::State;
         auto* schedulerModel = dynamic_cast<SchedulerModel*>(newBlock.get());
         if (schedulerModel == nullptr) {
-            this->emitErrorMessage("adoptBlock", std::format("ScheduledBlockGroup is not a SchedulerModel {}", newBlock->uniqueName()));
+            emitAdoptionError("adoptBlock", Error(std::format("ScheduledBlockGroup is not a SchedulerModel {}", newBlock->uniqueName())));
             return;
         }
         if (newBlock->state() == STOPPED) {
-            this->emitErrorMessageIfAny("adoptBlock -> INITIALISED", newBlock->changeStateTo(INITIALISED));
+            emitAdoptionErrorIfAny("adoptBlock -> INITIALISED", newBlock->changeStateTo(INITIALISED));
         }
         if (auto started = schedulerModel->startAdopted(); !started.has_value()) {
-            this->emitErrorMessageIfAny("adoptBlock", started);
+            emitAdoptionErrorIfAny("adoptBlock", started);
             return;
         }
 
         switch (awaitSubSchedulerStart(*newBlock, *schedulerModel)) {
-        case SubSchedulerStart::failed: this->emitErrorMessage("adoptBlock", std::format("adopted sub-scheduler '{}' could not start: {}", newBlock->uniqueName(), subSchedulerStartFailure(*schedulerModel))); break;
-        case SubSchedulerStart::noWorkerInTime: this->emitErrorMessage("adoptBlock", std::format("no worker of adopted sub-scheduler '{}' began executing", newBlock->uniqueName())); break;
+        case SubSchedulerStart::failed: emitAdoptionError("adoptBlock", Error(std::format("adopted sub-scheduler '{}' could not start: {}", newBlock->uniqueName(), subSchedulerStartFailure(*schedulerModel)))); break;
+        case SubSchedulerStart::noWorkerInTime: emitAdoptionError("adoptBlock", Error(std::format("no worker of adopted sub-scheduler '{}' began executing", newBlock->uniqueName()))); break;
         case SubSchedulerStart::workerRunning:
         case SubSchedulerStart::stopped: break;
         }
@@ -1388,7 +1410,7 @@ protected:
     void adoptBlock(const std::shared_ptr<BlockModel>& newBlock) {
         using enum lifecycle::State;
         if (const auto connectResult = _toChildMessagePort.connect(*newBlock->msgIn); !connectResult.has_value()) {
-            this->emitErrorMessage("connectBlockMessagePorts()", std::format("Failed to connect scheduler input message port to child '{}'", newBlock->uniqueName()));
+            emitAdoptionError("connectBlockMessagePorts()", Error(std::format("Failed to connect scheduler input message port to child '{}'", newBlock->uniqueName())));
         }
         auto toSchedulerBuffer = _fromChildMessagePort.buffer();
         newBlock->msgOut->setBuffer(toSchedulerBuffer.streamBuffer, toSchedulerBuffer.tagBuffer);
@@ -1414,13 +1436,13 @@ protected:
         switch (newBlock->state()) {
         case STOPPED:
         case IDLE: //
-            this->emitErrorMessageIfAny("adoptBlock -> INITIALIZED", newBlock->changeStateTo(INITIALISED));
-            this->emitErrorMessageIfAny("adoptBlock -> INITIALIZED", newBlock->changeStateTo(RUNNING));
+            emitAdoptionErrorIfAny("adoptBlock -> INITIALIZED", newBlock->changeStateTo(INITIALISED));
+            emitAdoptionErrorIfAny("adoptBlock -> INITIALIZED", newBlock->changeStateTo(RUNNING));
             break;
         case INITIALISED: //
-            this->emitErrorMessageIfAny("adoptBlock -> INITIALIZED", newBlock->changeStateTo(RUNNING));
+            emitAdoptionErrorIfAny("adoptBlock -> INITIALIZED", newBlock->changeStateTo(RUNNING));
             break;
-        default: this->emitErrorMessage("propertyCallbackEmplaceBlock", std::format("Unexpected block state during emplacement: {}", gr::meta::enumName(newBlock->state()).value_or("")));
+        default: emitAdoptionError("propertyCallbackEmplaceBlock", Error(std::format("Unexpected block state during emplacement: {}", gr::meta::enumName(newBlock->state()).value_or(""))));
         }
     }
 

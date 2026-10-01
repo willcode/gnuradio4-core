@@ -1522,6 +1522,46 @@ const boost::ut::suite<"adopting a sub-scheduler"> subSchedulerAdoptionTests = [
         runner.join();
     };
 
+    // A worker that forwards the children's messages reserves on the writer of msgOut. The test holds such a
+    // reservation while adoptBlock() reports the full pool, and the report must still arrive.
+    "an adoption error arrives while the writer of msgOut holds a reservation"_test = [] {
+        qa_sched::gSubSchedulerSamples.store(0UZ, std::memory_order_relaxed);
+        auto pool = qa_sched::fixedPool(qa_sched::kAdoptionPoolName, 2U);
+
+        auto                                  inner      = qa_sched::makeSubScheduler<qa_sched::TestScheduler>(qa_sched::kAdoptionPoolName);
+        const std::shared_ptr<gr::BlockModel> innerBlock = gr::SchedulerModel::asBlockModelPtr(inner);
+
+        qa_sched::AdoptingScheduler outer({{"poolName", std::string(qa_sched::kAdoptionPoolName)}});
+        expect(outer.exchange(qa_sched::makeEndlessGraph()).has_value());
+
+        gr::MsgPortIn fromOuter;
+        expect(outer.msgOut.connect(fromOuter).has_value());
+
+        std::thread runner([&outer] { std::ignore = outer.runAndWait(); });
+        expect(qa_sched::awaitState(outer, RUNNING)) << "the adopting scheduler did not reach RUNNING";
+        expect(qa_sched::awaitCondition([&outer] { return outer.nWorkersStarted() >= 2UZ; })) << "the adopting scheduler did not fill the pool";
+
+        {
+            auto held = outer.msgOut.streamWriter().tryReserve<gr::SpanReleasePolicy::ProcessAll>(1UZ);
+            expect(fatal(eq(held.size(), 1UZ))) << "the test could not reserve on the writer of msgOut";
+            outer.adoptBlock(innerBlock);
+            gr::Message heldMessage;
+            heldMessage.cmd      = gr::message::Command::Notify;
+            heldMessage.endpoint = "held";
+            heldMessage.data     = gr::property_map{};
+            held[0]              = std::move(heldMessage);
+            held.publish(1UZ);
+        }
+
+        const std::string reported = qa_sched::awaitErrorMessage(fromOuter, "adoptBlock");
+        expect(!reported.empty()) << "the adoption error was lost to the held reservation";
+        expect(reported.find(std::string(qa_sched::kAdoptionPoolName)) != std::string::npos) << std::format("the error must name the pool: '{}'", reported);
+
+        inner->stop();
+        outer.requestStop();
+        runner.join();
+    };
+
     "adoption into a pool with a free thread runs the adopted graph"_test = [] {
         qa_sched::gSubSchedulerSamples.store(0UZ, std::memory_order_relaxed);
         auto pool = qa_sched::fixedPool(qa_sched::kAdoptionPoolName, 3U);
