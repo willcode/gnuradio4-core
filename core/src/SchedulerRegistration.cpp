@@ -23,12 +23,15 @@ std::size_t registerBuiltinSchedulers(SchedulerRegistry& registry) {
     nRegistered += insertScheduler<scheduler::Simple<singleThreaded>>(registry, "=gr::scheduler::Simple<singleThreaded>");
     nRegistered += insertScheduler<scheduler::Simple<multiThreaded>>(registry, "=gr::scheduler::Simple<multiThreaded>");
     nRegistered += insertScheduler<scheduler::Simple<singleThreadedBlocking>>(registry, "=gr::scheduler::Simple<singleThreadedBlocking>");
+    nRegistered += insertScheduler<scheduler::Simple<multiThreadedBlocking>>(registry, "=gr::scheduler::Simple<multiThreadedBlocking>");
 
     // BreadthFirst and DepthFirst static_assert against singleThreadedBlocking
     nRegistered += insertScheduler<scheduler::BreadthFirst<singleThreaded>>(registry, "=gr::scheduler::BreadthFirst<singleThreaded>");
     nRegistered += insertScheduler<scheduler::BreadthFirst<multiThreaded>>(registry, "=gr::scheduler::BreadthFirst<multiThreaded>");
+    nRegistered += insertScheduler<scheduler::BreadthFirst<multiThreadedBlocking>>(registry, "=gr::scheduler::BreadthFirst<multiThreadedBlocking>");
     nRegistered += insertScheduler<scheduler::DepthFirst<singleThreaded>>(registry, "=gr::scheduler::DepthFirst<singleThreaded>");
     nRegistered += insertScheduler<scheduler::DepthFirst<multiThreaded>>(registry, "=gr::scheduler::DepthFirst<multiThreaded>");
+    nRegistered += insertScheduler<scheduler::DepthFirst<multiThreadedBlocking>>(registry, "=gr::scheduler::DepthFirst<multiThreadedBlocking>");
 
     return nRegistered;
 }

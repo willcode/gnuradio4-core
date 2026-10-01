@@ -13,7 +13,7 @@ class SchedulerRegistry;
  * @brief Inserts the shipped scheduler templates into a registry, so that they can be created by name.
  *
  * The keys are `gr::scheduler::<Simple|BreadthFirst|DepthFirst><<policy>>`, plus each type's own
- * `meta::type_name`. BreadthFirst and DepthFirst support `singleThreaded` and `multiThreaded` only.
+ * `meta::type_name`. BreadthFirst and DepthFirst support every policy except `singleThreadedBlocking`.
  *
  * Callers reach the same schedulers through `PluginLoader::instantiateScheduler`,
  * `Graph::emplaceBlock(type, settings)` and `loadGrc`'s nested-scheduler blocks.
