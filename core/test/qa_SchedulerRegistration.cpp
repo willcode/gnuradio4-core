@@ -14,13 +14,16 @@ namespace {
 
 // BreadthFirst and DepthFirst static_assert against singleThreadedBlocking, so it is Simple only there
 constexpr std::array kExpectedKeys = {
-    "gr::scheduler::Simple<singleThreaded>",         //
-    "gr::scheduler::Simple<multiThreaded>",          //
-    "gr::scheduler::Simple<singleThreadedBlocking>", //
-    "gr::scheduler::BreadthFirst<singleThreaded>",   //
-    "gr::scheduler::BreadthFirst<multiThreaded>",    //
-    "gr::scheduler::DepthFirst<singleThreaded>",     //
-    "gr::scheduler::DepthFirst<multiThreaded>",      //
+    "gr::scheduler::Simple<singleThreaded>",              //
+    "gr::scheduler::Simple<multiThreaded>",               //
+    "gr::scheduler::Simple<singleThreadedBlocking>",      //
+    "gr::scheduler::Simple<multiThreadedBlocking>",       //
+    "gr::scheduler::BreadthFirst<singleThreaded>",        //
+    "gr::scheduler::BreadthFirst<multiThreaded>",         //
+    "gr::scheduler::BreadthFirst<multiThreadedBlocking>", //
+    "gr::scheduler::DepthFirst<singleThreaded>",          //
+    "gr::scheduler::DepthFirst<multiThreaded>",           //
+    "gr::scheduler::DepthFirst<multiThreadedBlocking>",   //
 };
 
 } // namespace
