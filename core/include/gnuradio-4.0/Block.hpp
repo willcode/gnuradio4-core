@@ -2451,10 +2451,6 @@ public:
 
         constexpr bool kIsSourceBlock = TInputTypes::size.value == 0;
         std::size_t    performedWork  = work::computePerformedWork(userReturnStatus, accountedIn, accountedOut, kIsSourceBlock);
-        if (performedWork > 0UZ) {
-            progress->incrementAndGet();
-            progress->notify_all();
-        }
         return {requestedWork, performedWork, userReturnStatus};
     }
 
@@ -2481,6 +2477,13 @@ public:
                 // rather than inside workInternal() because the input spans of the finished call are still alive
                 // there and hold the very readers this releases.
                 disconnectFromUpStreamParents();
+            }
+            // The spans of workInternal() publish and consume when they are destroyed. A DONE call releases its
+            // upstream readers above. The progress sequence advances after both, and a thread woken by the notify
+            // finds the samples in the buffers and the readers released.
+            if (result.performed_work > 0UZ) {
+                progress->incrementAndGet();
+                progress->notify_all();
             }
             return result;
         }
