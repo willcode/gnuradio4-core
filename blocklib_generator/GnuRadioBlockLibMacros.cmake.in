@@ -5,11 +5,20 @@
 set(GR_BLOCKLIB_GENERATED_FORMAT 2)
 
 # balanced chunking of the generated registration TUs, which only declare and register the factories
-# the definition TUs define: bounds how many entries share one TU. Definition TUs are always one per
-# registered (block, type). 0 emits one registration TU per GR_REGISTER_BLOCK line.
+# the definition TUs define: bounds how many entries share one TU. 0 emits one registration TU per
+# GR_REGISTER_BLOCK line.
 set(GR_BLOCKLIB_MAX_REGISTRATIONS_PER_TU
     "16"
     CACHE STRING "Maximum registry entries per generated registration translation unit (0 = one TU per macro line)")
+
+# balanced chunking of the generated definition TUs, which instantiate the registered blocks: bounds
+# how many (block, type) definitions of one header share one TU. Each definition TU parses the block
+# header and compiles the framework code its types share once, so fewer, larger TUs take less total
+# compile time and more memory each. 1 gives every (block, type) its own TU; 0 emits one TU per header.
+set(GR_BLOCKLIB_DEFINITIONS_PER_TU
+    "1"
+    CACHE STRING
+    "Maximum (block, type) definitions per generated definition translation unit (0 = one TU per header); fewer, larger units take less total compile time and more memory each")
 
 # precompile the registry + block headers for the generated registration TUs (build-tree only,
 # invisible to consumers). Roughly -20% per TU with GCC, -65% with Clang (-fpch-instantiate-templates).
@@ -106,8 +115,9 @@ function(gr_detail_merge_files_into MERGE_OUTPUT_FILE MERGE_INPUT_FILES)
 endfunction()
 
 # The files generated for one header: each unit whose source names the header's path in a "for details:" comment, the
-# two fragments of each such registration unit, and the placeholder written for a header without registrations. The
-# file name alone does not identify the header: the units of Foo.hpp and of Foo_bar.hpp both begin with "Foo_".
+# two fragments of each such registration unit, and the placeholder written for a header without registrations. A
+# definition unit that holds several (block, type) definitions names each of their lines after the path. The file name
+# alone does not identify the header: the units of Foo.hpp and of Foo_bar.hpp both begin with "Foo_".
 function(gr_detail_generated_files_of OUT_VAR GEN_DIR BASENAME ABS_HDR)
   set(OWNED_FILES "")
   file(GLOB CANDIDATES "${GEN_DIR}/${BASENAME}_*.cpp")
@@ -117,7 +127,7 @@ function(gr_detail_generated_files_of OUT_VAR GEN_DIR BASENAME ABS_HDR)
       continue()
     endif()
     list(GET DETAILS_LINES 0 DETAILS_LINE)
-    string(REGEX REPLACE "^.*for details: (.*):[0-9]+$" "\\1" DETAILS_HEADER "${DETAILS_LINE}")
+    string(REGEX REPLACE "^.*for details: (.*):[0-9]+(, [0-9]+)*$" "\\1" DETAILS_HEADER "${DETAILS_LINE}")
     if(NOT DETAILS_HEADER STREQUAL ABS_HDR)
       continue()
     endif()
@@ -162,7 +172,7 @@ function(gr_generate_block_instantiations LIB_NAME)
     endif()
 
     set(options "SPLIT_BLOCK_INSTANTIATIONS")
-    set(oneValueArgs REGISTRY_HEADER REGISTRY_INSTANCE MODULE_NAME_BASE MAX_REGISTRATIONS_PER_TU)
+    set(oneValueArgs REGISTRY_HEADER REGISTRY_INSTANCE MODULE_NAME_BASE MAX_REGISTRATIONS_PER_TU DEFINITIONS_PER_TU)
     set(multiValueArgs HEADERS SOURCES)
     cmake_parse_arguments(CBL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -206,6 +216,17 @@ function(gr_generate_block_instantiations LIB_NAME)
         set(PARSER_MAX_PER_TU_PY_ARG "")
     endif()
 
+    if(DEFINED CBL_DEFINITIONS_PER_TU AND NOT CBL_DEFINITIONS_PER_TU STREQUAL "")
+        set(EFFECTIVE_DEFINITIONS_PER_TU ${CBL_DEFINITIONS_PER_TU})
+    else()
+        set(EFFECTIVE_DEFINITIONS_PER_TU ${GR_BLOCKLIB_DEFINITIONS_PER_TU})
+    endif()
+    if(NOT EFFECTIVE_DEFINITIONS_PER_TU MATCHES "^[0-9]+$")
+        message(FATAL_ERROR "${LIB_NAME}: DEFINITIONS_PER_TU takes 0 or a positive count, not '${EFFECTIVE_DEFINITIONS_PER_TU}'")
+    endif()
+    set(PARSER_DEFINITIONS_PER_TU_ARG "-DDEFINITIONS_PER_TU=${EFFECTIVE_DEFINITIONS_PER_TU}")
+    set(PARSER_DEFINITIONS_PER_TU_PY_ARG "--definitions-per-tu" "${EFFECTIVE_DEFINITIONS_PER_TU}")
+
     if(CBL_REGISTRY_HEADER)
         set(PARSER_REGISTRY_HEADER_ARG "-DREGISTRY_HEADER=${CBL_REGISTRY_HEADER}")
         set(PARSER_REGISTRY_HEADER_PY_ARG "--registry-header" "${CBL_REGISTRY_HEADER}")
@@ -239,7 +260,7 @@ function(gr_generate_block_instantiations LIB_NAME)
         file(TIMESTAMP "${GR_BLOCKLIB_CMAKE_GENERATOR}" GENERATOR_MODIFIED "%s")
     endif()
     set(GEN_OPTIONS_SIG
-        "${GR_BLOCKLIB_GENERATED_FORMAT}|${PARSER_SPLIT}|${EFFECTIVE_MAX_PER_TU}|${CBL_REGISTRY_HEADER}|${CBL_REGISTRY_INSTANCE}|${GR_BLOCKLIB_GENERATOR_USED}|${GENERATOR_MODIFIED}"
+        "${GR_BLOCKLIB_GENERATED_FORMAT}|${PARSER_SPLIT}|${EFFECTIVE_MAX_PER_TU}|${EFFECTIVE_DEFINITIONS_PER_TU}|${CBL_REGISTRY_HEADER}|${CBL_REGISTRY_INSTANCE}|${GR_BLOCKLIB_GENERATOR_USED}|${GENERATOR_MODIFIED}"
     )
 
     foreach(HDR IN LISTS CBL_HEADERS)
@@ -265,7 +286,7 @@ function(gr_generate_block_instantiations LIB_NAME)
                 file(REMOVE ${EXISTING_FILES})
             endif()
 
-            message(STATUS "[BlockLibMacros] Generating code for header: ${ABS_HDR} -> ${GEN_DIR} with SPLIT=${PARSER_SPLIT}, other options [ ${PARSER_MAX_PER_TU_ARG} ${PARSER_REGISTRY_HEADER_ARG} ${PARSER_REGISTRY_INSTANCE_ARG} ]")
+            message(STATUS "[BlockLibMacros] Generating code for header: ${ABS_HDR} -> ${GEN_DIR} with SPLIT=${PARSER_SPLIT}, other options [ ${PARSER_MAX_PER_TU_ARG} ${PARSER_DEFINITIONS_PER_TU_ARG} ${PARSER_REGISTRY_HEADER_ARG} ${PARSER_REGISTRY_INSTANCE_ARG} ]")
 
             # the two generators take the same options under their own spellings
             if(GR_BLOCKLIB_GENERATOR_USED STREQUAL "PYTHON")
@@ -274,6 +295,7 @@ function(gr_generate_block_instantiations LIB_NAME)
                     "--header" "${ABS_HDR}" "--out-dir" "${GEN_DIR}"
                     ${PARSER_SPLIT_PY_ARG}
                     ${PARSER_MAX_PER_TU_PY_ARG}
+                    ${PARSER_DEFINITIONS_PER_TU_PY_ARG}
                     ${PARSER_REGISTRY_HEADER_PY_ARG}
                     ${PARSER_REGISTRY_INSTANCE_PY_ARG})
             else()
@@ -282,6 +304,7 @@ function(gr_generate_block_instantiations LIB_NAME)
                     "-DHEADER=${ABS_HDR}" "-DOUT_DIR=${GEN_DIR}"
                     ${PARSER_SPLIT_ARG}
                     ${PARSER_MAX_PER_TU_ARG}
+                    ${PARSER_DEFINITIONS_PER_TU_ARG}
                     ${PARSER_REGISTRY_HEADER_ARG}
                     ${PARSER_REGISTRY_INSTANCE_ARG}
                     -P "${GR_BLOCKLIB_CMAKE_GENERATOR}")
@@ -393,7 +416,7 @@ function(gr_add_block_library LIB_NAME)
     endif()
 
     set(options "SPLIT_BLOCK_INSTANTIATIONS" "MAKE_SHARED_LIBRARY" "MAKE_STATIC_LIBRARY")
-    set(oneValueArgs REGISTRY_HEADER REGISTRY_INSTANCE MAX_REGISTRATIONS_PER_TU)
+    set(oneValueArgs REGISTRY_HEADER REGISTRY_INSTANCE MAX_REGISTRATIONS_PER_TU DEFINITIONS_PER_TU)
     set(multiValueArgs HEADERS SOURCES LINK_LIBRARIES UNREGISTERED_HEADERS)
     cmake_parse_arguments(CBL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -452,6 +475,12 @@ function(gr_add_block_library LIB_NAME)
       set(MAX_REGISTRATIONS_PER_TU_ARG "")
     endif()
 
+    if(DEFINED CBL_DEFINITIONS_PER_TU AND NOT CBL_DEFINITIONS_PER_TU STREQUAL "")
+      set(DEFINITIONS_PER_TU_ARG DEFINITIONS_PER_TU ${CBL_DEFINITIONS_PER_TU})
+    else()
+      set(DEFINITIONS_PER_TU_ARG "")
+    endif()
+
     # a library, unlike a plugin, has no registry of its own to fall back on, so the two options are
     # forwarded only when the caller names them and the generator keeps its own defaults otherwise
     if(CBL_REGISTRY_HEADER)
@@ -474,6 +503,7 @@ function(gr_add_block_library LIB_NAME)
         MODULE_NAME_BASE ${LIB_NAME}
         ${SPLIT_BLOCK_INSTANTIATIONS_ARG}
         ${MAX_REGISTRATIONS_PER_TU_ARG}
+        ${DEFINITIONS_PER_TU_ARG}
         ${REGISTRY_HEADER_ARG}
         ${REGISTRY_INSTANCE_ARG})
 
@@ -554,7 +584,7 @@ function(gr_add_block_plugin LIB_NAME)
     endif()
 
     set(options "SPLIT_BLOCK_INSTANTIATIONS" "NO_INSTALL")
-    set(oneValueArgs MAX_REGISTRATIONS_PER_TU REGISTRY_HEADER REGISTRY_INSTANCE)
+    set(oneValueArgs MAX_REGISTRATIONS_PER_TU DEFINITIONS_PER_TU REGISTRY_HEADER REGISTRY_INSTANCE)
     set(multiValueArgs HEADERS SOURCES LINK_LIBRARIES)
     cmake_parse_arguments(CBL "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -568,6 +598,12 @@ function(gr_add_block_plugin LIB_NAME)
       set(MAX_REGISTRATIONS_PER_TU_ARG MAX_REGISTRATIONS_PER_TU ${CBL_MAX_REGISTRATIONS_PER_TU})
     else()
       set(MAX_REGISTRATIONS_PER_TU_ARG "")
+    endif()
+
+    if(DEFINED CBL_DEFINITIONS_PER_TU AND NOT CBL_DEFINITIONS_PER_TU STREQUAL "")
+      set(DEFINITIONS_PER_TU_ARG DEFINITIONS_PER_TU ${CBL_DEFINITIONS_PER_TU})
+    else()
+      set(DEFINITIONS_PER_TU_ARG "")
     endif()
 
     # the registry the plugin's blocks go into: the one GR_PLUGIN defines, unless the plugin declares
@@ -591,6 +627,7 @@ function(gr_add_block_plugin LIB_NAME)
         MODULE_NAME_BASE ${LIB_NAME}
         ${SPLIT_BLOCK_INSTANTIATIONS_ARG}
         ${MAX_REGISTRATIONS_PER_TU_ARG}
+        ${DEFINITIONS_PER_TU_ARG}
         REGISTRY_HEADER
         ${CBL_REGISTRY_HEADER}
         REGISTRY_INSTANCE

@@ -3,6 +3,10 @@
 # header line naming it, so one configuration is one recorded file to read and to review. The path of the generator that
 # wrote a file appears on its first line and is replaced by a fixed token, so the two generators' streams compare equal.
 #
+# Each mode runs at three groupings of the definition units: one (block, type) per unit, at most three per unit, and one
+# unit per header. Grouping 1 is recorded as <mode>.expected and the others as <mode>_definitions_<n>.expected. The
+# registration units and the module files are the same at every grouping, which the script checks against grouping 1.
+#
 # cmake -DSCRIPT=<cmake generator> -DFIXTURE=<header> -DEXPECTED_DIR=<dir> -DWORK_DIR=<dir> -DMODE=<chunked|split>
 # [-DPYTHON=<interpreter>] [-DPYTHON_GENERATOR=<script>] [-DEXTRA_HEADERS=<header>;<header>] -P RunGeneratorTest.cmake
 
@@ -35,15 +39,17 @@ function(
   TAG
   HEADER
   OUT_FILE)
-  set(_generated "${WORK_DIR}/${MODE}/${TAG}/${KIND}/FixtureBlockLib")
-  file(REMOVE_RECURSE "${WORK_DIR}/${MODE}/${TAG}/${KIND}")
+  set(_generated "${WORK_DIR}/${MODE}/d${DEFINITIONS}/${TAG}/${KIND}/FixtureBlockLib")
+  file(REMOVE_RECURSE "${WORK_DIR}/${MODE}/d${DEFINITIONS}/${TAG}/${KIND}")
   file(MAKE_DIRECTORY "${_generated}")
 
   if(KIND STREQUAL "python")
-    set(_command ${PYTHON} "${PYTHON_GENERATOR}" --header "${HEADER}" --out-dir "${_generated}" ${_python_options})
+    set(_command ${PYTHON} "${PYTHON_GENERATOR}" --header "${HEADER}" --out-dir "${_generated}" ${_python_options}
+                 --definitions-per-tu ${DEFINITIONS})
     set(_generator "${PYTHON_GENERATOR}")
   else()
-    set(_command ${CMAKE_COMMAND} "-DHEADER=${HEADER}" "-DOUT_DIR=${_generated}" ${_cmake_options} -P "${SCRIPT}")
+    set(_command ${CMAKE_COMMAND} "-DHEADER=${HEADER}" "-DOUT_DIR=${_generated}" ${_cmake_options}
+                 "-DDEFINITIONS_PER_TU=${DEFINITIONS}" -P "${SCRIPT}")
     set(_generator "${SCRIPT}")
   endif()
 
@@ -69,7 +75,9 @@ function(
     message(FATAL_ERROR "the ${KIND} generator wrote nothing for ${HEADER}")
   endif()
 
+  get_filename_component(_stem "${HEADER}" NAME_WE)
   set(_stream "")
+  set(_registration_stream "")
   foreach(_name IN LISTS _produced)
     file(READ "${_generated}/${_name}" _text)
     string(
@@ -82,15 +90,23 @@ function(
               "FIXTURE"
               _text
               "${_text}")
-    string(APPEND _stream "==== ${_name} ====\n${_text}")
+    set(_entry "==== ${_name} ====\n${_text}")
     if(NOT
        _text
        MATCHES
        "\n$")
-      string(APPEND _stream "\n")
+      string(APPEND _entry "\n")
+    endif()
+    string(APPEND _stream "${_entry}")
+    if(NOT
+       _name
+       MATCHES
+       "^${_stem}_block_[0-9]+\\.cpp$")
+      string(APPEND _registration_stream "${_entry}")
     endif()
   endforeach()
   file(WRITE "${OUT_FILE}" "${_stream}")
+  file(WRITE "${OUT_FILE}.registration" "${_registration_stream}")
   set(GR_GENERATED_COUNT
       "${_count}"
       PARENT_SCOPE)
@@ -110,50 +126,64 @@ function(
   endif()
 endfunction()
 
-set(_cmake_stream "${WORK_DIR}/${MODE}/fixture-cmake.stream")
-gr_generate_stream(
-  cmake
-  fixture
-  "${FIXTURE}"
-  "${_cmake_stream}")
-set(_fixture_count "${GR_GENERATED_COUNT}")
-
-set(_expected_file "${EXPECTED_DIR}/${MODE}.expected")
-if(NOT EXISTS "${_expected_file}")
-  message(FATAL_ERROR "no expectation recorded at ${_expected_file}")
-endif()
-gr_compare_files("${_expected_file}" "${_cmake_stream}" "the generated units differ from the expectation")
-
-# The two generators are meant to be interchangeable, so one recorded expectation is enough only if they are checked
-# against each other here, over the fixture and over a larger real input.
-if(PYTHON AND PYTHON_GENERATOR)
-  set(_python_stream "${WORK_DIR}/${MODE}/fixture-python.stream")
+# Generate and check the fixture, and the extra headers, at one grouping of the definition units.
+function(gr_check_definitions DEFINITIONS)
+  set(_out "${WORK_DIR}/${MODE}/d${DEFINITIONS}")
+  set(_cmake_stream "${_out}/fixture-cmake.stream")
   gr_generate_stream(
-    python
+    cmake
     fixture
     "${FIXTURE}"
-    "${_python_stream}")
-  gr_compare_files("${_cmake_stream}" "${_python_stream}" "the two generators disagree on the fixture")
+    "${_cmake_stream}")
+  set(_fixture_count "${GR_GENERATED_COUNT}")
 
-  set(_extra 0)
-  foreach(_header IN LISTS EXTRA_HEADERS)
-    math(EXPR _extra "${_extra} + 1")
-    gr_generate_stream(
-      cmake
-      "extra${_extra}"
-      "${_header}"
-      "${WORK_DIR}/${MODE}/extra${_extra}-cmake.stream")
+  if(DEFINITIONS EQUAL 1)
+    set(_expected_file "${EXPECTED_DIR}/${MODE}.expected")
+  else()
+    set(_expected_file "${EXPECTED_DIR}/${MODE}_definitions_${DEFINITIONS}.expected")
+  endif()
+  if(NOT EXISTS "${_expected_file}")
+    message(FATAL_ERROR "no expectation recorded at ${_expected_file}")
+  endif()
+  gr_compare_files("${_expected_file}" "${_cmake_stream}" "the generated units differ from the expectation")
+  gr_compare_files("${WORK_DIR}/${MODE}/d1/fixture-cmake.stream.registration" "${_cmake_stream}.registration"
+                   "the registration units depend on the grouping of the definition units")
+
+  # The two generators are meant to be interchangeable, so one recorded expectation is enough only if they are checked
+  # against each other here, over the fixture and over a larger real input.
+  if(PYTHON AND PYTHON_GENERATOR)
+    set(_python_stream "${_out}/fixture-python.stream")
     gr_generate_stream(
       python
-      "extra${_extra}"
-      "${_header}"
-      "${WORK_DIR}/${MODE}/extra${_extra}-python.stream")
-    gr_compare_files("${WORK_DIR}/${MODE}/extra${_extra}-cmake.stream"
-                     "${WORK_DIR}/${MODE}/extra${_extra}-python.stream" "the two generators disagree on ${_header}")
-  endforeach()
-  message(STATUS "${MODE}: ${_fixture_count} generated files match the expectation; "
-                 "both generators agree on the fixture and on ${_extra} further header(s)")
-else()
-  message(STATUS "${MODE}: ${_fixture_count} generated files match the expectation; "
-                 "no Python interpreter, so only the CMake generator was run")
-endif()
+      fixture
+      "${FIXTURE}"
+      "${_python_stream}")
+    gr_compare_files("${_cmake_stream}" "${_python_stream}" "the two generators disagree on the fixture")
+
+    set(_extra 0)
+    foreach(_header IN LISTS EXTRA_HEADERS)
+      math(EXPR _extra "${_extra} + 1")
+      gr_generate_stream(
+        cmake
+        "extra${_extra}"
+        "${_header}"
+        "${_out}/extra${_extra}-cmake.stream")
+      gr_generate_stream(
+        python
+        "extra${_extra}"
+        "${_header}"
+        "${_out}/extra${_extra}-python.stream")
+      gr_compare_files("${_out}/extra${_extra}-cmake.stream" "${_out}/extra${_extra}-python.stream"
+                       "the two generators disagree on ${_header}")
+    endforeach()
+    message(STATUS "${MODE}, definitions per unit ${DEFINITIONS}: ${_fixture_count} generated files match the "
+                   "expectation; both generators agree on the fixture and on ${_extra} further header(s)")
+  else()
+    message(STATUS "${MODE}, definitions per unit ${DEFINITIONS}: ${_fixture_count} generated files match the "
+                   "expectation; no Python interpreter, so only the CMake generator was run")
+  endif()
+endfunction()
+
+foreach(_definitions 1 3 0)
+  gr_check_definitions(${_definitions})
+endforeach()

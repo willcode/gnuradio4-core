@@ -2,8 +2,8 @@
 #
 # Run as a script, once per header, while a block library configures:
 #
-# cmake -DHEADER=<header.hpp> -DOUT_DIR=<generation dir> [-DSPLIT=ON] [-DMAX_PER_TU=<n>] [-DREGISTRY_HEADER=<include>]
-# [-DREGISTRY_INSTANCE=<expression>] -P GrParseRegistrations.cmake
+# cmake -DHEADER=<header.hpp> -DOUT_DIR=<generation dir> [-DSPLIT=ON] [-DMAX_PER_TU=<n>] [-DDEFINITIONS_PER_TU=<n>]
+# [-DREGISTRY_HEADER=<include>] [-DREGISTRY_INSTANCE=<expression>] -P GrParseRegistrations.cmake
 #
 # The script scans the header for lines carrying
 #
@@ -18,12 +18,13 @@
 # Each marker must be on one line; there is no multi-line support. A marker the script cannot parse ends the configure,
 # naming the header and the line.
 #
-# Each registered (block, type) produces two translation units:
+# Each registered (block, type) takes a share of two translation units:
 #
-# * a DEFINITION unit, <stem>_block_<n>.cpp, which names the block type: it defines the factory that builds a
-#   BlockWrapper<TBlock> and exports the registry key and alias the typed insert<TBlock>() path would derive. This is
-#   the only unit that parses the block header, and the only one that materializes the framework's per-type machinery.
-# * a share of a REGISTRATION unit, which declares the definition unit's exported symbol and registers it through
+# * a DEFINITION unit, <stem>_block_<n>.cpp, which names the block type: for each type it holds, it defines the factory
+#   that builds a BlockWrapper<TBlock> and exports the registry key and alias the typed insert<TBlock>() path would
+#   derive. The definition units are the only units that parse the block header, and the only ones that materialize the
+#   framework's per-type machinery.
+# * a REGISTRATION unit, which declares the definition unit's exported symbol and registers it through
 #   gr::insertBlockFactory(). A registration unit instantiates nothing; it includes gnuradio-4.0/BlockRegistration.hpp
 #   and, when one is named, the registry header.
 #
@@ -44,12 +45,17 @@
 # of the installed core reaches an out-of-tree block library through gnuradio-4.0/config.hpp -- and both return zero,
 # having entered nothing. The library's blocks remain usable by naming their type; only lookup by registry key is gone.
 #
-# The switches group the registration units; definition units are always one per (block, type).
+# Three switches group the registration units, and one groups the definition units.
 #
 # * default: each macro line => one registration .cpp file.
 # * SPLIT: cartesian expansion -> each block-type combination gets its own registration .cpp.
 # * MAX_PER_TU <N>: balanced chunking -> all registrations of the header (across macro lines) are packed into
 #   registration .cpp files of at most N entries each.
+# * DEFINITIONS_PER_TU <N>: balanced chunking of the definitions -> all (block, type) definitions of the header are
+#   packed into definition .cpp files of at most N entries each; 0 packs them into one file, and the default 1 gives
+#   each its own. Every definition unit parses the block header and compiles the framework code its types share, so
+#   fewer, larger units take less total compile time and more memory each. The symbols keep the (block, type) index, so
+#   the registration units do not depend on this switch.
 #
 # The registry options name where the registrations go:
 #
@@ -207,6 +213,49 @@ function(
       PARENT_SCOPE)
 endfunction()
 
+# Cut the indices 0 .. TOTAL-1 into consecutive chunks of at most LIMIT entries, the sizes differing by at most one; a
+# LIMIT of 0 puts every index into one chunk. Each chunk is one list entry, its indices joined by GR_PR_VALUE.
+function(
+  gr_pr_balanced_chunks
+  TOTAL
+  LIMIT
+  OUT_VAR)
+  set(_chunks "")
+  if(TOTAL GREATER 0)
+    if(LIMIT GREATER 0)
+      math(EXPR _chunk_count "(${TOTAL} + ${LIMIT} - 1) / ${LIMIT}")
+    else()
+      set(_chunk_count 1)
+    endif()
+    math(EXPR _base_size "${TOTAL} / ${_chunk_count}")
+    math(EXPR _remainder "${TOTAL} % ${_chunk_count}")
+    set(_next 0)
+    set(_chunk 0)
+    while(_chunk LESS _chunk_count)
+      set(_size ${_base_size})
+      if(_chunk LESS _remainder)
+        math(EXPR _size "${_size} + 1")
+      endif()
+      math(EXPR _end "${_next} + ${_size}")
+      set(_members "")
+      while(_next LESS _end)
+        list(APPEND _members "${_next}")
+        math(EXPR _next "${_next} + 1")
+      endwhile()
+      string(
+        REPLACE ";"
+                "${GR_PR_VALUE}"
+                _members
+                "${_members}")
+      list(APPEND _chunks "${_members}")
+      math(EXPR _chunk "${_chunk} + 1")
+    endwhile()
+  endif()
+  set(${OUT_VAR}
+      "${_chunks}"
+      PARENT_SCOPE)
+endfunction()
+
 # The two files that belong to the module rather than to a header are written by every header's run. Rewriting one only
 # when its content changed keeps the build quiet, and still lets a change to what the generator emits reach a tree an
 # older generator already wrote.
@@ -242,6 +291,16 @@ endif()
 if(NOT DEFINED SPLIT)
   set(SPLIT OFF)
 endif()
+if(NOT DEFINED DEFINITIONS_PER_TU)
+  set(DEFINITIONS_PER_TU 1)
+endif()
+if(NOT
+   DEFINITIONS_PER_TU
+   MATCHES
+   "^[0-9]+$")
+  message(
+    FATAL_ERROR "GrParseRegistrations: DEFINITIONS_PER_TU takes 0 or a positive count, not '${DEFINITIONS_PER_TU}'")
+endif()
 if(SPLIT AND MAX_PER_TU GREATER 0)
   message(FATAL_ERROR "GrParseRegistrations: SPLIT and MAX_PER_TU are mutually exclusive")
 endif()
@@ -255,7 +314,10 @@ if(SPLIT)
 else()
   set(GR_PR_SPLIT_REPORT "No")
 endif()
-message(STATUS "parsing header: '${HEADER}' -> '${OUT_DIR}'  split: ${GR_PR_SPLIT_REPORT}  max-per-tu: ${MAX_PER_TU}")
+message(
+  STATUS
+    "parsing header: '${HEADER}' -> '${OUT_DIR}'  split: ${GR_PR_SPLIT_REPORT}  max-per-tu: ${MAX_PER_TU}  definitions-per-tu: ${DEFINITIONS_PER_TU}"
+)
 
 set(GR_PR_INTEGRATOR_SOURCE "${OUT_DIR}/integrator.cpp")
 gr_pr_write_module_file(
@@ -534,59 +596,92 @@ endwhile()
 list(LENGTH GR_PR_PENDING GR_PR_TOTAL)
 set(GR_PR_FILE_COUNT 0)
 
-# the only unit that names the block type, and so the only one that materializes it
-set(GR_PR_INDEX 0)
-while(GR_PR_INDEX LESS GR_PR_TOTAL)
+# the only units that name the block types, and so the only ones that materialize them
+gr_pr_balanced_chunks(${GR_PR_TOTAL} ${DEFINITIONS_PER_TU} GR_PR_DEFINITION_UNITS)
+list(LENGTH GR_PR_DEFINITION_UNITS GR_PR_DEFINITION_UNIT_COUNT)
+set(GR_PR_UNIT 0)
+while(GR_PR_UNIT LESS GR_PR_DEFINITION_UNIT_COUNT)
   list(
     GET
-    GR_PR_PENDING
-    ${GR_PR_INDEX}
-    GR_PR_RECORD)
+    GR_PR_DEFINITION_UNITS
+    ${GR_PR_UNIT}
+    GR_PR_MEMBERS)
   string(
-    REPLACE "${GR_PR_FIELD}"
+    REPLACE "${GR_PR_VALUE}"
             ";"
-            GR_PR_RECORD
-            "${GR_PR_RECORD}")
-  list(
-    GET
-    GR_PR_RECORD
-    0
-    GR_PR_TYPE)
-  list(
-    GET
-    GR_PR_RECORD
-    1
-    GR_PR_FINAL_NAME)
-  list(
-    GET
-    GR_PR_RECORD
-    2
-    GR_PR_RECORD_LINE)
+            GR_PR_MEMBERS
+            "${GR_PR_MEMBERS}")
+  set(GR_PR_DEFINITION_FILE "${OUT_DIR}/${GR_PR_STEM}_block_${GR_PR_UNIT}.cpp")
 
-  gr_pr_factory_symbol("${GR_PR_STEM}" ${GR_PR_INDEX} GR_PR_FACTORY)
-  gr_pr_registration_symbol("${GR_PR_STEM}" ${GR_PR_INDEX} GR_PR_REGISTRATION)
-  set(GR_PR_DEFINITION_FILE "${OUT_DIR}/${GR_PR_STEM}_block_${GR_PR_INDEX}.cpp")
+  set(GR_PR_LINES "")
+  set(GR_PR_DEFINITIONS "")
+  foreach(GR_PR_MEMBER IN LISTS GR_PR_MEMBERS)
+    list(
+      GET
+      GR_PR_PENDING
+      ${GR_PR_MEMBER}
+      GR_PR_RECORD)
+    string(
+      REPLACE "${GR_PR_FIELD}"
+              ";"
+              GR_PR_RECORD
+              "${GR_PR_RECORD}")
+    list(
+      GET
+      GR_PR_RECORD
+      0
+      GR_PR_TYPE)
+    list(
+      GET
+      GR_PR_RECORD
+      1
+      GR_PR_FINAL_NAME)
+    list(
+      GET
+      GR_PR_RECORD
+      2
+      GR_PR_RECORD_LINE)
+    if(NOT
+       GR_PR_RECORD_LINE
+       IN_LIST
+       GR_PR_LINES)
+      list(APPEND GR_PR_LINES "${GR_PR_RECORD_LINE}")
+    endif()
+    gr_pr_factory_symbol("${GR_PR_STEM}" ${GR_PR_MEMBER} GR_PR_FACTORY)
+    gr_pr_registration_symbol("${GR_PR_STEM}" ${GR_PR_MEMBER} GR_PR_REGISTRATION)
+    string(
+      APPEND
+      GR_PR_DEFINITIONS
+      "std::unique_ptr<gr::BlockModel> ${GR_PR_FACTORY}(gr::property_map params) { return "
+      "std::make_unique<gr::BlockWrapper<${GR_PR_TYPE}>>(std::move(params)); }\n"
+      "\n"
+      "const gr::BlockRegistration& ${GR_PR_REGISTRATION}() {\n"
+      "    static const gr::BlockRegistration registration = "
+      "gr::makeBlockRegistration<${GR_PR_TYPE}, \"${GR_PR_FINAL_NAME}\">(&${GR_PR_FACTORY});\n"
+      "    return registration;\n"
+      "}\n"
+      "\n")
+  endforeach()
+  list(
+    JOIN
+    GR_PR_LINES
+    ", "
+    GR_PR_LINES)
+
   message(STATUS "\t=> Generating file: '${GR_PR_DEFINITION_FILE}'")
   file(
     WRITE "${GR_PR_DEFINITION_FILE}"
     "// auto-generated by ${CMAKE_CURRENT_LIST_FILE}, do not edit.
 #include <${REGISTRY_HEADER}>
-#include \"${HEADER}\" // for details: ${HEADER}:${GR_PR_RECORD_LINE}
+#include \"${HEADER}\" // for details: ${HEADER}:${GR_PR_LINES}
 
 #ifdef GR_ENABLE_BLOCK_REGISTRY
 
-std::unique_ptr<gr::BlockModel> ${GR_PR_FACTORY}(gr::property_map params) { return std::make_unique<gr::BlockWrapper<${GR_PR_TYPE}>>(std::move(params)); }
-
-const gr::BlockRegistration& ${GR_PR_REGISTRATION}() {
-    static const gr::BlockRegistration registration = gr::makeBlockRegistration<${GR_PR_TYPE}, \"${GR_PR_FINAL_NAME}\">(&${GR_PR_FACTORY});
-    return registration;
-}
-
-#endif // GR_ENABLE_BLOCK_REGISTRY
+${GR_PR_DEFINITIONS}#endif // GR_ENABLE_BLOCK_REGISTRY
 // end of auto-generated code
 ")
   math(EXPR GR_PR_FILE_COUNT "${GR_PR_FILE_COUNT} + 1")
-  math(EXPR GR_PR_INDEX "${GR_PR_INDEX} + 1")
+  math(EXPR GR_PR_UNIT "${GR_PR_UNIT} + 1")
 endwhile()
 
 # Group the registrations into declaration-only units: balanced chunks when MAX_PER_TU is set, one unit per registration
@@ -594,29 +689,11 @@ endwhile()
 set(GR_PR_UNIT_NAMES "")
 set(GR_PR_UNIT_MEMBERS "")
 if(MAX_PER_TU GREATER 0 AND GR_PR_TOTAL GREATER 0)
-  math(EXPR GR_PR_CHUNK_COUNT "(${GR_PR_TOTAL} + ${MAX_PER_TU} - 1) / ${MAX_PER_TU}")
-  set(GR_PR_NEXT_INDEX 0)
+  gr_pr_balanced_chunks(${GR_PR_TOTAL} ${MAX_PER_TU} GR_PR_UNIT_MEMBERS)
+  list(LENGTH GR_PR_UNIT_MEMBERS GR_PR_CHUNK_COUNT)
   set(GR_PR_CHUNK 0)
   while(GR_PR_CHUNK LESS GR_PR_CHUNK_COUNT)
-    math(EXPR GR_PR_CHUNK_SIZE "${GR_PR_TOTAL} / ${GR_PR_CHUNK_COUNT}")
-    math(EXPR GR_PR_REMAINDER "${GR_PR_TOTAL} % ${GR_PR_CHUNK_COUNT}")
-    if(GR_PR_CHUNK LESS GR_PR_REMAINDER)
-      math(EXPR GR_PR_CHUNK_SIZE "${GR_PR_CHUNK_SIZE} + 1")
-    endif()
-    set(GR_PR_MEMBERS "")
-    set(GR_PR_TAKEN 0)
-    while(GR_PR_TAKEN LESS GR_PR_CHUNK_SIZE)
-      list(APPEND GR_PR_MEMBERS "${GR_PR_NEXT_INDEX}")
-      math(EXPR GR_PR_NEXT_INDEX "${GR_PR_NEXT_INDEX} + 1")
-      math(EXPR GR_PR_TAKEN "${GR_PR_TAKEN} + 1")
-    endwhile()
     list(APPEND GR_PR_UNIT_NAMES "${GR_PR_STEM}_${GR_PR_CHUNK}")
-    string(
-      REPLACE ";"
-              "${GR_PR_VALUE}"
-              GR_PR_MEMBERS
-              "${GR_PR_MEMBERS}")
-    list(APPEND GR_PR_UNIT_MEMBERS "${GR_PR_MEMBERS}")
     math(EXPR GR_PR_CHUNK "${GR_PR_CHUNK} + 1")
   endwhile()
 else()

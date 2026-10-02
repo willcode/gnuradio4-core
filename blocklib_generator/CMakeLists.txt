@@ -45,13 +45,24 @@ if(ENABLE_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/test/RunGeneratorTest.cmake")
   endforeach()
 
-  # configures a fixture library four times in one build directory, dropping and listing again each of two headers whose
-  # generated file names share a prefix; the fixture is configured and never built
-  add_test(
-    NAME qa_GrBlockLibDroppedHeader
-    COMMAND
-      ${CMAKE_COMMAND} "-DPROJECT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/test/dropped_header"
-      "-DMACROS=${PROJECT_BINARY_DIR}/GnuRadioBlockLibMacros.cmake" "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/test"
-      "-DGENERATOR=${CMAKE_GENERATOR}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}" -P
-      "${CMAKE_CURRENT_SOURCE_DIR}/test/RunDroppedHeaderTest.cmake")
+  # configures a fixture library in one build directory, dropping and listing again each of two headers whose generated
+  # file names share a prefix, then changing the grouping of the definition units; the fixture is configured and never
+  # built. It runs with one and with three definitions per unit.
+  foreach(GR_BLOCKLIB_TEST_DEFINITIONS 1 3)
+    if(GR_BLOCKLIB_TEST_DEFINITIONS EQUAL 1)
+      set(GR_BLOCKLIB_TEST_NAME qa_GrBlockLibDroppedHeader)
+      set(GR_BLOCKLIB_TEST_WORK_DIR "${CMAKE_CURRENT_BINARY_DIR}/test")
+    else()
+      set(GR_BLOCKLIB_TEST_NAME qa_GrBlockLibDroppedHeader_definitions_${GR_BLOCKLIB_TEST_DEFINITIONS})
+      set(GR_BLOCKLIB_TEST_WORK_DIR "${CMAKE_CURRENT_BINARY_DIR}/test/definitions_${GR_BLOCKLIB_TEST_DEFINITIONS}")
+    endif()
+    add_test(
+      NAME ${GR_BLOCKLIB_TEST_NAME}
+      COMMAND
+        ${CMAKE_COMMAND} "-DPROJECT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/test/dropped_header"
+        "-DMACROS=${PROJECT_BINARY_DIR}/GnuRadioBlockLibMacros.cmake" "-DWORK_DIR=${GR_BLOCKLIB_TEST_WORK_DIR}"
+        "-DGENERATOR=${CMAKE_GENERATOR}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DDEFINITIONS_PER_TU=${GR_BLOCKLIB_TEST_DEFINITIONS}" -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/RunDroppedHeaderTest.cmake")
+  endforeach()
 endif()

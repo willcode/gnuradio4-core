@@ -69,6 +69,9 @@ echo 1 | sudo tee /sys/block/zram0/reset
 - **`GR_BLOCKLIB_MAX_REGISTRATIONS_PER_TU`** (default: 16): balanced chunking of generated
   block-registration translation units; bounds per-TU compile time and memory (0 = one TU
   per `GR_REGISTER_BLOCK` line).
+- **`GR_BLOCKLIB_DEFINITIONS_PER_TU`** (default: 1): balanced chunking of the generated
+  definition translation units, which instantiate the registered blocks. Fewer, larger units take
+  less total compile time and more memory each (0 = one unit per header).
 - **`GR_BLOCKLIB_PCH`** (default: ON): precompiled headers for the generated registration TUs.
 - **`GR_QA_PCH`** (default: ON): one precompiled header shared across the test executables,
   which pay for the same `Block`/`Graph`/`Scheduler` closure. Tests that pin their own
