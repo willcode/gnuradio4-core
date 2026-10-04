@@ -93,6 +93,9 @@ public:
         }
     }
 
+    // the threads inside waitUntil() that have not yet returned
+    [[nodiscard]] std::uint32_t nTimedWaiters() const noexcept { return gr::atomic_ref(_nTimedWaiters).load_acquire(); }
+
 private:
     // Tests the value with a compare-and-set of oldValue onto itself. The compare-and-set is ordered against the
     // notifier's read-modify-write of the value. If the notifier's comes first, this call sees the new value. If this
