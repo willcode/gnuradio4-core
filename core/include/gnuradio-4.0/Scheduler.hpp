@@ -144,12 +144,11 @@ protected:
         meta::indirect<gr::Graph> graph;
         profiling::Options        option;
         bool                      restart{false};
-        std::size_t               stopGeneration{0UZ}; // a later stop request cancels the restart
+        std::size_t               workerGeneration{0UZ}; // a later start or stop cancels the restart
     };
     std::mutex                     _pendingExchangeMutex;
     std::optional<PendingExchange> _pendingExchange;
-    std::size_t                    _nDeferredExchanges{0UZ}; // claimed swaps still running outside the job count
-    std::size_t                    _nStopRequests{0UZ};
+    std::size_t                    _nDeferredExchanges{0UZ};   // claimed swaps still running outside the job count
     bool                           _pendingStopRequest{false}; // a requested stop that no run loop has consumed yet
     std::optional<Error>           _startError;                // written by failStart(), cleared when a start begins
 
@@ -353,8 +352,8 @@ public:
             }
             {
                 std::lock_guard guard(_pendingExchangeMutex);
-                // the generation is this stop's own; a later one cancels the restart
-                _pendingExchange = PendingExchange{std::move(newGraph), option, restart, gr::atomic_ref(_nStopRequests).load_acquire()};
+                // the generation is the one this stop advanced to; a later start or stop advances it again
+                _pendingExchange = PendingExchange{std::move(newGraph), option, restart, gr::atomic_ref(_workerGeneration).load_acquire()};
             }
             return meta::indirect<Graph>{};
         }
@@ -1135,7 +1134,7 @@ protected:
             this->emitErrorMessage("applyPendingExchange()", result.error());
             return;
         }
-        if (pending.restart && gr::atomic_ref(_nStopRequests).load_acquire() == pending.stopGeneration) {
+        if (pending.restart && gr::atomic_ref(_workerGeneration).load_acquire() == pending.workerGeneration) {
             this->emitErrorMessageIfAny("applyPendingExchange() -> INITIALISED", this->changeStateTo(INITIALISED));
             this->emitErrorMessageIfAny("applyPendingExchange() -> RUNNING", this->changeStateTo(RUNNING));
         }
@@ -1257,7 +1256,6 @@ protected:
 
     void stop() {
         using enum lifecycle::State;
-        gr::atomic_ref(_nStopRequests).fetch_add(1UZ);
         // retires the run's workers. A queued worker releases its count without running. A worker in its loop leaves
         // at its next check, even one that misses the stop because the next start() has already set RUNNING.
         gr::atomic_ref(_workerGeneration).fetch_add(1UZ);
@@ -1949,6 +1947,33 @@ protected:
     }
 };
 
+namespace detail {
+// contiguous slices keep chain neighbors on the same worker
+inline JobLists batchBlocks(std::span<const std::shared_ptr<BlockModel>> blocks, std::size_t n_batches) {
+    JobLists result;
+    result.reserve(n_batches);
+    const std::size_t nBlocks = blocks.size();
+    for (std::size_t batch = 0UZ; batch < n_batches; ++batch) {
+        const std::size_t first = batch * nBlocks / n_batches;
+        const std::size_t last  = (batch + 1UZ) * nBlocks / n_batches;
+        const auto        slice = blocks.subspan(first, last - first);
+        result.emplace_back(slice.begin(), slice.end());
+    }
+    return result;
+}
+
+inline void printExecutionOrder(const std::vector<std::vector<std::shared_ptr<BlockModel>>>& executionOrder) {
+    std::size_t batchIndex = 0;
+    for (const auto& batch : executionOrder) {
+        std::print("Batch #{}:\n", batchIndex++);
+        for (const auto& block : batch) {
+            std::print("  - {} ({})\n", block->name(), block->uniqueName());
+        }
+    }
+}
+
+} // namespace detail
+
 template<ExecutionPolicy execution = ExecutionPolicy::singleThreaded, profiling::ProfilerLike TProfiler = profiling::null::Profiler>
 struct Simple : SchedulerBase<Simple<execution, TProfiler>, execution, TProfiler> {
     using Description = Doc<R""(Simple loop based Scheduler, which iterates over all blocks in the order they have beein defined and emplaced definition in the graph.)"">;
@@ -1974,43 +1999,9 @@ struct Simple : SchedulerBase<Simple<execution, TProfiler>, execution, TProfiler
         std::lock_guard guard(this->_adoptionBlocksMutex);
         this->_adoptionBlocks.clear();
         this->_adoptionBlocks.resize(n_batches);
-        this->_executionOrder->clear();
-        this->_executionOrder->reserve(n_batches);
-        // contiguous slices keep chain neighbors on the same worker
-        const std::span<const std::shared_ptr<BlockModel>> allBlocks = flatGraph.blocks();
-        for (std::size_t i = 0; i < n_batches; i++) {
-            const std::size_t first = i * nBlocks / n_batches;
-            const std::size_t last  = (i + 1UZ) * nBlocks / n_batches;
-            auto&             job   = this->_executionOrder->emplace_back(std::vector<std::shared_ptr<BlockModel>>());
-            job.assign(allBlocks.begin() + static_cast<std::ptrdiff_t>(first), allBlocks.begin() + static_cast<std::ptrdiff_t>(last));
-        }
+        *this->_executionOrder = detail::batchBlocks(flatGraph.blocks(), n_batches);
     }
 };
-
-namespace detail {
-// contiguous slices keep chain neighbors on the same worker
-inline JobLists batchBlocks(const std::vector<std::shared_ptr<BlockModel>>& blocks, std::size_t n_batches) {
-    JobLists          result(n_batches);
-    const std::size_t nBlocks = blocks.size();
-    for (std::size_t batch = 0UZ; batch < n_batches; ++batch) {
-        const std::size_t first = batch * nBlocks / n_batches;
-        const std::size_t last  = (batch + 1UZ) * nBlocks / n_batches;
-        result[batch].assign(blocks.begin() + static_cast<std::ptrdiff_t>(first), blocks.begin() + static_cast<std::ptrdiff_t>(last));
-    }
-    return result;
-}
-
-inline void printExecutionOrder(const std::vector<std::vector<std::shared_ptr<BlockModel>>>& executionOrder) {
-    std::size_t batchIndex = 0;
-    for (const auto& batch : executionOrder) {
-        std::print("Batch #{}:\n", batchIndex++);
-        for (const auto& block : batch) {
-            std::print("  - {} ({})\n", block->name(), block->uniqueName());
-        }
-    }
-}
-
-} // namespace detail
 
 template<ExecutionPolicy execution = ExecutionPolicy::singleThreaded, profiling::ProfilerLike TProfiler = profiling::null::Profiler>
 struct BreadthFirst : SchedulerBase<BreadthFirst<execution, TProfiler>, execution, TProfiler> {
