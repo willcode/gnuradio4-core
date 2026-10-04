@@ -157,6 +157,7 @@ protected:
     std::mutex _adoptionBlocksMutex;
     // fixed-sized vector indexed by runnerId. Cheaper than a map.
     std::vector<std::vector<std::shared_ptr<BlockModel>>> _adoptionBlocks;
+    std::vector<bool>                                     _adoptionListClosed; // the job list's worker has left its loop
 
     MsgPortOutForChildren                     _toChildMessagePort;
     MsgPortInFromChildren                     _fromChildMessagePort;
@@ -499,6 +500,8 @@ public:
         }
     }
 
+    // callable from any thread. One caller at a time runs the scheduler's and the graph's handlers, and a caller that
+    // finds them running returns at once
     void processScheduledMessages() {
         if (std::atomic_flag_test_and_set_explicit(&_processingScheduledMessages, std::memory_order_acquire)) {
             return;
@@ -548,6 +551,10 @@ public:
                 this->emitErrorMessage("process child return messages", "Failed to consume messages from child message port");
             }
             if (firstError.has_value()) {
+                if (isOnOwnWorkerThread()) { // a worker's pool drops an exception. The run ends in ERROR, and runAndWait() returns the error
+                    this->emitErrorMessageIfAny("forwardMessagesFromChildren() -> ERROR", this->changeStateTo(lifecycle::State::ERROR));
+                    return;
+                }
                 throw gr::exception(firstError->message, firstError->sourceLocation);
             }
             return;
@@ -896,6 +903,11 @@ protected:
             return;
         }
 
+        { // every job list of this run takes adopted blocks until its worker leaves its loop
+            std::lock_guard guard(_adoptionBlocksMutex);
+            _adoptionListClosed.assign(_adoptionBlocks.size(), false);
+        }
+
         // start watchdog
         auto ioThreadPool = gr::thread_pool::Manager::defaultIoPool();
 
@@ -1008,6 +1020,7 @@ protected:
                 settleStoppedBlockingBlocks();
             }
         };
+        on_scope_exit closeAdoption = [this, runnerID] { closeAdoptionList(runnerID); };
 
         gr::thread_pool::thread::setThreadName(std::format("pW{}-{}", runnerID, gr::meta::shorten_type_name(this->unique_name)));
 
@@ -1040,9 +1053,7 @@ protected:
             const bool hasPendingMessages   = this->msgIn.available() > 0UZ || _fromChildMessagePort.available() > 0UZ;
             const bool hasMessagesToProcess = msgToCount == 0UZ || hasPendingMessages;
             if (hasMessagesToProcess) {
-                if (runnerID == 0UZ || nRunningJobs->value() == 0UZ) {
-                    this->processScheduledMessages(); // execute the scheduler- and Graph-specific message handler only once globally
-                }
+                this->processScheduledMessages();
 
                 // Zombies are cleaned per-thread, as we remove from the localBlockList as well.
                 // Cleaning zombies has low priority, so uses process_stream_to_message_ratio (a different ratio could be introduced)
@@ -1398,12 +1409,17 @@ protected:
         }
 
         {
-            std::lock_guard guard(_adoptionBlocksMutex);
-            const auto      nBatches = _adoptionBlocks.size();
-            if (nBatches == 0) {
+            std::lock_guard          guard(_adoptionBlocksMutex);
+            std::vector<std::size_t> openLists;
+            for (std::size_t i = 0UZ; i < _adoptionBlocks.size(); ++i) {
+                if (i >= _adoptionListClosed.size() || !_adoptionListClosed[i]) {
+                    openLists.push_back(i);
+                }
+            }
+            if (openLists.empty()) {
                 return;
             }
-            _adoptionBlocks[std::hash<BlockModel*>{}(newBlock.get()) % nBatches].push_back(newBlock);
+            _adoptionBlocks[openLists[std::hash<BlockModel*>{}(newBlock.get()) % openLists.size()]].push_back(newBlock);
         }
 
         if (newBlock->blockCategory() == ScheduledBlockGroup) {
@@ -1737,6 +1753,24 @@ protected:
 
             } else {
                 ++it;
+            }
+        }
+    }
+
+    // a worker that leaves its loop hands the blocks still queued for its job list to a job list whose worker remains
+    void closeAdoptionList(std::size_t runnerID) {
+        std::lock_guard guard(_adoptionBlocksMutex);
+        if (runnerID >= _adoptionListClosed.size()) {
+            return;
+        }
+        _adoptionListClosed[runnerID] = true;
+        if (runnerID >= _adoptionBlocks.size()) {
+            return;
+        }
+        for (std::size_t i = 0UZ; i < _adoptionBlocks.size() && !_adoptionBlocks[runnerID].empty(); ++i) {
+            if (i >= _adoptionListClosed.size() || !_adoptionListClosed[i]) {
+                std::ranges::move(_adoptionBlocks[runnerID], std::back_inserter(_adoptionBlocks[i]));
+                _adoptionBlocks[runnerID].clear();
             }
         }
     }
