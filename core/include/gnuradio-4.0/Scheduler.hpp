@@ -213,13 +213,13 @@ protected:
 public:
     using base_t = Block<Derived>;
 
-    Annotated<gr::Size_t, "timeout", Unit<"ms">, Doc<"sleep timeout to wait if graph has made no progress ">>                  timeout_ms                      = 100U;
-    Annotated<gr::Size_t, "watchdog_timeout", Unit<"ms">, Doc<"sleep timeout for watchdog">>                                   watchdog_timeout                = 1000U;
-    Annotated<gr::Size_t, "timeout_inactivity_count", Doc<"number of inactive cycles w/o progress before sleep is triggered">> timeout_inactivity_count        = 5U;
-    Annotated<gr::Size_t, "process_stream_to_message_ratio", Doc<"number of stream to msg processing">>                        process_stream_to_message_ratio = 16U;
-    Annotated<std::string, "pool name", Doc<"default pool name">>                                                              poolName                        = std::string(gr::thread_pool::kDefaultCpuPoolId);
-    Annotated<std::size_t, "max_work_items", Doc<"number of work items per work scheduling interval (controls latency)">>      max_work_items                  = std::numeric_limits<std::size_t>::max(); // TODO: check whether we can keep this std::size_t or more consistently to gr::Size_t
-    Annotated<property_map, "sched_settings", Doc<"scheduler implementation specific settings">>                               sched_settings{};
+    Annotated<gr::Size_t, "timeout", Unit<"ms">, Doc<"longest wait of an idle or paused worker">>                                          timeout_ms                      = 100U;
+    Annotated<gr::Size_t, "watchdog_timeout", Unit<"ms">, Doc<"sleep timeout for watchdog">>                                               watchdog_timeout                = 1000U;
+    Annotated<gr::Size_t, "timeout_inactivity_count", Doc<"inactive traversals before a park, or watchdog periods before a stall report">> timeout_inactivity_count        = 5U;
+    Annotated<gr::Size_t, "process_stream_to_message_ratio", Doc<"number of stream to msg processing">>                                    process_stream_to_message_ratio = 16U;
+    Annotated<std::string, "pool name", Doc<"default pool name">>                                                                          poolName                        = std::string(gr::thread_pool::kDefaultCpuPoolId);
+    Annotated<std::size_t, "max_work_items", Doc<"number of work items per work scheduling interval (controls latency)">>                  max_work_items                  = std::numeric_limits<std::size_t>::max(); // TODO: check whether we can keep this std::size_t or more consistently to gr::Size_t
+    Annotated<property_map, "sched_settings", Doc<"scheduler implementation specific settings">>                                           sched_settings{};
 
     GR_MAKE_REFLECTABLE(SchedulerBase, timeout_ms, watchdog_timeout, timeout_inactivity_count, process_stream_to_message_ratio, max_work_items, poolName, sched_settings);
 
@@ -1107,7 +1107,7 @@ protected:
                 }
 
                 currentProgress = progressAfter;
-                // parking in a non-RUNNING state would hold the worker until the watchdog's next progress bump
+                // parking in a non-RUNNING state would delay the worker's next state read by up to timeout_ms
                 if (activeState == RUNNING && inactiveCycleCount > timeout_inactivity_count) {
                     // allow a scheduler process to wait on progress before retrying (N.B. intended to save CPU/battery power)
                     // N.B. a watchdog will periodically update the progress to check for non-responsive blocks.
@@ -1140,8 +1140,7 @@ protected:
         }
     }
 
-    // chunked so a lifecycle change is picked up within a chunk instead of at the end of a full timeout_ms
-    // sleep; only reached when the scheduler is not RUNNING, so it does not touch the idle-worker CPU path
+    // polls the state every millisecond until it changes or timeout_ms passes. Only a worker outside RUNNING calls it.
     void sleepUntilStateChanges(lifecycle::State observedState) {
         constexpr auto kChunk   = std::chrono::milliseconds(1);
         const auto     deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms.value);
