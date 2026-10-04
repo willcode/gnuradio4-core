@@ -76,6 +76,9 @@ using JobLists = std::vector<std::vector<std::shared_ptr<BlockModel>>>;
 // that worker can tell that waiting for the job count to reach zero would include itself
 inline thread_local const void* tActiveSchedulerWorker = nullptr;
 
+// identifies the scheduler whose graph swap this thread holds, so the swap's own call to reset() does not wait for it
+inline thread_local const void* tExchangingScheduler = nullptr;
+
 template<typename Derived, ExecutionPolicy execution = ExecutionPolicy::singleThreaded, profiling::ProfilerLike TProfiler = profiling::null::Profiler>
 struct SchedulerBase : Block<Derived> {
     friend class lifecycle::StateMachine<Derived>;
@@ -152,6 +155,7 @@ protected:
     std::size_t                    _nStopRequests{0UZ};
     bool                           _pendingStopRequest{false}; // a requested stop that no run loop has consumed yet
     bool                           _startReturned{false};      // set when start() returns, cleared when the next run is prepared
+    bool                           _exchangeClaimed{false};    // held by exchange() while it swaps the graph of an inactive scheduler
     std::optional<Error>           _startError;                // written by failStart(), cleared when a start begins
 
     // for blocks that were added while scheduler was running. They need to be adopted by a thread
@@ -196,6 +200,32 @@ protected:
             }
         }
         return {};
+    }
+
+    // exchange() on an inactive scheduler holds a claim from its state check to the end of the swap. It takes the claim
+    // and then confirms the state it read with a compare-exchange. A thread that changed the state before that
+    // compare-exchange makes the swap fail. A thread that changes it afterwards waits in init(), reset() or start()
+    // until the claim is released, and then prepares or runs the new graph. The compare-exchange orders the two
+    // threads: a state change that follows it also sees the claim.
+    void claimExchange() {
+        for (bool expected = false; !gr::atomic_ref(_exchangeClaimed).compare_exchange(expected, true); expected = false) {
+            gr::atomic_ref(_exchangeClaimed).wait(true);
+        }
+    }
+
+    void releaseExchange() {
+        gr::atomic_ref(_exchangeClaimed).store_release(false);
+        gr::atomic_ref(_exchangeClaimed).notify_all();
+    }
+
+    // a worker of this scheduler does not wait: a swap in progress can be waiting for the worker's job count
+    void awaitExchange() {
+        if (tExchangingScheduler == static_cast<const void*>(this) || isOnOwnWorkerThread()) {
+            return;
+        }
+        for (bool claimed = gr::atomic_ref(_exchangeClaimed).load_acquire(); claimed; claimed = gr::atomic_ref(_exchangeClaimed).load_acquire()) {
+            gr::atomic_ref(_exchangeClaimed).wait(true);
+        }
     }
 
     // a worker occupies its pool thread for the scheduler's lifetime, so a job list that never gets one
@@ -377,6 +407,28 @@ public:
 
         if (auto allowed = swapAllowedFromThisThread(); !allowed) {
             return std::unexpected(allowed.error());
+        }
+
+        if constexpr (requires(Derived& d) { d.customExchange(); }) { // runs before the swap is claimed, with the state still free to change
+            static_cast<Derived*>(this)->customExchange();
+        }
+
+        // an active scheduler is stopped below through the state transitions. An inactive one is claimed instead:
+        // another thread may start it after oldState was read
+        const bool  claimed                     = !lifecycle::isActive(oldState);
+        const void* previousExchangingScheduler = tExchangingScheduler;
+        if (claimed) {
+            claimExchange();
+            tExchangingScheduler = this;
+        }
+        on_scope_exit releaseClaim = [this, claimed, previousExchangingScheduler] {
+            if (claimed) {
+                tExchangingScheduler = previousExchangingScheduler;
+                releaseExchange();
+            }
+        };
+        if (lifecycle::State observed = oldState; claimed && !gr::atomic_ref(this->_state).compare_exchange(observed, oldState)) {
+            return std::unexpected(Error(std::format("exchange(): the scheduler '{}' changed from {} to {} before the swap; the graph is unchanged", this->unique_name, gr::meta::enumName(oldState).value_or(""), gr::meta::enumName(observed).value_or(""))));
         }
 
         if (lifecycle::isActive(oldState)) { // need to stop running scheduler
@@ -781,6 +833,7 @@ protected:
     }
 
     void init() {
+        awaitExchange();
         [[maybe_unused]] const auto pe = _profilerHandler->startCompleteEvent("scheduler_base.init");
         base_t::processScheduledMessages(); // make sure initial subscriptions are processed
         connectBlockMessagePorts();
@@ -793,6 +846,7 @@ protected:
     // re-entering INITIALISED must rebuild the same execution state that init() builds, because the graph
     // may have been exchanged or edited since: a stale _executionOrder runs the previous graph's blocks
     void reset() {
+        awaitExchange();
         // waits for the previous run's workers before reinitializing the blocks. A worker still traversing would call
         // work() on a block whose edges reset() disconnects. stop() retired the workers, so the wait lasts at most one
         // traversal. A reset requested by a message runs on a worker, which cannot wait for itself.
@@ -828,6 +882,7 @@ protected:
     void start() {
         using enum gr::lifecycle::State;
         on_scope_exit markStartReturned = [this] { gr::atomic_ref(_startReturned).store_release(true); };
+        awaitExchange();
 
         // stop() publishes STOPPED and retires the run's workers by generation, without waiting for
         // them. A worker the pool counted but has not started releases its count when the pool reaches
