@@ -96,8 +96,11 @@ endif()
 # Each of these must fail to compile, with the guard's own diagnostic: a predicate that is true proves nothing about
 # whether the static_assert reads it. The targets are excluded from the default build, and the nested build they drive
 # shares one binary directory, so they may not run concurrently.
-set(_COMPILE_FAIL_TESTS cf_UnfilteredTagPropagation_resampling cf_UnfilteredTagPropagation_async
-                        cf_UnfilteredTagPropagation_forwardtags_constrained)
+set(_COMPILE_FAIL_TESTS
+    cf_UnfilteredTagPropagation_resampling
+    cf_UnfilteredTagPropagation_async
+    cf_UnfilteredTagPropagation_forwardtags_constrained
+    cf_UnfilteredTagPropagation_dropped)
 set(_COMPILE_FAIL_FILTERED_TESTS cf_FilteredTagPropagation_unfiltered cf_FilteredTagPropagation_notag)
 set(_COMPILE_FAIL_EVERY_KEY_TESTS cf_ForwardsEveryKey_forwardtags_deduced)
 foreach(TEST_NAME IN LISTS _COMPILE_FAIL_TESTS _COMPILE_FAIL_FILTERED_TESTS _COMPILE_FAIL_EVERY_KEY_TESTS)
