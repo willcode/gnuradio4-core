@@ -340,6 +340,7 @@ class BasicThreadPool {
     std::atomic_bool _initialised = ATOMIC_FLAG_INIT;
     std::atomic_bool _shutdown    = false;
 
+    std::mutex              _waitMutex; // shared by all waiting workers, as std::condition_variable requires
     std::condition_variable _condition;
     std::atomic_size_t      _numTaskedQueued = 0U; // cache for _taskQueue.size()
     std::atomic_size_t      _numTasksRunning = 0U;
@@ -375,7 +376,7 @@ public:
 
     ~BasicThreadPool() {
         _shutdown = true;
-        _condition.notify_all();
+        notifyWorkers(true);
         for (auto& t : _threads) {
             t.join();
         }
@@ -408,12 +409,12 @@ public:
 
         _minThreads.store(minThreads, std::memory_order_release);
         _maxThreads.store(maxThreads, std::memory_order_release);
-        _condition.notify_all(); // Wake threads to adapt
+        notifyWorkers(true); // Wake threads to adapt
     }
 
     void requestShutdown() {
         _shutdown = true;
-        _condition.notify_all();
+        notifyWorkers(true);
         for (auto& t : _threads) {
             t.join();
         }
@@ -453,7 +454,7 @@ public:
         _numTaskedQueued.fetch_add(1U);
 
         _taskQueue.push(createTask<taskName, priority, cpuID>(std::forward<decltype(func)>(func), std::forward<decltype(func)>(args)...));
-        _condition.notify_one();
+        notifyWorkers(false);
 
         spinWait.spinOnce();
         spinWait.spinOnce();
@@ -461,7 +462,7 @@ public:
             if (const auto nThreads = numThreads(); nThreads <= numTasksRunning() && nThreads <= maxThreads()) {
                 createWorkerThread(location);
             }
-            _condition.notify_one();
+            notifyWorkers(false);
             spinWait.spinOnce();
             spinWait.spinOnce();
         }
@@ -494,6 +495,18 @@ public:
     }
 
 private:
+    // A worker tests for queued work while it holds _waitMutex and releases the mutex only when it blocks.
+    // Taking the mutex after the work is published means a worker either sees the work or is already
+    // blocked and receives the notification.
+    void notifyWorkers(bool all) {
+        { std::scoped_lock lock(_waitMutex); }
+        if (all) {
+            _condition.notify_all();
+        } else {
+            _condition.notify_one();
+        }
+    }
+
     void cleanupFinishedThreads() {
         std::scoped_lock lock(_threadListMutex);
         // TODO:
@@ -610,11 +623,9 @@ private:
         constexpr uint32_t N_SPIN       = 1 << 8;
         uint32_t           noop_counter = 0;
         // _numThreads incremented in createWorkerThread()
-        std::mutex       mutex;
-        std::unique_lock lock(mutex);
-        auto             lastUsed              = std::chrono::steady_clock::now();
-        auto             timeDiffSinceLastUsed = std::chrono::steady_clock::now() - lastUsed;
-        bool             running               = true;
+        auto lastUsed              = std::chrono::steady_clock::now();
+        auto timeDiffSinceLastUsed = std::chrono::steady_clock::now() - lastUsed;
+        bool running               = true;
         do {
             if (TaskQueue::TaskContainer currentTaskContainer = popTask(); !currentTaskContainer.empty()) {
                 assert(!currentTaskContainer.empty());
@@ -648,23 +659,8 @@ private:
                 noop_counter = noop_counter / 2;
                 cleanupFinishedThreads();
 
-#if defined(__APPLE__)
-                // macOS + Homebrew libc++ workaround: condition_variable::wait_for() with per-thread
-                // mutexes triggers EINVAL (POSIX requires same mutex for all concurrent waiters on
-                // the same condvar, and macOS enforces this unlike Linux).
-                // Use a short-sleep polling loop with 10μs granularity instead.
-                {
-                    auto deadline = std::chrono::steady_clock::now() + keepAliveDuration;
-                    while (!(numTasksQueued() > 0 || isShutdown())) {
-                        if (std::chrono::steady_clock::now() >= deadline) {
-                            break;
-                        }
-                        std::this_thread::sleep_for(std::chrono::microseconds(10));
-                    }
-                }
-#else
+                std::unique_lock lock(_waitMutex);
                 _condition.wait_for(lock, keepAliveDuration, [this] { return numTasksQueued() > 0 || isShutdown(); });
-#endif
             }
             // check if this thread is to be kept
             timeDiffSinceLastUsed = std::chrono::steady_clock::now() - lastUsed;

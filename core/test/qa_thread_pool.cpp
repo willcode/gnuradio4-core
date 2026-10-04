@@ -3,6 +3,8 @@
 #include <gnuradio-4.0/meta/UnitTestHelper.hpp>
 #include <gnuradio-4.0/thread/thread_pool.hpp>
 
+#include <semaphore>
+
 const boost::ut::suite<"gr::thread_pool GR4 default"> defaultThreadPool = [] {
     using namespace boost::ut;
 
@@ -161,6 +163,37 @@ const boost::ut::suite<"gr::thread_pool GR4 default"> defaultThreadPool = [] {
         });
         ranAfterThrow.wait(false);
         expect(ranAfterThrow.load()) << "the worker must keep serving tasks after one threw";
+    };
+
+    "ThreadPool: a task submitted to an idle worker never waits for the keep-alive"_test = [] {
+        using namespace gr::thread_pool;
+        using Clock = std::chrono::steady_clock;
+
+        // the pool starts its only worker at the first task, after the keep-alive is set
+        BasicThreadPool pool("IdleWakeUpTest", TaskType::IO_BOUND, 0U, 1U);
+        pool.keepAliveDuration = std::chrono::seconds(1);
+
+        // the delays sweep the moment the idle worker stops spinning and blocks on the condition variable
+        constexpr std::size_t kSubmissions = 50'000UZ;
+        std::binary_semaphore started{0};
+        Clock::duration       longestWait{};
+        bool                  allStarted = true;
+        for (std::size_t i = 0UZ; i < kSubmissions; ++i) {
+            const Clock::time_point submitAfter = Clock::now() + std::chrono::nanoseconds((i * 37UZ) % 20'000UZ);
+            while (Clock::now() < submitAfter) {
+            }
+            const Clock::time_point submitted = Clock::now();
+            pool.execute([&started] { started.release(); });
+            // the wait is bounded: a worker woken after its keep-alive retires and leaves the task unstarted
+            if (!started.try_acquire_for(2 * pool.keepAliveDuration)) {
+                allStarted = false;
+                break;
+            }
+            longestWait = std::max(longestWait, Clock::now() - submitted);
+        }
+        const auto longestWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(longestWait).count();
+        expect(allStarted) << "a task did not start";
+        expect(lt(longestWaitMs, (pool.keepAliveDuration / 2).count())) << "a task waited for the worker's keep-alive timeout";
     };
 
     "ThreadPool: recycled task count increases"_test = [] {
