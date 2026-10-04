@@ -2466,7 +2466,8 @@ public:
         if constexpr (Derived::blockCategory != block::Category::NormalBlock) {
             return {requestedWork, 0UZ, gr::work::Status::OK};
         } else {
-            const work::Result result = workInternal(requestedWork);
+            const bool         wasStopped = this->state() == lifecycle::State::STOPPED;
+            const work::Result result     = workInternal(requestedWork);
             if (result.status == gr::work::Status::DONE) {
                 // A scheduler worker leaves its loop as soon as every block of its job list reports DONE, and
                 // under a multi-threaded execution policy a job list may hold a single block, so the call that
@@ -2480,8 +2481,10 @@ public:
             }
             // The spans of workInternal() publish and consume when they are destroyed. A DONE call releases its
             // upstream readers above. The progress sequence advances after both, and a thread woken by the notify
-            // finds the samples in the buffers and the readers released.
-            if (result.performed_work > 0UZ) {
+            // finds the samples in the buffers and the readers released. The call that stops the block reports no
+            // work but can publish the last samples and the end-of-stream tag, and it advances the sequence too. A
+            // stopped block returns DONE on every later call and moves nothing.
+            if (result.performed_work > 0UZ || (result.status == gr::work::Status::DONE && !wasStopped)) {
                 progress->incrementAndGet();
                 progress->notify_all();
             }
