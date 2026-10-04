@@ -124,8 +124,8 @@ protected:
 
     bool                          _valid{true};
     std::size_t                   _nWatchdogsRunning{0};
-    std::size_t                   _watchdogGeneration{0UZ}; // a watchdog runs only while it matches this
-    std::size_t                   _workerGeneration{0UZ};   // a queued worker runs only while it matches this
+    gr::Sequence                  _watchdogGeneration{};  // a watchdog runs only while it matches this; an advance wakes it
+    std::size_t                   _workerGeneration{0UZ}; // a queued worker runs only while it matches this
     meta::indirect<gr::Graph>     _graph{};
     TProfiler                     _profiler{};
     ProfileHandle                 _profilerHandler{_profiler.forThisThread()};
@@ -178,8 +178,8 @@ protected:
     // a watchdog only leaves on its own once the run's jobs are gone, which a restart inside its check
     // interval undoes, so every start retires the previous generation explicitly
     void stopWatchdogs() {
-        gr::atomic_ref(_watchdogGeneration).fetch_add(1UZ);
-        gr::atomic_ref(_watchdogGeneration).notify_all();
+        _watchdogGeneration.incrementAndGet();
+        _watchdogGeneration.notify_all();
     }
 
     // a worker occupies its pool thread for the scheduler's lifetime, so a job list that never gets one
@@ -312,18 +312,23 @@ public:
             _pendingExchange.reset();
         }
 
-        if (lifecycle::isActive(this->state())) { // RUNNING, REQUESTED_PAUSE or PAUSED -- workers are parked, not gone
-            if (auto e = this->changeStateTo(lifecycle::REQUESTED_STOP); !e) {
-                std::println(std::cerr, "Failed to stop execution at destruction of scheduler: {} ({})", e.error().message, e.error().srcLoc());
-                std::abort();
+        // a swap that passed its _valid check before the store above can still restart the run and spawn a watchdog.
+        // Every pass retires the watchdogs spawned so far at its end. A second pass stops the restarted run.
+        do {
+            if (lifecycle::isActive(this->state())) { // RUNNING, REQUESTED_PAUSE or PAUSED -- workers are parked, not gone
+                if (auto e = this->changeStateTo(lifecycle::REQUESTED_STOP); !e) {
+                    std::println(std::cerr, "Failed to stop execution at destruction of scheduler: {} ({})", e.error().message, e.error().srcLoc());
+                    std::abort();
+                }
             }
-        }
-        waitDone();
+            waitDone();
 
-        // a swap claimed before _valid was cleared runs outside the job count, so wait for it separately
-        for (std::size_t nDeferred = gr::atomic_ref(_nDeferredExchanges).load_acquire(); nDeferred != 0UZ; nDeferred = gr::atomic_ref(_nDeferredExchanges).load_acquire()) {
-            gr::atomic_ref(_nDeferredExchanges).wait(nDeferred);
-        }
+            // a swap claimed before _valid was cleared runs outside the job count, so wait for it separately
+            for (std::size_t nDeferred = gr::atomic_ref(_nDeferredExchanges).load_acquire(); nDeferred != 0UZ; nDeferred = gr::atomic_ref(_nDeferredExchanges).load_acquire()) {
+                gr::atomic_ref(_nDeferredExchanges).wait(nDeferred);
+            }
+            stopWatchdogs();
+        } while (lifecycle::isActive(this->state()) || _nRunningJobs->value() != 0UZ);
 
         // the watchdog dereferences SchedulerBase, wait until it finishes
         for (std::size_t nWatchdogs = gr::atomic_ref(_nWatchdogsRunning).load_acquire(); nWatchdogs != 0UZ; nWatchdogs = gr::atomic_ref(_nWatchdogsRunning).load_acquire()) {
@@ -896,38 +901,38 @@ protected:
             return;
         }
 
-        // start watchdog
-        auto ioThreadPool = gr::thread_pool::Manager::defaultIoPool();
+        assert(_executionOrder != nullptr && !_executionOrder->empty());
+        constexpr bool    singleThreaded = executionPolicy() == ExecutionPolicy::singleThreaded || executionPolicy() == ExecutionPolicy::singleThreadedBlocking;
+        auto              jobListsCopy   = _executionOrder;
+        const std::size_t nWorkers       = singleThreaded ? 1UZ : jobListsCopy->size();
+        auto              ioThreadPool   = gr::thread_pool::Manager::defaultIoPool();
 
         stopWatchdogs();
-        const std::size_t generation = gr::atomic_ref(_watchdogGeneration).load_acquire();
+        const std::size_t generation = _watchdogGeneration.value();
+
+        // the whole generation is counted before the watchdog starts and before any worker is queued. waitDone() then
+        // also covers the workers the pool has not started yet, and the watchdog finds the run's jobs counted
+        std::ignore = _nRunningJobs->addAndGet(nWorkers);
+        _nRunningJobs->notify_all();
 
         // keep outside of the lambda, as ~SchedulerBase() might finish before watchdog even starts
         gr::atomic_ref(_nWatchdogsRunning).fetch_add(1UZ);
 
         try {
             ioThreadPool->execute([this, generation] { this->runWatchDog(watchdog_timeout.value, timeout_inactivity_count.value, generation); });
-        } catch (...) { // a rejected task would strand the count and spin ~SchedulerBase() forever
+        } catch (...) { // a rejected task would strand both counts and spin waitDone() and ~SchedulerBase() forever
             gr::atomic_ref(_nWatchdogsRunning).fetch_sub(1UZ);
             gr::atomic_ref(_nWatchdogsRunning).notify_all();
+            std::ignore = _nRunningJobs->subAndGet(nWorkers);
+            _nRunningJobs->notify_all();
             throw;
         }
 
-        assert(_executionOrder != nullptr && !_executionOrder->empty());
-        if constexpr (executionPolicy() == ExecutionPolicy::singleThreaded || executionPolicy() == ExecutionPolicy::singleThreadedBlocking) {
-            _nRunningJobs->incrementAndGet();
-            _nRunningJobs->notify_all();
+        if constexpr (singleThreaded) {
             gr::atomic_ref(_nWorkersStarted).fetch_add(1UZ);
-            dispatchWorker(0UZ, _executionOrder, workerGeneration);
+            dispatchWorker(0UZ, std::move(jobListsCopy), workerGeneration);
         } else { // run on processing thread pool
-            [[maybe_unused]] const auto pe           = _profilerHandler->startCompleteEvent("scheduler_base.runOnPool");
-            auto                        jobListsCopy = _executionOrder;
-            const std::size_t           nWorkers     = jobListsCopy->size();
-
-            // the whole generation is counted before any of it is queued, so waitDone() also covers the
-            // workers the pool has not started yet
-            std::ignore = _nRunningJobs->addAndGet(nWorkers);
-            _nRunningJobs->notify_all();
+            [[maybe_unused]] const auto pe = _profilerHandler->startCompleteEvent("scheduler_base.runOnPool");
             for (std::size_t runnerID = 0UZ; runnerID < nWorkers; runnerID++) {
                 try {
                     _pool->execute([this, runnerID, jobListsCopy, workerGeneration]() {
@@ -1163,38 +1168,17 @@ protected:
         auto thisName = gr::meta::shorten_type_name(this->unique_name);
         gr::thread_pool::thread::setThreadName(std::format("WatchDog-{}", thisName));
 
-        auto isCurrent = [this, generation] { return gr::atomic_ref(_valid).load_acquire() && gr::atomic_ref(_watchdogGeneration).load_acquire() == generation; };
-
-        // the startup wait has no deadline: start() may spend arbitrarily long in waitDone() before
-        // the run's jobs register, and a watchdog that gives up then leaves the run without one
-        const auto checkInterval = std::chrono::milliseconds(std::max(timeout_ms / 10UZ, 1UZ));
-        while (isCurrent() && _nRunningJobs->value() == 0UZ && lifecycle::isActive(this->state())) {
-            std::this_thread::sleep_for(checkInterval);
-        }
-
-        if (!isCurrent() || _nRunningJobs->value() == 0UZ || !lifecycle::isActive(this->state())) {
+        // start() counts the run's jobs before it spawns the watchdog. A count of zero means the run has ended.
+        if (_watchdogGeneration.value() != generation || _nRunningJobs->value() == 0UZ || !lifecycle::isActive(this->state())) {
             return; // abort watchdog: retired, scheduler inactive, or jobs already finished.
         }
-
-        // chunked with a capped interval so a retired generation is observed within 100 ms however
-        // long the watchdog period is; a destructor waits on exactly this observation
-        auto sleepWhileCurrent = [&isCurrent](std::chrono::milliseconds total) {
-            const auto chunk    = std::clamp(total / 10, std::chrono::milliseconds(1), std::chrono::milliseconds(100));
-            const auto wakeUpAt = std::chrono::steady_clock::now() + total;
-            while (std::chrono::steady_clock::now() < wakeUpAt) {
-                if (!isCurrent()) {
-                    return false;
-                }
-                std::this_thread::sleep_for(chunk);
-            }
-            return isCurrent();
-        };
 
         std::size_t lastProgress  = _graph->_progress->value();
         std::size_t nWarnings     = 0;
         bool        stallReported = false; // one report per stall; progress or a state other than RUNNING re-arms it
         do {
-            if (!sleepWhileCurrent(std::chrono::milliseconds(timeOut_ms))) {
+            // the wait ends early only when the watchdog is retired
+            if (_watchdogGeneration.waitUntil(generation, std::chrono::steady_clock::now() + std::chrono::milliseconds(timeOut_ms))) {
                 return;
             }
             // check and increase progress if there hasn't been none.
@@ -1215,7 +1199,7 @@ protected:
                 nWarnings     = 0UZ;
                 stallReported = false;
             }
-        } while (isCurrent() && _nRunningJobs->value() > 0UZ);
+        } while (_nRunningJobs->value() > 0UZ);
     }
 
     // The report is a notification, not an error: a parent scheduler turns an error from a child into an exception

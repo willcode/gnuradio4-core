@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <string>
 #include <string_view>
@@ -1702,6 +1703,40 @@ const boost::ut::suite<"watchdog lifetime"> watchdogTests = [] {
         expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
         expect(qa_sched::awaitState(scheduler, STOPPED)) << "the final run did not stop";
     };
+
+    "a destruction ends the watchdog without waiting out its period"_test = [] {
+        // timed on the wall clock. Each destruction retires a watchdog in the middle of a 60 s period. The bound holds
+        // only when the retirement wakes the watchdog at once. A watchdog that checks for its retirement between sleeps
+        // of up to 100 ms fails it. A timeout_ms of 1 keeps every interval derived from timeout_ms short. The watchdog
+        // is then in its period wait well before the stop.
+        constexpr std::size_t kCycles  = 10UZ;
+        constexpr std::size_t kSamples = 4096UZ;
+        constexpr auto        kBound   = std::chrono::milliseconds(100);
+
+        std::chrono::steady_clock::duration destructionTime{};
+        for (std::size_t cycle = 0UZ; cycle < kCycles; ++cycle) {
+            gr::Graph flow;
+            auto&     source = flow.emplaceBlock<qa_sched::EndlessSource>();
+            auto&     sink   = flow.emplaceBlock<qa_sched::ObservedSink>();
+            expect(flow.connect<"out", "in">(source, sink).has_value());
+            qa_sched::gObservedSamples.store(0UZ, std::memory_order_relaxed);
+
+            std::optional<qa_sched::TestScheduler> scheduler;
+            scheduler.emplace(gr::property_map{{"watchdog_timeout", gr::Size_t(60'000)}, {"timeout_ms", gr::Size_t(1)}});
+            expect(scheduler->exchange(std::move(flow)).has_value());
+            expect(scheduler->changeStateTo(INITIALISED).has_value());
+            expect(scheduler->changeStateTo(RUNNING).has_value());
+            expect(qa_sched::awaitObservedSamplesAbove(kSamples)) << std::format("cycle {} moved no samples", cycle);
+            expect(scheduler->changeStateTo(REQUESTED_STOP).has_value());
+            expect(qa_sched::awaitState(*scheduler, STOPPED)) << std::format("cycle {} did not reach STOPPED", cycle);
+
+            const auto destructionStart = std::chrono::steady_clock::now();
+            scheduler.reset();
+            destructionTime += std::chrono::steady_clock::now() - destructionStart;
+        }
+
+        expect(destructionTime < kBound) << std::format("{} destructions took {}", kCycles, std::chrono::duration_cast<std::chrono::microseconds>(destructionTime));
+    };
 };
 
 const boost::ut::suite<"watchdog stall report"> watchdogStallTests = [] {
@@ -1753,22 +1788,34 @@ const boost::ut::suite<"watchdog stall report"> watchdogStallTests = [] {
     "a paused graph is not reported as stalled"_test = [] {
         constexpr std::size_t kStalledPeriods = 2UZ;
 
+        gr::Graph flow;
+        auto&     source = flow.emplaceBlock<qa_sched::EndlessSource>();
+        auto&     sink   = flow.emplaceBlock<qa_sched::ObservedSink>();
+        expect(flow.connect<"out", "in">(source, sink).has_value());
+        qa_sched::gObservedSamples.store(0UZ, std::memory_order_relaxed);
+
         qa_sched::TestScheduler scheduler({{"watchdog_timeout", gr::Size_t(10)}, {"timeout_inactivity_count", gr::Size_t(kStalledPeriods)}});
         gr::MsgPortIn           fromScheduler;
         expect(scheduler.msgOut.connect(fromScheduler).has_value());
-        expect(scheduler.exchange(qa_sched::makeEndlessGraph()).has_value());
+        expect(scheduler.exchange(std::move(flow)).has_value());
         expect(scheduler.changeStateTo(INITIALISED).has_value());
         expect(scheduler.changeStateTo(RUNNING).has_value());
+
+        // a run that makes no progress in its first two periods is reported as stalled while it is RUNNING. The case
+        // pauses a graph that has moved samples, and it ignores reports from before the pause.
+        expect(qa_sched::awaitObservedSamplesAbove(0UZ)) << "the graph moved no sample before the pause";
         expect(scheduler.changeStateTo(REQUESTED_PAUSE).has_value());
         expect(qa_sched::awaitState(scheduler, PAUSED)) << "scheduler did not reach PAUSED";
+        qa_sched::StallReports reports;
+        reports.take(fromScheduler);
+        const std::size_t nBeforePause = reports.count;
 
         // nothing moves while paused: each watchdog period advances the progress sequence by exactly one
         const gr::Sequence& progress = scheduler.graph().progress();
         const std::size_t   from     = progress.value();
         expect(qa_sched::awaitCondition([&progress, from] { return progress.value() >= from + 4UZ * kStalledPeriods; })) << "the watchdog stopped observing the paused graph";
-        qa_sched::StallReports reports;
         reports.take(fromScheduler);
-        expect(eq(reports.count, 0UZ)) << "a paused graph was reported as stalled";
+        expect(eq(reports.count, nBeforePause)) << "a paused graph was reported as stalled";
 
         expect(scheduler.changeStateTo(RUNNING).has_value());
         expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
