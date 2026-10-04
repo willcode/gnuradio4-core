@@ -65,10 +65,17 @@ inline static const char* const kSchedulerInspected = "SchedulerInspected";
 } // namespace property
 
 enum class ExecutionPolicy {
-    singleThreaded,        ///
-    multiThreaded,         ///
-    singleThreadedBlocking /// blocks with a time-out if none of the blocks in the graph made progress (N.B. a CPU/battery power-saving measures)
+    singleThreaded,         ///
+    multiThreaded,          ///
+    singleThreadedBlocking, /// blocks with a time-out if none of the blocks in the graph made progress (N.B. a CPU/battery power-saving measures)
+    multiThreadedBlocking   /// multiThreaded, and each worker blocks with a time-out while the blocks of its own job list make no progress
 };
+
+// the policies that run one worker per job list on the thread pool
+[[nodiscard]] constexpr bool isMultiThreaded(ExecutionPolicy policy) noexcept { return policy == ExecutionPolicy::multiThreaded || policy == ExecutionPolicy::multiThreadedBlocking; }
+
+// the policies whose idle worker waits on the graph's progress sequence with a time-out
+[[nodiscard]] constexpr bool parksIdleWorkers(ExecutionPolicy policy) noexcept { return policy == ExecutionPolicy::singleThreadedBlocking || policy == ExecutionPolicy::multiThreadedBlocking; }
 
 using JobLists = std::vector<std::vector<std::shared_ptr<BlockModel>>>;
 
@@ -218,11 +225,12 @@ public:
     Annotated<gr::Size_t, "watchdog_timeout", Unit<"ms">, Doc<"sleep timeout for watchdog">>                                   watchdog_timeout                = 1000U;
     Annotated<gr::Size_t, "timeout_inactivity_count", Doc<"number of inactive cycles w/o progress before sleep is triggered">> timeout_inactivity_count        = 5U;
     Annotated<gr::Size_t, "process_stream_to_message_ratio", Doc<"number of stream to msg processing">>                        process_stream_to_message_ratio = 16U;
+    Annotated<gr::Size_t, "pool_park_count", Doc<"idle passes at the longest back-off sleep before a pool worker parks">>      pool_park_count                 = 5U;
     Annotated<std::string, "pool name", Doc<"default pool name">>                                                              poolName                        = std::string(gr::thread_pool::kDefaultCpuPoolId);
     Annotated<std::size_t, "max_work_items", Doc<"number of work items per work scheduling interval (controls latency)">>      max_work_items                  = std::numeric_limits<std::size_t>::max(); // TODO: check whether we can keep this std::size_t or more consistently to gr::Size_t
     Annotated<property_map, "sched_settings", Doc<"scheduler implementation specific settings">>                               sched_settings{};
 
-    GR_MAKE_REFLECTABLE(SchedulerBase, timeout_ms, watchdog_timeout, timeout_inactivity_count, process_stream_to_message_ratio, max_work_items, poolName, sched_settings);
+    GR_MAKE_REFLECTABLE(SchedulerBase, timeout_ms, watchdog_timeout, timeout_inactivity_count, process_stream_to_message_ratio, pool_park_count, max_work_items, poolName, sched_settings);
 
     constexpr static block::Category blockCategory = block::Category::ScheduledBlockGroup;
 
@@ -248,7 +256,7 @@ public:
     // a worker holds its pool thread for the run's lifetime, so a start into a pool whose threads are all held
     // queues that worker behind them for as long as the holders live
     [[nodiscard]] std::expected<void, Error> checkWorkerCapacity() const {
-        if constexpr (executionPolicy() == ExecutionPolicy::multiThreaded) {
+        if constexpr (isMultiThreaded(executionPolicy())) {
             const std::size_t nThreads = static_cast<std::size_t>(_pool->maxThreads());
             const std::size_t nBusy    = std::min(_pool->numTasksRunning(), nThreads);
             if (nBusy >= nThreads) {
@@ -421,7 +429,7 @@ public:
     [[nodiscard]] const TProfiler& profiler() const noexcept { return _profiler; }
 
     [[nodiscard]] bool isProcessing() const
-    requires(executionPolicy() == ExecutionPolicy::multiThreaded)
+    requires(isMultiThreaded(executionPolicy()))
     {
         return _nRunningJobs->value() > 0UZ;
     }
@@ -489,8 +497,13 @@ public:
             if (msg.serviceName != this->unique_name && msg.serviceName != this->name && msg.endpoint != block::property::kLifeCycleState) {
                 // only forward wildcard, non-scheduler messages, and non-lifecycle messages (N.B. the latter is exclusively handled by the scheduler)
                 if (_messagePortsConnected) {
-                    WriterSpanLike auto msgSpan = _toChildMessagePort.streamWriter().template reserve<SpanReleasePolicy::ProcessAll>(1UZ);
-                    msgSpan[0]                  = msg;
+                    {
+                        WriterSpanLike auto msgSpan = _toChildMessagePort.streamWriter().template reserve<SpanReleasePolicy::ProcessAll>(1UZ);
+                        msgSpan[0]                  = msg;
+                    }
+                    if constexpr (parksIdleWorkers(executionPolicy())) {
+                        wakeProgressWaiters(); // the worker that owns the addressed block may be parked
+                    }
                 } else {
                     // if not yet connected, keep messages to children in cache and forward when connecting
                     _pendingMessagesToChildren.push_back(msg);
@@ -712,6 +725,9 @@ protected:
     static constexpr std::size_t kIdleSpinIterations  = 100UZ;
     static constexpr std::size_t kIdleYieldIterations = 8UZ;
     static constexpr auto        kMaxIdleSleep        = std::chrono::microseconds(200);
+    static constexpr std::size_t kIdleSleepDoublings  = 8UZ;
+    // the idle passes after which every pass sleeps kMaxIdleSleep
+    static constexpr std::size_t kIdleBackoffPasses = kIdleSpinIterations + kIdleYieldIterations + kIdleSleepDoublings;
 
     static void applyIdleBackoff(std::size_t nIdleIterations) noexcept {
         if (nIdleIterations <= kIdleSpinIterations) {
@@ -721,7 +737,7 @@ protected:
             std::this_thread::yield();
             return;
         }
-        const std::size_t shift = std::min(nIdleIterations - (kIdleSpinIterations + kIdleYieldIterations), 8UZ);
+        const std::size_t shift = std::min(nIdleIterations - (kIdleSpinIterations + kIdleYieldIterations), kIdleSleepDoublings);
         std::this_thread::sleep_for(std::min(kMaxIdleSleep, std::chrono::microseconds(static_cast<std::chrono::microseconds::rep>(1UZ << shift))));
     }
 
@@ -914,7 +930,7 @@ protected:
         }
 
         assert(_executionOrder != nullptr && !_executionOrder->empty());
-        if constexpr (executionPolicy() == ExecutionPolicy::singleThreaded || executionPolicy() == ExecutionPolicy::singleThreadedBlocking) {
+        if constexpr (!isMultiThreaded(executionPolicy())) {
             _nRunningJobs->incrementAndGet();
             _nRunningJobs->notify_all();
             gr::atomic_ref(_nWorkersStarted).fetch_add(1UZ);
@@ -993,6 +1009,9 @@ protected:
         const void*   previousActiveScheduler = std::exchange(tActiveSchedulerWorker, static_cast<const void*>(this));
         on_scope_exit restoreActiveScheduler  = [previousActiveScheduler] { tActiveSchedulerWorker = previousActiveScheduler; };
 
+        // runs after the guards declared below, so the parked workers that it wakes find the run as this worker left it
+        on_scope_exit wakeParkedWorkers = [&progress] { wakeParkedPoolWorkers(*progress); };
+
         // counted under the lock that stop() takes to read the count. A worker that enters after stop() read zero sees
         // the scheduler shutting down and calls no work(). leaveLoop runs before decrementRunningJobs. Every blocking
         // block already in REQUESTED_STOP is therefore settled when waitDone() returns. No block's stop() hook runs
@@ -1029,10 +1048,14 @@ protected:
         auto                  activeState        = this->state();
         do {
             [[maybe_unused]] auto pe = profiler_handler->startCompleteEvent("scheduler_base.work");
-            if constexpr (executionPolicy() == ExecutionPolicy::singleThreadedBlocking) {
+            if constexpr (parksIdleWorkers(executionPolicy())) {
                 // optionally tracking progress and block if there is none
                 currentProgress = progress->value();
             }
+
+            // A message waiting at msgIn or from the run's blocks restarts the idle back-off. A parking worker restarts it
+            // only for a message at msgIn. A block with a heartbeat subscriber publishes a message in every message pass.
+            const bool restartsBackoff = this->msgIn.available() > 0UZ || (!parksIdleWorkers(executionPolicy()) && _fromChildMessagePort.available() > 0UZ);
 
             // Process messages either when the ratio gate opens, or immediately when any entry-point port has
             // pending traffic. This keeps the ratio's amortisation of empty-queue checks while giving arriving
@@ -1040,9 +1063,7 @@ protected:
             const bool hasPendingMessages   = this->msgIn.available() > 0UZ || _fromChildMessagePort.available() > 0UZ;
             const bool hasMessagesToProcess = msgToCount == 0UZ || hasPendingMessages;
             if (hasMessagesToProcess) {
-                if (runnerID == 0UZ || nRunningJobs->value() == 0UZ) {
-                    this->processScheduledMessages(); // execute the scheduler- and Graph-specific message handler only once globally
-                }
+                this->processScheduledMessages();
 
                 // Zombies are cleaned per-thread, as we remove from the localBlockList as well.
                 // Cleaning zombies has low priority, so uses process_stream_to_message_ratio (a different ratio could be introduced)
@@ -1056,7 +1077,7 @@ protected:
                 if (gr::atomic_ref(_workerGeneration).load_acquire() != generation) {
                     break; // the run was stopped, and a worker that saw no state since must not work the next run's blocks
                 }
-                if (hasPendingMessages || activeState != previousState) {
+                if (restartsBackoff || activeState != previousState) {
                     idleIterations = 0UZ;
                 }
                 msgToCount++;
@@ -1099,20 +1120,27 @@ protected:
             }
 
             // optionally tracking progress and block if there is none
-            if constexpr (executionPolicy() == ExecutionPolicy::singleThreadedBlocking) {
-                auto progressAfter = progress->value();
-                if (currentProgress == progressAfter) {
-                    inactiveCycleCount++;
-                } else {
-                    inactiveCycleCount = 0UZ;
-                }
+            if constexpr (parksIdleWorkers(executionPolicy())) {
+                // The single worker counts the passes in which the graph made no progress and parks after
+                // timeout_inactivity_count of them. A pool worker counts the passes in which its own job list did no
+                // work, since the other workers' progress would keep it awake while its blocks have nothing to do. It
+                // uses the idle back-off's count and parks pool_park_count passes after the first pass at the
+                // back-off's longest sleep. It waits from the value read before its pass, so progress that another
+                // worker made during the pass ends the wait at once.
+                const std::size_t progressAfter = progress->value();
+                const std::size_t waitFrom      = isMultiThreaded(executionPolicy()) ? currentProgress : progressAfter;
+                inactiveCycleCount              = currentProgress == progressAfter ? inactiveCycleCount + 1UZ : 0UZ;
+                const bool parkDue              = isMultiThreaded(executionPolicy()) ? idleIterations >= kIdleBackoffPasses + pool_park_count : inactiveCycleCount > timeout_inactivity_count;
+                // A request waiting at msgIn keeps the worker awake for its next message pass. A message from the run's
+                // blocks does not. A heartbeat that a block publishes in the worker's message pass waits for a later pass.
+                const bool requestPending = this->msgIn.available() > 0UZ;
 
-                currentProgress = progressAfter;
-                // parking in a non-RUNNING state would hold the worker until the watchdog's next progress bump
-                if (activeState == RUNNING && inactiveCycleCount > timeout_inactivity_count) {
+                // parking in a non-RUNNING state would delay the worker's next state read by up to timeout_ms, and a
+                // worker of a stopped run leaves instead
+                if (activeState == RUNNING && parkDue && !requestPending && gr::atomic_ref(_workerGeneration).load_acquire() == generation) {
                     // allow a scheduler process to wait on progress before retrying (N.B. intended to save CPU/battery power)
                     // N.B. a watchdog will periodically update the progress to check for non-responsive blocks.
-                    waitUntilChanged(*progress, currentProgress, timeout_ms);
+                    waitUntilChanged(*progress, waitFrom, timeout_ms);
                     msgToCount = 0UZ;
                 }
             }
@@ -1235,6 +1263,23 @@ protected:
         }
         span[0] = std::move(message);
         span.publish(1UZ);
+    }
+
+    // A graph edit wakes the parked workers, so the worker that owns an added block or edge, or a block to remove, sees
+    // it at its next pass. A parked worker otherwise sees the edit only when its park times out.
+    void wakeParkedWorkersForEdit() {
+        if constexpr (parksIdleWorkers(executionPolicy())) {
+            wakeProgressWaiters();
+        }
+    }
+
+    // a pool worker that leaves its loop advances its run's progress sequence, so the parked workers of that run wake
+    // and re-read the lifecycle state
+    static void wakeParkedPoolWorkers([[maybe_unused]] gr::Sequence& progress) {
+        if constexpr (parksIdleWorkers(executionPolicy()) && isMultiThreaded(executionPolicy())) {
+            progress.incrementAndGet();
+            progress.notify_all();
+        }
     }
 
     // a worker parked in waitUntilChanged(progress) resumes when progress moves or its timeout expires,
@@ -1408,6 +1453,7 @@ protected:
 
         if (newBlock->blockCategory() == ScheduledBlockGroup) {
             startAdoptedScheduler(newBlock);
+            wakeParkedWorkersForEdit();
             return;
         }
 
@@ -1422,6 +1468,7 @@ protected:
             break;
         default: this->emitErrorMessage("propertyCallbackEmplaceBlock", std::format("Unexpected block state during emplacement: {}", gr::meta::enumName(newBlock->state()).value_or("")));
         }
+        wakeParkedWorkersForEdit();
     }
 
     std::optional<Message> propertyCallbackEmplaceBlock([[maybe_unused]] std::string_view propertyName, Message message) {
@@ -1660,6 +1707,7 @@ protected:
                 message.data = std::unexpected(result.error());
             }
         }
+        wakeParkedWorkersForEdit();
 
         return message;
     }
@@ -1781,8 +1829,11 @@ protected:
             }
         }
 
-        std::lock_guard guard(_zombieBlocksMutex);
-        _zombieBlocks.push_back(std::move(block));
+        {
+            std::lock_guard guard(_zombieBlocksMutex);
+            _zombieBlocks.push_back(std::move(block));
+        }
+        wakeParkedWorkersForEdit();
     }
 
     // Moves all blocks into the zombie list
@@ -1966,7 +2017,8 @@ struct Simple : SchedulerBase<Simple<execution, TProfiler>, execution, TProfiler
         switch (this->executionPolicy()) {
         case ExecutionPolicy::singleThreaded:
         case ExecutionPolicy::singleThreadedBlocking: break;
-        case ExecutionPolicy::multiThreaded: n_batches = this->nJobLists(nBlocks); break;
+        case ExecutionPolicy::multiThreaded:
+        case ExecutionPolicy::multiThreadedBlocking: n_batches = this->nJobLists(nBlocks); break;
         default:;
         }
 
@@ -2019,7 +2071,7 @@ detecting cycles and blocks which can be reached from several source blocks.)"">
 
     using SchedulerBase<BreadthFirst<execution, TProfiler>, execution, TProfiler>::SchedulerBase;
 
-    static_assert(execution == ExecutionPolicy::singleThreaded || execution == ExecutionPolicy::multiThreaded, "Unsupported execution policy");
+    static_assert(execution != ExecutionPolicy::singleThreadedBlocking, "Unsupported execution policy");
 
     void customInit() {
         /* implements Breadth-first search scheduling algorithm (https://en.wikipedia.org/wiki/Breadth-first_search)
@@ -2077,7 +2129,7 @@ detecting cycles and blocks which can be reached from several source blocks.)"">
             }
         }
 
-        const std::size_t n_batches = (execution == ExecutionPolicy::multiThreaded) ? this->nJobLists(blockList.size()) : 1UZ;
+        const std::size_t n_batches = isMultiThreaded(execution) ? this->nJobLists(blockList.size()) : 1UZ;
 
         std::lock_guard lock(this->_executionOrderMutex);
         std::lock_guard guard(this->_adoptionBlocksMutex);
@@ -2093,7 +2145,7 @@ struct DepthFirst : SchedulerBase<DepthFirst<execution, TProfiler>, execution, T
 
     using SchedulerBase<DepthFirst<execution, TProfiler>, execution, TProfiler>::SchedulerBase;
 
-    static_assert(execution == ExecutionPolicy::singleThreaded || execution == ExecutionPolicy::multiThreaded, "Unsupported execution policy");
+    static_assert(execution != ExecutionPolicy::singleThreadedBlocking, "Unsupported execution policy");
 
     void customInit() {
         /**
@@ -2143,7 +2195,7 @@ struct DepthFirst : SchedulerBase<DepthFirst<execution, TProfiler>, execution, T
             dfs(src);
         }
 
-        const std::size_t n_batches = (execution == ExecutionPolicy::multiThreaded) ? this->nJobLists(blockList.size()) : 1UZ;
+        const std::size_t n_batches = isMultiThreaded(execution) ? this->nJobLists(blockList.size()) : 1UZ;
 
         std::lock_guard lock(this->_executionOrderMutex);
         std::lock_guard guard(this->_adoptionBlocksMutex);
