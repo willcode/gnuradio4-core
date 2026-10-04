@@ -203,6 +203,38 @@ const boost::ut::suite<"gr::thread_pool GR4 default"> defaultThreadPool = [] {
         expect(pool.minThreads() == 3U);
         expect(pool.maxThreads() == 3U);
     };
+
+    "ThreadPool: a task submitted as the idle worker's keep-alive expires still runs on a pool within its maximum"_test = [] {
+        using namespace gr::thread_pool;
+        using Clock = std::chrono::steady_clock;
+
+        // with no minimum, the pool's only worker leaves at its keep-alive and the next task starts a new one
+        BasicThreadPool pool("KeepAliveExitTest", TaskType::IO_BOUND, 0U, 1U);
+        pool.keepAliveDuration = std::chrono::milliseconds(1);
+
+        // the delays after each task sweep the end of the worker's keep-alive
+        constexpr std::size_t kSubmissions = 2'000UZ;
+        bool                  allStarted   = true;
+        std::size_t           maxHeld      = 0UZ;
+        for (std::size_t i = 0UZ; i < kSubmissions; ++i) {
+            auto started = std::make_shared<std::promise<void>>();
+            auto future  = started->get_future();
+            pool.execute([started] { started->set_value(); });
+            if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+                allStarted = false;
+                break;
+            }
+            // a worker that left and is not yet joined still holds its thread
+            maxHeld = std::max(maxHeld, pool.numThreadsHeld());
+
+            const Clock::time_point submitAfter = Clock::now() + pool.keepAliveDuration - std::chrono::microseconds(30) + std::chrono::nanoseconds((i * 61UZ) % 120'000UZ);
+            while (Clock::now() < submitAfter) {
+            }
+        }
+        expect(allStarted) << "a task queued as the worker left was never started";
+        expect(le(maxHeld, static_cast<std::size_t>(pool.maxThreads()))) << "the pool held more threads than its maximum";
+        expect(eq(pool.numTasksQueued(), 0UZ));
+    };
 };
 
 const boost::ut::suite<"gr::thread_pool Manager"> ThreadPoolManager = [] {

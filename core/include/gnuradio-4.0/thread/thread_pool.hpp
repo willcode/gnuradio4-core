@@ -1,6 +1,7 @@
 #ifndef THREADPOOL_HPP
 #define THREADPOOL_HPP
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -347,9 +348,10 @@ class BasicThreadPool {
     TaskQueue               _taskQueue;
     TaskQueue               _recycledTasks;
 
-    std::mutex             _threadListMutex;
-    std::atomic_size_t     _numThreads = 0U;
-    std::list<std::thread> _threads;
+    mutable std::mutex           _threadListMutex;
+    std::atomic_size_t           _numThreads = 0U;
+    std::list<std::thread>       _threads;
+    std::vector<std::thread::id> _departedThreads; // workers that left at their keep-alive and are not yet joined
 
     std::vector<bool> _affinityMask;
     thread::Policy    _schedulingPolicy   = thread::Policy::OTHER;
@@ -376,9 +378,7 @@ public:
     ~BasicThreadPool() {
         _shutdown = true;
         _condition.notify_all();
-        for (auto& t : _threads) {
-            t.join();
-        }
+        joinAllThreads();
     }
 
     BasicThreadPool(const BasicThreadPool&)            = delete;
@@ -390,13 +390,19 @@ public:
     [[nodiscard]] TaskType         poolType() const noexcept { return _taskType; }
     [[nodiscard]] uint32_t         minThreads() const noexcept { return _minThreads.load(std::memory_order_acquire); }
     [[nodiscard]] uint32_t         maxThreads() const noexcept { return _maxThreads.load(std::memory_order_acquire); }
-    [[nodiscard]] std::size_t      numThreads() const noexcept { return std::atomic_load_explicit(&_numThreads, std::memory_order_acquire); }
+    [[nodiscard]] std::size_t      numThreads() const noexcept { return std::atomic_load_explicit(&_numThreads, std::memory_order_seq_cst); }
     [[nodiscard]] std::size_t      numTasksRunning() const noexcept { return std::atomic_load_explicit(&_numTasksRunning, std::memory_order_acquire); }
     [[nodiscard]] std::size_t      numTasksQueued() const { return std::atomic_load_explicit(&_numTaskedQueued, std::memory_order_acquire); }
     [[nodiscard]] std::size_t      numTasksFailed() const noexcept { return std::atomic_load_explicit(&_numTasksFailed, std::memory_order_acquire); }
     [[nodiscard]] std::size_t      numTasksRecycled() const { return _recycledTasks.size(); }
     [[nodiscard]] bool             isInitialised() const { return _initialised.load(std::memory_order::acquire); }
     void                           waitUntilInitialised() const { _initialised.wait(false); }
+
+    /// worker threads the pool has started and not yet joined, including workers that have left at their keep-alive
+    [[nodiscard]] std::size_t numThreadsHeld() const {
+        std::scoped_lock lock(_threadListMutex);
+        return _threads.size();
+    }
 
     void setThreadBounds(uint32_t minThreads, uint32_t maxThreads) {
         if (minThreads == 0 || maxThreads == 0) {
@@ -414,9 +420,7 @@ public:
     void requestShutdown() {
         _shutdown = true;
         _condition.notify_all();
-        for (auto& t : _threads) {
-            t.join();
-        }
+        joinAllThreads();
     }
 
     [[nodiscard]] bool isShutdown() const { return _shutdown; }
@@ -540,15 +544,64 @@ private:
         return affinityMask;
     }
 
+    // A worker that has left stays joinable until it is joined. Under Emscripten such a thread keeps its web worker
+    // until then. The pool joins the workers that left before it creates another. The pool then holds at most
+    // maxThreads() threads. A thread stays in _globalThreadCount until it is joined.
+    void joinDepartedThreads() {
+        if (_departedThreads.empty()) {
+            return;
+        }
+        std::erase_if(_threads, [this](std::thread& thread) {
+            if (std::ranges::find(_departedThreads, thread.get_id()) == _departedThreads.end()) {
+                return false;
+            }
+            thread.join();
+            _globalThreadCount.fetch_sub(1UZ, std::memory_order_relaxed);
+            return true;
+        });
+        _departedThreads.clear();
+    }
+
+    // The threads are taken out of the list under the lock and joined after it is released. A join under the lock
+    // would wait for a worker that needs the lock to leave at its keep-alive.
+    void joinAllThreads() {
+        while (true) {
+            std::list<std::thread> threads;
+            {
+                std::scoped_lock lock(_threadListMutex);
+                threads.splice(threads.end(), _threads);
+                _departedThreads.clear();
+            }
+            if (threads.empty()) {
+                return;
+            }
+            for (auto& thread : threads) {
+                thread.join();
+                _globalThreadCount.fetch_sub(1UZ, std::memory_order_relaxed);
+            }
+        }
+    }
+
     void createWorkerThread(std::source_location location = std::source_location::current()) {
         std::scoped_lock lock(_threadListMutex);
+        joinDepartedThreads();
+        // a leaving worker records itself without allocating
+        _departedThreads.reserve(_threads.size() + 1UZ);
         _globalThreadCount.fetch_add(1UZ, std::memory_order_relaxed);
         const std::size_t nTotalThreads = getTotalThreadCount();
         if (nTotalThreads + 1UZ >= thread::getThreadLimit()) {
             _globalThreadCount.fetch_sub(1UZ, std::memory_order_relaxed);
             throw std::out_of_range(std::format("pool({}): about to exhaust global thread limit: {} out of {} : at {}", poolName(), nTotalThreads, thread::getThreadLimit(), location));
         }
-        const std::size_t threadIdx = _numThreads.fetch_add(1UZ, std::memory_order_acq_rel);
+        // Concurrent submitters each passed the unlocked check in execute(). The compare-and-swap that adds the
+        // worker checks the maximum again.
+        std::size_t threadIdx = _numThreads.load(std::memory_order_seq_cst);
+        do {
+            if (threadIdx >= maxThreads()) {
+                _globalThreadCount.fetch_sub(1UZ, std::memory_order_relaxed);
+                return;
+            }
+        } while (!_numThreads.compare_exchange_weak(threadIdx, threadIdx + 1UZ, std::memory_order_seq_cst));
         try {
             std::thread& thread = _threads.emplace_back(&BasicThreadPool::worker, this, threadIdx);
             updateThreadConstraints(threadIdx + 1UZ, thread);
@@ -586,8 +639,16 @@ private:
 
     template<const detail::basic_fixed_string taskName = "", uint32_t priority = 0, int32_t cpuID = -1, std::invocable Callable, typename... Args>
     auto createTask(Callable&& func, Args&&... funcArgs) {
-        auto  taskContainer = getTaskImpl(std::forward<Callable>(func), std::forward<Args>(funcArgs)...);
-        auto& task          = taskContainer.front();
+        // execute() raises the queued count before it creates the task. A task that cannot be created lowers the count
+        // again. The count does not stay raised for a task that is never queued.
+        TaskQueue::TaskContainer taskContainer;
+        try {
+            taskContainer = getTaskImpl(std::forward<Callable>(func), std::forward<Args>(funcArgs)...);
+        } catch (...) {
+            _numTaskedQueued.fetch_sub(1U);
+            throw;
+        }
+        auto& task = taskContainer.front();
 
         if constexpr (!taskName.empty()) {
             task.name = taskName.c_str();
@@ -604,6 +665,21 @@ private:
             _numTaskedQueued.fetch_sub(1U);
         }
         return result;
+    }
+
+    // A worker leaving at its keep-alive lowers _numThreads and then reads the queued count. execute() raises the
+    // queued count and then reads _numThreads, all in sequentially consistent order. Either the leaving worker sees
+    // the task, or execute() sees the lowered count and grows the pool. A worker that sees a task takes its place
+    // back unless the pool is full again. A queued task then waits for a worker that has left only when the pool cannot
+    // add a worker.
+    bool rejoinAfterLeaving() {
+        std::size_t nThreads = _numThreads.load(std::memory_order_seq_cst);
+        while (nThreads < maxThreads()) {
+            if (_numThreads.compare_exchange_weak(nThreads, nThreads + 1, std::memory_order_seq_cst)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void worker(std::size_t threadID) {
@@ -670,7 +746,6 @@ private:
             timeDiffSinceLastUsed = std::chrono::steady_clock::now() - lastUsed;
             if (isShutdown()) {
                 auto nThread = _numThreads.fetch_sub(1);
-                _globalThreadCount.fetch_sub(1UZ);
                 _numThreads.notify_all();
                 if (nThread == 1) { // cleanup last thread
                     _recycledTasks.clear();
@@ -678,14 +753,19 @@ private:
                 }
                 running = false;
             } else if (timeDiffSinceLastUsed > keepAliveDuration) { // decrease to the minimum of _minThreads in a thread safe way
-                std::size_t nThreads = numThreads();
+                // A worker leaves and records itself under the lock that createWorkerThread() holds. A new worker
+                // starts only after every worker that left has been recorded.
+                std::scoped_lock threadListLock(_threadListMutex);
+                std::size_t      nThreads = numThreads();
                 while (nThreads > minThreads()) { // compare and swap loop
-                    if (_numThreads.compare_exchange_weak(nThreads, nThreads - 1, std::memory_order_acq_rel)) {
-                        _globalThreadCount.fetch_sub(1UZ);
+                    if (_numThreads.compare_exchange_weak(nThreads, nThreads - 1, std::memory_order_seq_cst)) {
+                        if (_numTaskedQueued.load(std::memory_order_seq_cst) > 0UZ && rejoinAfterLeaving()) {
+                            break;
+                        }
+                        _departedThreads.push_back(std::this_thread::get_id());
                         _numThreads.notify_all();
                         if (nThreads == 1) { // cleanup last thread
                             _recycledTasks.clear();
-                            _taskQueue.clear();
                         }
                         running = false;
                         break;
