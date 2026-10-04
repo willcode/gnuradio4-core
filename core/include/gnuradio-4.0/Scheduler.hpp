@@ -183,10 +183,13 @@ protected:
     }
 
     // a worker occupies its pool thread for the scheduler's lifetime, so a job list that never gets one
-    // never runs its blocks and back-pressure stalls the whole graph -- claim only the free threads
+    // never runs its blocks and back-pressure stalls the whole graph -- claim only the free threads.
+    // A worker that runs a reset from a message holds its thread only until the next start retires it.
+    // Its thread counts as free.
     [[nodiscard]] std::size_t nJobLists(std::size_t nBlocks) const {
         const std::size_t nThreads = static_cast<std::size_t>(_pool->maxThreads());
-        const std::size_t nBusy    = std::min(_pool->numTasksRunning(), nThreads);
+        const std::size_t nOwn     = isOnOwnWorkerThread() ? 1UZ : 0UZ;
+        const std::size_t nBusy    = std::min(_pool->numTasksRunning() - nOwn, nThreads);
         return std::min(std::max(nThreads - nBusy, 1UZ), nBlocks);
     }
 
@@ -767,15 +770,23 @@ protected:
         }
     }
 
+    // waits until every worker count except the caller's own is released. A lifecycle command sent as a message can
+    // run on one of the scheduler's workers. That worker holds its own count until it leaves poolWorker() at its next
+    // generation check.
+    void waitForOtherWorkers() {
+        const std::size_t nOwn = isOnOwnWorkerThread() ? 1UZ : 0UZ;
+        for (std::size_t nRunning = _nRunningJobs->value(); nRunning > nOwn; nRunning = _nRunningJobs->value()) {
+            _nRunningJobs->wait(nRunning);
+        }
+    }
+
     // re-entering INITIALISED must rebuild the same execution state that init() builds, because the graph
     // may have been exchanged or edited since: a stale _executionOrder runs the previous graph's blocks
     void reset() {
         // waits for the previous run's workers before reinitializing the blocks. A worker still traversing would call
         // work() on a block whose edges reset() disconnects. stop() retired the workers, so the wait lasts at most one
-        // traversal. A reset requested by a message runs on a worker, which cannot wait for itself.
-        if (!isOnOwnWorkerThread()) {
-            waitDone();
-        }
+        // traversal.
+        waitForOtherWorkers();
         gr::atomic_ref(_nWorkersStarted).store_release(0UZ); // workerStarted() reports the next start's workers, not the last run's
         graph::forEachBlock<TransparentBlockGroup>(*_graph, [this](auto& block) { this->emitErrorMessageIfAny("reset() -> LifecycleState", block->changeStateTo(lifecycle::INITIALISED)); });
         disconnectAllEdges();
@@ -807,11 +818,14 @@ protected:
 
         // stop() publishes STOPPED and retires the run's workers by generation, without waiting for
         // them. A worker the pool counted but has not started releases its count when the pool reaches
-        // it, and a worker in its loop leaves at its next check. This run begins only once every count
-        // of the previous run is released. A worker that started after this point would run the
-        // previous job list, whose blocks are stopped. It would make no progress, reach no terminal
-        // state, and hold _nRunningJobs above zero indefinitely. The generation advances here as well,
-        // for a run that ended other than through stop().
+        // it, and a worker in its loop leaves at its next check. This run begins once every count of
+        // the previous run except the caller's own is released. The caller holds a count when a
+        // message runs this start on a worker of the previous run. That worker leaves at the
+        // generation check that follows the scheduler's message handling, before it touches a block
+        // again. A worker that started after this point would run the previous job list, whose blocks
+        // are stopped. It would make no progress, reach no terminal state, and hold _nRunningJobs
+        // above zero indefinitely. The generation advances here as well, for a run that ended other
+        // than through stop().
         //
         // The drain must happen before _executionOrderMutex is acquired: a queued worker acquires
         // that mutex to copy its job list before it can decrement _nRunningJobs, so waiting for it
@@ -819,7 +833,7 @@ protected:
         // the two are different threads. Draining first also keeps the graph from being rewired and
         // keeps children and the watchdog from starting while the previous run unwinds.
         const std::size_t workerGeneration = gr::atomic_ref(_workerGeneration).fetch_add(1UZ) + 1UZ;
-        waitDone();
+        waitForOtherWorkers();
         gr::atomic_ref(_nWorkersStarted).store_release(0UZ);
         _startError.reset();
 
@@ -1043,6 +1057,11 @@ protected:
                 if (runnerID == 0UZ || nRunningJobs->value() == 0UZ) {
                     this->processScheduledMessages(); // execute the scheduler- and Graph-specific message handler only once globally
                 }
+                // the run was retired. A start among the messages above has already dispatched the next run's workers,
+                // which own the blocks from here
+                if (gr::atomic_ref(_workerGeneration).load_acquire() != generation) {
+                    break;
+                }
 
                 // Zombies are cleaned per-thread, as we remove from the localBlockList as well.
                 // Cleaning zombies has low priority, so uses process_stream_to_message_ratio (a different ratio could be introduced)
@@ -1165,7 +1184,7 @@ protected:
 
         auto isCurrent = [this, generation] { return gr::atomic_ref(_valid).load_acquire() && gr::atomic_ref(_watchdogGeneration).load_acquire() == generation; };
 
-        // the startup wait has no deadline: start() may spend arbitrarily long in waitDone() before
+        // the startup wait has no deadline: start() may spend arbitrarily long in waitForOtherWorkers() before
         // the run's jobs register, and a watchdog that gives up then leaves the run without one
         const auto checkInterval = std::chrono::milliseconds(std::max(timeout_ms / 10UZ, 1UZ));
         while (isCurrent() && _nRunningJobs->value() == 0UZ && lifecycle::isActive(this->state())) {

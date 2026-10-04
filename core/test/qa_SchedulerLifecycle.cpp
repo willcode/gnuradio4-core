@@ -1250,6 +1250,190 @@ const boost::ut::suite<"job lists sized to the free pool threads"> jobListSizing
     };
 };
 
+namespace qa_sched {
+
+// sends a stop, a reset and a start in one span to the scheduler's message port, so a single worker handles all three
+void sendRestartBatch(gr::MsgPortOut& toScheduler, std::string_view schedulerName) {
+    using enum gr::lifecycle::State;
+    constexpr std::array kCommands{REQUESTED_STOP, INITIALISED, RUNNING};
+
+    auto span = toScheduler.streamWriter().reserve<gr::SpanReleasePolicy::ProcessAll>(kCommands.size());
+    for (std::size_t i = 0UZ; i < kCommands.size(); ++i) {
+        span[i].cmd         = gr::message::Command::Set;
+        span[i].serviceName = schedulerName;
+        span[i].endpoint    = gr::block::property::kLifeCycleState;
+        span[i].data        = gr::property_map{{"state", std::string(gr::meta::enumName(kCommands[i]).value_or(""))}};
+    }
+    span.publish(kCommands.size());
+}
+
+// reads the scheduler's count of workers that have not yet left their loop
+struct WorkerCountProbe : TestScheduler {
+    using TestScheduler::TestScheduler;
+
+    [[nodiscard]] std::size_t nRunningJobs() const { return this->_nRunningJobs->value(); }
+};
+
+// handlers that took the probe message, handlers that returned from it, and handlers whose wait ran out
+inline std::atomic<int>  gProbeTakers{0};
+inline std::atomic<int>  gProbeReturns{0};
+inline std::atomic<bool> gProbeWaitExpired{false};
+
+// posts a probe message to its own msgIn from its second start() hook. The message is then waiting when the restarted
+// run begins. The handler holds each taker until a second taker arrives or _workersSettled() reports that only the
+// restarted run's workers remain. A single taker means a single worker handled the message.
+struct SelfMessagingSource : gr::Block<SelfMessagingSource> {
+    gr::PortOut<float> out;
+
+    GR_MAKE_REFLECTABLE(SelfMessagingSource, out);
+
+    std::function<bool()> _workersSettled;
+
+    void start() {
+        if (gStartHooks.fetch_add(1, std::memory_order_acq_rel) + 1 == 2) {
+            gr::Message probe;
+            probe.cmd      = gr::message::Command::Set;
+            probe.endpoint = "probe";
+            probe.data     = gr::property_map{};
+
+            auto writer = this->msgIn.buffer().streamBuffer.new_writer();
+            auto span   = writer.tryReserve<gr::SpanReleasePolicy::ProcessAll>(1UZ);
+            if (!span.empty()) {
+                span[0] = std::move(probe);
+                span.publish(1UZ);
+            }
+        }
+        gStartHooks.notify_all();
+    }
+
+    [[nodiscard]] constexpr float processOne() const noexcept { return 1.0f; }
+
+    void processMessages(gr::MsgPortInBuiltin&, auto&& messages) {
+        for (const gr::Message& message : messages) {
+            if (message.endpoint != "probe") {
+                continue;
+            }
+            gProbeTakers.fetch_add(1, std::memory_order_acq_rel);
+            if (!awaitCondition([this] { return gProbeTakers.load(std::memory_order_acquire) >= 2 || _workersSettled(); })) {
+                gProbeWaitExpired.store(true, std::memory_order_relaxed);
+            }
+            gProbeReturns.fetch_add(1, std::memory_order_release);
+        }
+    }
+};
+
+} // namespace qa_sched
+
+const boost::ut::suite<"lifecycle commands on the scheduler's message port"> messageLifecycleTests = [] {
+    using namespace boost::ut;
+    using enum gr::lifecycle::State;
+
+    "a stop, a reset and a start in one message batch restart the run"_test = [] {
+        qa_sched::gStartHooks.store(0, std::memory_order_release);
+        qa_sched::gObservedSamples.store(0UZ, std::memory_order_relaxed);
+
+        gr::Graph flow;
+        auto&     source = flow.emplaceBlock<qa_sched::RaceSource>();
+        auto&     sink   = flow.emplaceBlock<qa_sched::ObservedSink>();
+        expect(flow.connect<"out", "in">(source, sink).has_value());
+
+        auto scheduler = std::make_unique<qa_sched::TestScheduler>();
+        expect(scheduler->exchange(std::move(flow)).has_value());
+        gr::MsgPortOut toScheduler;
+        expect(toScheduler.connect(scheduler->msgIn).has_value());
+        expect(scheduler->changeStateTo(INITIALISED).has_value());
+        expect(scheduler->changeStateTo(RUNNING).has_value());
+        expect(qa_sched::awaitObservedSamplesAbove(0UZ)) << "the first run moved no samples";
+
+        qa_sched::sendRestartBatch(toScheduler, scheduler->unique_name);
+
+        const bool restarted = qa_sched::awaitCondition([] { return qa_sched::gStartHooks.load(std::memory_order_acquire) >= 2; });
+        expect(restarted) << "the start in the batch never started the blocks";
+        if (!restarted) {
+            std::ignore = scheduler.release(); // its worker waits on itself, so destroying the scheduler would hang the suite
+            return;
+        }
+        const std::size_t afterRestart = qa_sched::gObservedSamples.load(std::memory_order_relaxed);
+        expect(qa_sched::awaitObservedSamplesAbove(afterRestart)) << "the restarted run moved no samples";
+        expect(scheduler->state() == RUNNING) << "the restarted run left RUNNING";
+
+        expect(scheduler->changeStateTo(REQUESTED_STOP).has_value());
+        expect(qa_sched::awaitState(*scheduler, STOPPED)) << "the restarted run did not stop";
+    };
+
+    // the worker that handled the batch leaves before it touches a block again, so it never handles a block's message
+    // at the same time as the restarted run's worker
+    "a block message waiting when a restart by message begins is handled once"_test = [] {
+        qa_sched::gStartHooks.store(0, std::memory_order_release);
+        qa_sched::gObservedSamples.store(0UZ, std::memory_order_relaxed);
+        qa_sched::gProbeTakers.store(0, std::memory_order_release);
+        qa_sched::gProbeReturns.store(0, std::memory_order_release);
+        qa_sched::gProbeWaitExpired.store(false, std::memory_order_relaxed);
+
+        auto      scheduler = std::make_unique<qa_sched::WorkerCountProbe>();
+        gr::Graph flow;
+        auto&     source = flow.emplaceBlock<qa_sched::SelfMessagingSource>(); // the first block is in the first job list
+        auto&     sink   = flow.emplaceBlock<qa_sched::ObservedSink>();
+        expect(flow.connect<"out", "in">(source, sink).has_value());
+        source._workersSettled = [probe = scheduler.get()] { return probe->nRunningJobs() <= probe->jobs()->size(); };
+
+        expect(scheduler->exchange(std::move(flow)).has_value());
+        gr::MsgPortOut toScheduler;
+        expect(toScheduler.connect(scheduler->msgIn).has_value());
+        expect(scheduler->changeStateTo(INITIALISED).has_value());
+        expect(scheduler->changeStateTo(RUNNING).has_value());
+        expect(qa_sched::awaitObservedSamplesAbove(0UZ)) << "the first run moved no samples";
+
+        qa_sched::sendRestartBatch(toScheduler, scheduler->unique_name);
+
+        const bool handled = qa_sched::awaitCondition([] { return qa_sched::gProbeReturns.load(std::memory_order_acquire) >= 1; });
+        expect(handled) << "no worker handled the message posted during the restart";
+        if (!handled) {
+            std::ignore = scheduler.release(); // a worker may still wait on itself, so destroying the scheduler would hang the suite
+            return;
+        }
+        expect(eq(qa_sched::gProbeTakers.load(std::memory_order_acquire), 1)) << "more than one worker handled the message";
+        expect(!qa_sched::gProbeWaitExpired.load(std::memory_order_relaxed)) << "the worker that handled the batch never left";
+
+        expect(scheduler->changeStateTo(REQUESTED_STOP).has_value());
+        expect(qa_sched::awaitState(*scheduler, STOPPED)) << "the restarted run did not stop";
+    };
+
+    // the worker that handled the batch still occupies its pool thread while the reset sizes the job lists. It leaves
+    // once the restarted run is dispatched, so the restart claims that thread as free
+    "a restart by message builds as many job lists as the first start"_test = [] {
+        qa_sched::gStartHooks.store(0, std::memory_order_release);
+        qa_sched::gObservedSamples.store(0UZ, std::memory_order_relaxed);
+
+        auto pool = qa_sched::twoThreadPool();
+
+        gr::Graph flow;
+        auto&     source = flow.emplaceBlock<qa_sched::RaceSource>();
+        auto&     sink   = flow.emplaceBlock<qa_sched::ObservedSink>();
+        expect(flow.connect<"out", "in">(source, sink).has_value());
+
+        qa_sched::TestScheduler scheduler({{"poolName", std::string(qa_sched::kOccupiedPoolName)}});
+        expect(scheduler.exchange(std::move(flow)).has_value());
+        gr::MsgPortOut toScheduler;
+        expect(toScheduler.connect(scheduler.msgIn).has_value());
+        expect(scheduler.changeStateTo(INITIALISED).has_value());
+        expect(scheduler.changeStateTo(RUNNING).has_value());
+        expect(qa_sched::awaitObservedSamplesAbove(0UZ)) << "the first run moved no samples";
+        const std::size_t nFirstJobLists = scheduler.jobs()->size();
+        expect(eq(nFirstJobLists, 2UZ)) << "the first start did not give each block its own pool thread";
+
+        qa_sched::sendRestartBatch(toScheduler, scheduler.unique_name);
+
+        expect(qa_sched::awaitCondition([] { return qa_sched::gStartHooks.load(std::memory_order_acquire) >= 2; })) << "the start in the batch never started the blocks";
+        expect(eq(scheduler.jobs()->size(), nFirstJobLists)) << "the restart by message built fewer job lists than the first start";
+        const std::size_t afterRestart = qa_sched::gObservedSamples.load(std::memory_order_relaxed);
+        expect(qa_sched::awaitObservedSamplesAbove(afterRestart)) << "the restarted run moved no samples";
+
+        expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
+        expect(qa_sched::awaitState(scheduler, STOPPED)) << "the restarted run did not stop";
+    };
+};
+
 // a blocking block leaves REQUESTED_STOP in its own work() call. In these cases no worker calls work() after the stop:
 // - the run's worker is still queued
 // - no run has started since the reset
