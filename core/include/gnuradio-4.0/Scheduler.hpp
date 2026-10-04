@@ -1276,11 +1276,6 @@ protected:
                     this->emitErrorMessageIfAny("forEachBlock -> stop() -> LifecycleState", block->changeStateTo(REQUESTED_STOP));
                     if (!block->isBlocking()) { // N.B. no other thread/constraint to consider before shutting down
                         this->emitErrorMessageIfAny("forEachBlock -> stop() -> LifecycleState", block->changeStateTo(STOPPED));
-                    } else { // a blocking block that the sweep reaches after the last worker left is settled here
-                        std::lock_guard workersLock(_workersInLoopMutex);
-                        if (_nWorkersInLoop == 0UZ && block->state() == REQUESTED_STOP) {
-                            this->emitErrorMessageIfAny("forEachBlock -> stop() -> LifecycleState", block->changeStateTo(STOPPED));
-                        }
                     }
                 }
             });
