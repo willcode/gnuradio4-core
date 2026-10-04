@@ -360,6 +360,11 @@ class BasicThreadPool {
     std::atomic<uint32_t> _minThreads;
     std::atomic<uint32_t> _maxThreads;
 
+    // set when growth after a task is queued is refused; cleared when a worker is added
+    static constexpr std::chrono::milliseconds         kGrowthRetryInterval{100};
+    std::atomic_bool                                   _growthRefused = false;
+    std::atomic<std::chrono::steady_clock::time_point> _lastGrowthRefusal{};
+
     friend std::size_t gr::thread_pool::getTotalThreadCount();
 
 public:
@@ -441,6 +446,12 @@ public:
         updateThreadConstraints();
     }
 
+    // Queues the task for a worker of the pool. When every worker has a task queued ahead or running and the pool holds
+    // fewer than maxThreads() workers, execute() adds a worker before it queues the task. If the worker cannot be
+    // added, at the process-wide thread limit (std::out_of_range) or because the system refuses a new thread
+    // (std::system_error), the exception reaches the caller and nothing is queued. A queued task waits for a busy
+    // worker only when the pool holds maxThreads() workers. It waits with no worker when the free worker leaves at its
+    // keep-alive as the task is queued and the pool cannot add a worker.
     template<const detail::basic_fixed_string taskName = "", uint32_t priority = 0, int32_t cpuID = -1, std::invocable Callable, typename... Args, typename R = gr::meta::invoke_result_t<Callable, Args...>>
     requires(std::is_same_v<R, void>)
     void execute(Callable&& func, Args&&... args, const std::source_location& location = std::source_location::current()) {
@@ -450,7 +461,18 @@ public:
                 throw std::invalid_argument(std::format("pool({}): requested cpuID {} incompatible with set affinity mask({}): [{}]", poolName(), cpuID, _affinityMask.size(), gr::join(_affinityMask, ", ")));
             }
         }
-        _numTaskedQueued.fetch_add(1U);
+        // Raising the queued count before the check makes each concurrent submitter count the tasks ahead of it. A
+        // worker raises the running count before it lowers the queued count, and the queued count is read first, so a
+        // popped task is always in one of the two counts.
+        const std::size_t nAhead = _numTaskedQueued.fetch_add(1U);
+        if (const std::size_t nThreads = numThreads(); nThreads <= nAhead + numTasksRunning() && nThreads < maxThreads()) {
+            try {
+                createWorkerThread(location);
+            } catch (...) {
+                _numTaskedQueued.fetch_sub(1U);
+                throw;
+            }
+        }
 
         _taskQueue.push(createTask<taskName, priority, cpuID>(std::forward<decltype(func)>(func), std::forward<decltype(func)>(args)...));
         _condition.notify_one();
@@ -459,7 +481,9 @@ public:
         spinWait.spinOnce();
         while (_taskQueue.size() > 0 && (numThreads() < maxThreads())) { // pending tasks and can grow
             if (const auto nThreads = numThreads(); nThreads <= numTasksRunning() && nThreads <= maxThreads()) {
-                createWorkerThread(location);
+                if (!tryAddWorkerForQueuedTask(location)) {
+                    break;
+                }
             }
             _condition.notify_one();
             spinWait.spinOnce();
@@ -557,9 +581,31 @@ private:
             _globalThreadCount.fetch_sub(1UZ, std::memory_order_relaxed);
             throw;
         }
+        _growthRefused.store(false, std::memory_order_release);
         if (numThreads() >= minThreads()) {
             std::atomic_store_explicit(&_initialised, true, std::memory_order_release);
             _initialised.notify_all();
+        }
+    }
+
+    // The task is already queued, so a refusal returns false instead of reaching the caller. Within
+    // kGrowthRetryInterval of the last refusal no worker is tried while the pool has a worker, which skips the thread
+    // count read and the exception. A pool with no worker always tries. The warning prints once until a worker is
+    // added.
+    bool tryAddWorkerForQueuedTask(std::source_location location) {
+        const auto now = std::chrono::steady_clock::now();
+        if (_growthRefused.load(std::memory_order_acquire) && numThreads() > 0UZ && now - _lastGrowthRefusal.load(std::memory_order_relaxed) < kGrowthRetryInterval) {
+            return false;
+        }
+        try {
+            createWorkerThread(location);
+            return true;
+        } catch (const std::exception& e) {
+            _lastGrowthRefusal.store(now, std::memory_order_relaxed);
+            if (!_growthRefused.exchange(true, std::memory_order_acq_rel)) {
+                std::print(stderr, "pool({}): cannot add a worker; queued tasks wait for one of its {} workers: {}\n", _poolName, numThreads(), e.what());
+            }
+            return false;
         }
     }
 
@@ -601,6 +647,7 @@ private:
     TaskQueue::TaskContainer popTask() {
         auto result = _taskQueue.pop();
         if (!result.empty()) {
+            _numTasksRunning.fetch_add(1U);
             _numTaskedQueued.fetch_sub(1U);
         }
         return result;
@@ -619,8 +666,7 @@ private:
             if (TaskQueue::TaskContainer currentTaskContainer = popTask(); !currentTaskContainer.empty()) {
                 assert(!currentTaskContainer.empty());
                 auto& currentTask = currentTaskContainer.front();
-                _numTasksRunning.fetch_add(1);
-                bool nameSet = !(currentTask.name.empty());
+                bool  nameSet     = !(currentTask.name.empty());
                 if (nameSet) {
                     thread::setThreadName(currentTask.name);
                 }
