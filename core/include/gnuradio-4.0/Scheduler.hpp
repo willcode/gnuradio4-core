@@ -42,6 +42,13 @@ inline void waitUntilChanged(gr::Sequence& sequence, T oldValue, unsigned int ti
     sequence.waitUntil(oldValue, std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms));
 }
 
+// Returns when the sequence leaves oldValue, `wake` leaves wakeOldValue, or after timeout_ms, whichever comes first.
+// Advancing `wake` ends the wait once the advancing thread calls notify_all() on the sequence.
+template<typename T>
+inline void waitUntilChanged(gr::Sequence& sequence, T oldValue, const gr::Sequence& wake, std::size_t wakeOldValue, unsigned int timeout_ms) {
+    sequence.waitUntil(oldValue, wake, wakeOldValue, std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms));
+}
+
 namespace gr::scheduler {
 using namespace gr::message;
 
@@ -136,6 +143,10 @@ protected:
     std::mutex                    _childLifecycleMutex; // serializes start()'s and stop()'s sweeps; a worker never takes it to count itself
     std::mutex                    _workersInLoopMutex;  // guards _nWorkersInLoop; no block's stop() hook runs under it
     std::size_t                   _nWorkersInLoop{0UZ}; // workers inside poolWorker(); only these workers call a block's work()
+    // counts the messages published into the rings in _messageWakeRings by a thread other than the worker; the rings
+    // are changed under _workersInLoopMutex
+    std::shared_ptr<gr::Sequence>      _messageWake = std::make_shared<gr::Sequence>();
+    std::vector<MsgPortIn::BufferType> _messageWakeRings;
 
     std::mutex                               _zombieBlocksMutex;
     std::vector<std::shared_ptr<BlockModel>> _zombieBlocks;
@@ -1005,6 +1016,7 @@ protected:
         on_scope_exit leaveLoop = [this] {
             std::lock_guard workersLock(_workersInLoopMutex);
             if (--_nWorkersInLoop == 0UZ) {
+                removeMessageWake();
                 settleStoppedBlockingBlocks();
             }
         };
@@ -1022,7 +1034,15 @@ protected:
             std::ranges::copy(blocks, std::back_inserter(localBlockList));
         }
 
+        {
+            std::lock_guard workersLock(_workersInLoopMutex);
+            registerMessageWake(progress);
+        }
+        const gr::Sequence* previousWakeExempt = std::exchange(gr::detail::tPublishWakeExempt, _messageWake.get());
+        on_scope_exit       restoreWakeExempt  = [previousWakeExempt] { gr::detail::tPublishWakeExempt = previousWakeExempt; };
+
         [[maybe_unused]] auto currentProgress    = this->_graph->progress().value();
+        [[maybe_unused]] auto currentWake        = _messageWake->value();
         std::size_t           inactiveCycleCount = 0UZ;
         std::size_t           idleIterations     = 0UZ;
         std::size_t           msgToCount         = 0UZ;
@@ -1032,6 +1052,7 @@ protected:
             if constexpr (executionPolicy() == ExecutionPolicy::singleThreadedBlocking) {
                 // optionally tracking progress and block if there is none
                 currentProgress = progress->value();
+                currentWake     = _messageWake->value();
             }
 
             // Process messages either when the ratio gate opens, or immediately when any entry-point port has
@@ -1112,7 +1133,8 @@ protected:
                 if (activeState == RUNNING && inactiveCycleCount > timeout_inactivity_count) {
                     // allow a scheduler process to wait on progress before retrying (N.B. intended to save CPU/battery power)
                     // N.B. a watchdog will periodically update the progress to check for non-responsive blocks.
-                    waitUntilChanged(*progress, currentProgress, timeout_ms);
+                    // a message published since the top of this pass ends the park without counting as progress
+                    waitUntilChanged(*progress, currentProgress, *_messageWake, currentWake, timeout_ms);
                     msgToCount = 0UZ;
                 }
             }
@@ -1242,6 +1264,35 @@ protected:
     void wakeProgressWaiters() {
         _graph->_progress->incrementAndGet();
         _graph->_progress->notify_all();
+    }
+
+    // A worker of singleThreadedBlocking parks on the graph's progress sequence. While a worker is inside poolWorker(),
+    // each message published into msgIn or into the ring the children send on advances _messageWake and notifies that
+    // progress sequence. A parked worker handles the message without waiting out timeout_ms, and the graph's progress,
+    // which the watchdog reads, stays unchanged. A message published on the worker's own thread leaves _messageWake
+    // alone and waits for the next message pass. A message published while no worker is inside stays in its ring
+    // until the first message pass of the next run. A worker that finds no registration registers, and the last worker
+    // out removes the registration, so each run registers its own graph's progress sequence. Called under
+    // _workersInLoopMutex.
+    void registerMessageWake(const std::shared_ptr<gr::Sequence>& progress) {
+        if constexpr (executionPolicy() == ExecutionPolicy::singleThreadedBlocking) {
+            if (!_messageWakeRings.empty()) {
+                return;
+            }
+            _messageWakeRings.reserve(2UZ);
+            for (MsgPortIn::BufferType ring : {this->msgIn.buffer().streamBuffer, _fromChildMessagePort.buffer().streamBuffer}) {
+                ring.addWakeSequence(_messageWake, progress);
+                _messageWakeRings.push_back(std::move(ring));
+            }
+        }
+    }
+
+    // called under _workersInLoopMutex by the last worker to leave poolWorker()
+    void removeMessageWake() {
+        for (MsgPortIn::BufferType& ring : _messageWakeRings) {
+            ring.removeWakeSequence(_messageWake);
+        }
+        _messageWakeRings.clear();
     }
 
     // a blocking block leaves REQUESTED_STOP in its own next work() call. With no worker inside poolWorker(), no such
