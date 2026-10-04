@@ -724,6 +724,23 @@ void startAndPause(TestScheduler& scheduler) {
     expect(awaitState(scheduler, PAUSED)) << "scheduler did not reach PAUSED";
 }
 
+// sends 64 notifications on its message port for every call that receives samples, which fills an undrained msgOut fast
+struct NotifyingSink : gr::Block<NotifyingSink> {
+    gr::PortIn<float> in;
+
+    GR_MAKE_REFLECTABLE(NotifyingSink, in);
+
+    std::atomic<std::size_t> _nReceived{0UZ};
+
+    gr::work::Status processBulk(gr::InputSpanLike auto& inSpan) {
+        _nReceived.fetch_add(inSpan.size(), std::memory_order_relaxed);
+        for (std::size_t i = 0UZ; i < 64UZ; ++i) {
+            this->emitMessage("tick", {});
+        }
+        return gr::work::Status::OK;
+    }
+};
+
 } // namespace qa_sched
 
 const boost::ut::suite<"scheduler pause lifecycle"> schedulerLifecycleTests = [] {
@@ -2115,6 +2132,59 @@ const boost::ut::suite<"a sub-scheduler's exported stream ports"> exportedPortTe
             expect(parent.changeStateTo(REQUESTED_STOP).has_value());
             expect(qa_sched::awaitState(parent, STOPPED)) << std::format("run {} did not stop", run);
         }
+    };
+};
+
+const boost::ut::suite<"a message output that nothing drains"> undrainedOutputTests = [] {
+    using namespace boost::ut;
+    using enum gr::lifecycle::State;
+
+    // A reader is connected to msgOut and never consumes. The sink's notifications fill msgOut, and those that do not
+    // fit are dropped. A request to the scheduler and one to the sink arrive while msgOut is full. The run keeps
+    // moving samples, and both replies arrive once the reader drains msgOut.
+    "a reply to a full message output waits for room and the run continues"_test = [] {
+        gr::Graph flow;
+        auto&     source = flow.emplaceBlock<qa_sched::EndlessSource>();
+        auto&     sink   = flow.emplaceBlock<qa_sched::NotifyingSink>();
+        expect(flow.connect<"out", "in">(source, sink).has_value());
+
+        qa_sched::TestScheduler scheduler;
+        gr::MsgPortOut          toScheduler;
+        gr::MsgPortIn           fromScheduler;
+        expect(toScheduler.connect(scheduler.msgIn).has_value());
+        expect(scheduler.msgOut.connect(fromScheduler).has_value());
+        expect(scheduler.exchange(std::move(flow)).has_value());
+        expect(scheduler.changeStateTo(INITIALISED).has_value());
+        expect(scheduler.changeStateTo(RUNNING).has_value());
+
+        const std::size_t capacity = fromScheduler.buffer().streamBuffer.size();
+        expect(qa_sched::awaitCondition([&] { return fromScheduler.streamReader().available() >= capacity; })) << "msgOut never filled";
+        const std::size_t droppedAtFull = gr::message::droppedMessageCount().load();
+        expect(qa_sched::awaitCondition([&] { return gr::message::droppedMessageCount().load() > droppedAtFull; })) << "no notification was dropped from a full msgOut";
+
+        gr::sendMessage<gr::message::Command::Get>(toScheduler, scheduler.unique_name, gr::block::property::kSetting, gr::property_map{}, "scheduler-request");
+        gr::sendMessage<gr::message::Command::Get>(toScheduler, sink.unique_name, gr::block::property::kSetting, gr::property_map{}, "sink-request");
+        expect(qa_sched::awaitCondition([&] { return scheduler.msgIn.streamReader().available() == 0UZ; })) << "the scheduler did not take the requests";
+        const std::size_t samplesAtRequests = sink._nReceived.load();
+        expect(qa_sched::awaitCondition([&] { return sink._nReceived.load() > samplesAtRequests; })) << "the run stopped moving samples after the requests";
+        expect(scheduler.state() == RUNNING) << "the run left RUNNING";
+
+        bool schedulerReplied = false;
+        bool sinkReplied      = false;
+        expect(qa_sched::awaitCondition([&] {
+            auto messages = fromScheduler.streamReader().get();
+            for (const gr::Message& message : messages) {
+                schedulerReplied = schedulerReplied || (message.clientRequestID == "scheduler-request" && message.cmd == gr::message::Command::Final);
+                sinkReplied      = sinkReplied || (message.clientRequestID == "sink-request" && message.cmd == gr::message::Command::Final);
+            }
+            std::ignore = messages.consume(messages.size());
+            return schedulerReplied && sinkReplied;
+        }));
+        expect(schedulerReplied) << "the scheduler's reply never arrived";
+        expect(sinkReplied) << "the sink's reply never arrived";
+
+        expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
+        expect(qa_sched::awaitState(scheduler, STOPPED)) << "the run did not stop";
     };
 };
 

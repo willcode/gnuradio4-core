@@ -161,6 +161,7 @@ protected:
     MsgPortOutForChildren                     _toChildMessagePort;
     MsgPortInFromChildren                     _fromChildMessagePort;
     std::vector<gr::Message>                  _pendingMessagesToChildren;
+    std::vector<gr::Message>                  _unforwardedReplies; // children's replies that found msgOut full, oldest first
     bool                                      _messagePortsConnected = false;
     std::optional<Error>                      _firstErrorFromChildren; // the first error a child sent since the latest start, named for the child
     std::map<std::string, Error, std::less<>> _latestErrorByChild;     // each child's latest error since the latest start, keyed by its unique name
@@ -523,6 +524,9 @@ public:
         ReaderSpanLike auto messagesFromChildren = _fromChildMessagePort.streamReader().get();
         const std::size_t   nFromChildren        = messagesFromChildren.size();
         if (nFromChildren == 0UZ) {
+            if (!_unforwardedReplies.empty() && this->msgOut.nReaders() != 0) {
+                forwardToMsgOut(std::span<const gr::Message>{});
+            }
             return;
         }
 
@@ -553,19 +557,46 @@ public:
             return;
         }
 
-        // forward what fits, drop the rest: a subscriber that stops consuming must not wedge worker 0
-        auto&             msgWriter  = this->msgOut.streamWriter();
-        const std::size_t nToForward = std::min(nFromChildren, msgWriter.available());
-        if (nToForward > 0UZ) {
-            WriterSpanLike auto msgSpan = msgWriter.template tryReserve<SpanReleasePolicy::ProcessAll>(nToForward);
-            std::ranges::copy_n(messagesFromChildren.begin(), static_cast<std::ptrdiff_t>(msgSpan.size()), msgSpan.begin());
-            msgSpan.publish(msgSpan.size());
-        }
-        if (nToForward < nFromChildren) {
-            message::droppedMessageCount().fetch_add(nFromChildren - nToForward, std::memory_order_relaxed);
-        }
+        forwardToMsgOut(std::span<const gr::Message>(messagesFromChildren.begin(), messagesFromChildren.end()));
         if (!messagesFromChildren.consume(nFromChildren)) {
             this->emitErrorMessage("process child return messages", "Failed to consume messages from child message port");
+        }
+    }
+
+    // forwards what fits in msgOut and never blocks: a subscriber that stops consuming must not block a worker. The
+    // replies kept from earlier calls go first, in order. A notification that does not fit is dropped and counted. Any
+    // other message that does not fit is kept for a later call. When the kept replies outnumber the slots of msgOut,
+    // the oldest is dropped and counted.
+    void forwardToMsgOut(std::span<const gr::Message> messages) {
+        auto&             msgWriter = this->msgOut.streamWriter();
+        const std::size_t nPending  = _unforwardedReplies.size() + messages.size();
+        const std::size_t nToSend   = std::min(nPending, msgWriter.available());
+        std::size_t       nSent     = 0UZ;
+        if (nToSend > 0UZ) {
+            WriterSpanLike auto msgSpan = msgWriter.template tryReserve<SpanReleasePolicy::ProcessAll>(nToSend);
+            nSent                       = msgSpan.size();
+            const std::size_t nKept     = std::min(nSent, _unforwardedReplies.size());
+            std::ranges::move(_unforwardedReplies.begin(), _unforwardedReplies.begin() + static_cast<std::ptrdiff_t>(nKept), msgSpan.begin());
+            std::ranges::copy_n(messages.begin(), static_cast<std::ptrdiff_t>(nSent - nKept), msgSpan.begin() + static_cast<std::ptrdiff_t>(nKept));
+            msgSpan.publish(nSent);
+            _unforwardedReplies.erase(_unforwardedReplies.begin(), _unforwardedReplies.begin() + static_cast<std::ptrdiff_t>(nKept));
+            nSent -= nKept;
+        }
+        std::size_t nDropped = 0UZ;
+        for (const gr::Message& message : messages.subspan(nSent)) {
+            if (message.cmd == message::Command::Notify) {
+                ++nDropped;
+            } else {
+                _unforwardedReplies.push_back(message);
+            }
+        }
+        if (const std::size_t capacity = this->msgOut.bufferSize(); _unforwardedReplies.size() > capacity) {
+            const std::size_t nOverflow = _unforwardedReplies.size() - capacity;
+            _unforwardedReplies.erase(_unforwardedReplies.begin(), _unforwardedReplies.begin() + static_cast<std::ptrdiff_t>(nOverflow));
+            nDropped += nOverflow;
+        }
+        if (nDropped > 0UZ) {
+            message::droppedMessageCount().fetch_add(nDropped, std::memory_order_relaxed);
         }
     }
 
