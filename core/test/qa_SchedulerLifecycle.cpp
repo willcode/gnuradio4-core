@@ -1141,6 +1141,23 @@ const boost::ut::suite<"stop requested before RUNNING"> preRunningStopTests = []
         expect(eq(sink._nReceived, 0UZ)) << "a latched stop must not be overwritten by a reinitializing runAndWait()";
     };
 
+    // the scheduler's stop() moves REQUESTED_STOP on to STOPPED. A stop straight to STOPPED leaves the same state, and
+    // runAndWait() honors it the same way
+    "a stop straight to STOPPED while IDLE keeps runAndWait from starting the run"_test = [] {
+        gr::Graph flow;
+        auto&     source = flow.emplaceBlock<qa_sched::RaceSource>();
+        auto&     sink   = flow.emplaceBlock<qa_sched::CountingSink>();
+        expect(flow.connect<"out", "in">(source, sink).has_value());
+
+        qa_sched::BlockingScheduler scheduler;
+        expect(scheduler.exchange(std::move(flow)).has_value());
+        expect(scheduler.changeStateTo(STOPPED).has_value());
+
+        expect(qa_sched::runAndWaitWithin(scheduler, qa_sched::kRunBound)) << "runAndWait() ran the graph after a stop straight to STOPPED";
+        expect(!gr::lifecycle::isActive(scheduler.state())) << "runAndWait() left the scheduler active";
+        expect(eq(sink._nReceived, 0UZ)) << "a stop before any run must not be overwritten by a reinitializing runAndWait()";
+    };
+
     "a stop racing the startup transient always releases runAndWait"_test = [] {
         constexpr int nCycles = 12;
 
@@ -1167,6 +1184,35 @@ const boost::ut::suite<"stop requested before RUNNING"> preRunningStopTests = []
 
         expect(eq(nCyclesBlocked, 0UZ)) << "cycles in which runAndWait() did not return within the deadline";
         expect(eq(nCyclesLeftActive, 0UZ)) << "cycles that left the scheduler in an active state";
+    };
+
+    "a stop of a run started through changeStateTo() leaves the next runAndWait free to run"_test = [] {
+        qa_sched::gSourceGate.store(false, std::memory_order_release);
+        qa_sched::gGatedSourceCalls.store(0UZ, std::memory_order_release);
+
+        gr::Graph flow;
+        auto&     source = flow.emplaceBlock<qa_sched::GatedSource>();
+        auto&     sink   = flow.emplaceBlock<qa_sched::CountingSink>();
+        expect(flow.connect<"out", "in">(source, sink).has_value());
+
+        qa_sched::TestScheduler scheduler;
+        expect(scheduler.exchange(std::move(flow)).has_value());
+        expect(scheduler.changeStateTo(INITIALISED).has_value());
+        expect(scheduler.changeStateTo(RUNNING).has_value());
+
+        // the closed gate keeps the first run going until the stop below ends it
+        for (std::size_t seen = qa_sched::gGatedSourceCalls.load(std::memory_order_acquire); seen == 0UZ; seen = qa_sched::gGatedSourceCalls.load(std::memory_order_acquire)) {
+            qa_sched::gGatedSourceCalls.wait(seen);
+        }
+        expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
+        expect(qa_sched::awaitState(scheduler, STOPPED)) << "the first run did not stop";
+        scheduler.waitDone();
+
+        qa_sched::gSourceGate.store(true, std::memory_order_release);
+        expect(qa_sched::runAndWaitWithin(scheduler, qa_sched::kEventBound)) << "runAndWait() did not finish the finite graph";
+        expect(eq(source._nEmitted, qa_sched::kSamplesBeforeTerminal)) << "runAndWait() returned without running the graph";
+        expect(eq(sink._nReceived, qa_sched::kSamplesBeforeTerminal)) << "the sink did not receive the second run's samples";
+        qa_sched::gSourceGate.store(false, std::memory_order_release);
     };
 };
 

@@ -150,8 +150,8 @@ protected:
     std::optional<PendingExchange> _pendingExchange;
     std::size_t                    _nDeferredExchanges{0UZ}; // claimed swaps still running outside the job count
     std::size_t                    _nStopRequests{0UZ};
-    bool                           _pendingStopRequest{false}; // a requested stop that no run loop has consumed yet
-    std::optional<Error>           _startError;                // written by failStart(), cleared when a start begins
+    bool                           _awaitingRun{true}; // set by construction and the initialized state, cleared by RUNNING and on leaving runAndWait()
+    std::optional<Error>           _startError;        // written by failStart(), cleared when a start begins
 
     // for blocks that were added while scheduler was running. They need to be adopted by a thread
     std::mutex _adoptionBlocksMutex;
@@ -442,8 +442,8 @@ public:
     }
 
     void stateChanged(lifecycle::State newState) {
-        if (newState == lifecycle::State::REQUESTED_STOP) { // set with the claim, before stop() collapses the state to STOPPED
-            gr::atomic_ref(_pendingStopRequest).store_release(true);
+        if (newState == lifecycle::State::INITIALISED || newState == lifecycle::State::RUNNING) {
+            gr::atomic_ref(_awaitingRun).store_release(newState == lifecycle::State::INITIALISED);
         }
         this->notifyListeners(block::property::kLifeCycleState, {{"state", std::string(gr::meta::enumName(newState).value_or(""))}});
     }
@@ -573,9 +573,10 @@ public:
         using enum lifecycle::State;
         [[maybe_unused]] const auto pe = this->_profilerHandler->startCompleteEvent("scheduler_base.runAndWait");
 
-        // a stop requested before RUNNING is claimed has no run loop to observe it, and the reinitialization
-        // below erases the STOPPED it produced: honor the latch instead, and consume it on the way out
-        on_scope_exit consumeStopRequest = [this] { gr::atomic_ref(_pendingStopRequest).store_release(false); };
+        // a stop that arrives while no run has begun belongs to the run this call would start. No run loop observes
+        // it, and the reinitialization below would erase the STOPPED it produced. This call honors it in place of the
+        // run and counts as that run on the way out
+        on_scope_exit endAwaitedRun = [this] { gr::atomic_ref(_awaitingRun).store_release(false); };
 
         auto settleStopped = [this]() -> std::expected<void, Error> {
             if (this->state() == RUNNING) {
@@ -594,7 +595,7 @@ public:
         };
 
         processScheduledMessages(); // make sure initial subscriptions are processed
-        if (gr::atomic_ref(_pendingStopRequest).load_acquire()) {
+        if (lifecycle::isShuttingDown(this->state()) && gr::atomic_ref(_awaitingRun).load_acquire()) {
             return settleStopped();
         }
         if (this->state() == STOPPED || this->state() == ERROR) {
