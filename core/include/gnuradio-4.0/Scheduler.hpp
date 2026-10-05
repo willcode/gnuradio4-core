@@ -140,6 +140,8 @@ protected:
     std::mutex                               _zombieBlocksMutex;
     std::vector<std::shared_ptr<BlockModel>> _zombieBlocks;
 
+    bool _stopRequestedDuringSwap{false}; // guarded by _pendingExchangeMutex; set by a stop request that changed no state
+
     struct PendingExchange {
         meta::indirect<gr::Graph> graph;
         profiling::Options        option;
@@ -305,10 +307,12 @@ public:
     }
 
     ~SchedulerBase() {
-        gr::atomic_ref(_valid).store_release(false); // mark as invalid: also stops a deferred swap from restarting the scheduler
         stopWatchdogs();
         { // a deferred graph swap must not restart a scheduler that is being destroyed
             std::lock_guard guard(_pendingExchangeMutex);
+            // start() reads _valid under this lock. A start that reads true has set RUNNING already, and the state
+            // check below stops that run
+            gr::atomic_ref(_valid).store_release(false); // mark as invalid: also stops a deferred swap from restarting the scheduler
             _pendingExchange.reset();
         }
 
@@ -318,12 +322,16 @@ public:
                 std::abort();
             }
         }
-        waitDone();
+        // a swap that read _valid as true restarts the run and counts its workers, possibly after waitDone() returned.
+        // The two waits repeat until no worker remains
+        do {
+            waitDone();
 
-        // a swap claimed before _valid was cleared runs outside the job count, so wait for it separately
-        for (std::size_t nDeferred = gr::atomic_ref(_nDeferredExchanges).load_acquire(); nDeferred != 0UZ; nDeferred = gr::atomic_ref(_nDeferredExchanges).load_acquire()) {
-            gr::atomic_ref(_nDeferredExchanges).wait(nDeferred);
-        }
+            // a swap claimed before _valid was cleared runs outside the job count, so wait for it separately
+            for (std::size_t nDeferred = gr::atomic_ref(_nDeferredExchanges).load_acquire(); nDeferred != 0UZ; nDeferred = gr::atomic_ref(_nDeferredExchanges).load_acquire()) {
+                gr::atomic_ref(_nDeferredExchanges).wait(nDeferred);
+            }
+        } while (_nRunningJobs->value() != 0UZ);
 
         // the watchdog dereferences SchedulerBase, wait until it finishes
         for (std::size_t nWatchdogs = gr::atomic_ref(_nWatchdogsRunning).load_acquire(); nWatchdogs != 0UZ; nWatchdogs = gr::atomic_ref(_nWatchdogsRunning).load_acquire()) {
@@ -334,6 +342,23 @@ public:
     }
 
     [[nodiscard]] bool isOnOwnWorkerThread() const noexcept { return tActiveSchedulerWorker == static_cast<const void*>(this); }
+
+    // A stop requested while the scheduler is stopping or stopped changes no state. A deferred swap reads the flag set
+    // here before it restarts the run. A swap that read the flag first has already left STOPPED, and this request stops
+    // the run it starts.
+    void transitionSatisfied(lifecycle::State requested) {
+        if (requested != lifecycle::State::REQUESTED_STOP) {
+            return;
+        }
+        const lifecycle::State current = [this] {
+            std::lock_guard guard(_pendingExchangeMutex);
+            _stopRequestedDuringSwap = true;
+            return this->state();
+        }();
+        if (current == lifecycle::State::INITIALISED || lifecycle::isActive(current)) {
+            this->emitErrorMessageIfAny("transitionSatisfied() -> REQUESTED_STOP", this->changeStateTo(lifecycle::State::REQUESTED_STOP));
+        }
+    }
 
     [[nodiscard]] std::expected<meta::indirect<Graph>, Error> exchange(meta::indirect<Graph>&& newGraph, const profiling::Options& option = {}) {
         using enum lifecycle::State;
@@ -347,6 +372,10 @@ public:
             // plain swap, and the scheduler would never start again.
             const bool restart = lifecycle::isActive(oldState);
             if (restart) {
+                {
+                    std::lock_guard guard(_pendingExchangeMutex);
+                    _stopRequestedDuringSwap = false; // a stop requested from here on cancels the restart
+                }
                 if (auto result = this->changeStateTo(REQUESTED_STOP); !result) {
                     return std::unexpected(result.error());
                 }
@@ -805,6 +834,18 @@ protected:
     void start() {
         using enum gr::lifecycle::State;
 
+        // A start that reads _valid as false requests a stop and returns before it counts or dispatches a worker. The
+        // destructor clears _valid under this lock and then reads the state.
+        bool destroying = false;
+        {
+            std::lock_guard guard(_pendingExchangeMutex);
+            destroying = !gr::atomic_ref(_valid).load_acquire();
+        }
+        if (destroying) {
+            this->emitErrorMessageIfAny("start() -> REQUESTED_STOP", this->changeStateTo(REQUESTED_STOP));
+            return;
+        }
+
         // stop() publishes STOPPED and retires the run's workers by generation, without waiting for
         // them. A worker the pool counted but has not started releases its count when the pool reaches
         // it, and a worker in its loop leaves at its next check. This run begins only once every count
@@ -1137,7 +1178,16 @@ protected:
         }
         if (pending.restart && gr::atomic_ref(_nStopRequests).load_acquire() == pending.stopGeneration) {
             this->emitErrorMessageIfAny("applyPendingExchange() -> INITIALISED", this->changeStateTo(INITIALISED));
-            this->emitErrorMessageIfAny("applyPendingExchange() -> RUNNING", this->changeStateTo(RUNNING));
+            bool stopRequested = false;
+            {
+                std::lock_guard guard(_pendingExchangeMutex);
+                stopRequested = _stopRequestedDuringSwap;
+            }
+            if (stopRequested) {
+                this->emitErrorMessageIfAny("applyPendingExchange() -> REQUESTED_STOP", this->changeStateTo(REQUESTED_STOP));
+            } else if (auto result = this->changeStateTo(RUNNING); !result && !lifecycle::isShuttingDown(this->state())) {
+                this->emitErrorMessage("applyPendingExchange() -> RUNNING", result.error());
+            }
         }
     }
 
