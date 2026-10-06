@@ -365,8 +365,10 @@ public:
             }
             waitDone(); // wait for all jobs to complete
 
-            if (auto result = this->changeStateTo(STOPPED); !result) {
-                return std::unexpected(result.error());
+            if (this->state() != ERROR) { // a block that failed before the stop leaves ERROR, and reset() below leaves it
+                if (auto result = this->changeStateTo(STOPPED); !result) {
+                    return std::unexpected(result.error());
+                }
             }
         }
 
@@ -638,7 +640,7 @@ public:
         if (_startError.has_value()) {
             return std::unexpected(*_startError);
         }
-        if (this->state() == ERROR) {
+        if (this->state() == ERROR || runEndingBlock().has_value()) {
             return std::unexpected(runEndingError());
         }
         return {};
@@ -654,15 +656,17 @@ public:
     [[nodiscard]] std::shared_ptr<JobLists> jobs() const noexcept { return _executionOrder; }
 
 protected:
-    // the error of a run that ended in ERROR. It names the first block whose work() returned ERROR and carries that
-    // block's latest reported error, or the name alone when the block reported none. A run that no block's ERROR ended
-    // returns the first error any child reported
+    // the first block whose work() returned ERROR since the latest start
+    [[nodiscard]] std::optional<std::string> runEndingBlock() {
+        std::lock_guard guard(_runEndingBlockMutex);
+        return _runEndingBlock;
+    }
+
+    // the error of a run that ended in ERROR, or of a run that a block's ERROR after the stop ended. It names the first
+    // block whose work() returned ERROR and carries that block's latest reported error, or the name alone when the
+    // block reported none. A run that no block's ERROR ended returns the first error any child reported
     [[nodiscard]] Error runEndingError() {
-        std::optional<std::string> endingBlock;
-        {
-            std::lock_guard guard(_runEndingBlockMutex);
-            endingBlock = _runEndingBlock;
-        }
+        const std::optional<std::string> endingBlock = runEndingBlock();
         if (endingBlock.has_value()) {
             if (const auto reported = _latestErrorByChild.find(*endingBlock); reported != _latestErrorByChild.end()) {
                 return reported->second;
@@ -1081,7 +1085,15 @@ protected:
                         if (result.status == work::Status::DONE) {
                             break; // nothing happened -> shutdown this worker
                         } else if (result.status == work::Status::ERROR) {
-                            this->emitErrorMessageIfAny("LifecycleState (ERROR)", this->changeStateTo(ERROR));
+                            if (gr::atomic_ref(_workerGeneration).load_acquire() == generation) {
+                                this->emitErrorMessageIfAny("LifecycleState (ERROR)", this->changeStateTo(ERROR));
+                            } else {
+                                // a stop retired this run while the failing call ran. stop() publishes STOPPED
+                                // without waiting for the call, and the state stays STOPPED. A restart or a graph swap
+                                // that follows the stop proceeds. runAndWait() returns the error, and this message
+                                // reports it.
+                                this->emitErrorMessage("work() after the stop", Error{std::format("block '{}' returned ERROR after the stop reached it", runEndingBlock().value_or(""))});
+                            }
                             break;
                         }
                         idleIterations = result.performed_work > 0UZ ? 0UZ : idleIterations + 1UZ;
