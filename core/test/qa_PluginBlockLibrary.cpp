@@ -10,6 +10,7 @@
 #include <gnuradio-4.0/BlockRegistry.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
 
+#include "MappedLibrary.hpp"
 #include "build_configure.hpp"
 
 /**
@@ -32,6 +33,8 @@ constexpr std::string_view kDuplicateKey = "test::library_duplicate";
 [[nodiscard]] std::string skippedNamesDirectory() { return std::string(TESTS_BINARY_PATH) + "/block_library_skipped"; }
 
 [[nodiscard]] std::string pluginDirectory() { return std::string(TESTS_BINARY_PATH) + "/plugins"; }
+
+using gr::testing::isMapped;
 
 } // namespace qa_plugin_block_library
 
@@ -90,7 +93,7 @@ const boost::ut::suite<"PluginBlockLibrary"> pluginBlockLibraryTests = [] {
         expect(eq(duplicate->dynamicOutputPorts().size(), 1UZ));
     };
 
-    "a plugin that registers nothing is closed and reported as before"_test = [] {
+    "a plugin that yields no instance is reported among the failed plugins and stays mapped"_test = [] {
         const std::vector<std::string> directories{pluginDirectory()};
         PluginLoader                   loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), directories);
 
@@ -98,6 +101,7 @@ const boost::ut::suite<"PluginBlockLibrary"> pluginBlockLibraryTests = [] {
         const auto failed = std::ranges::find_if(loader.failedPlugins(), [](const auto& entry) { return entry.first.contains("bad_plugin"); });
         expect(fatal(failed != loader.failedPlugins().end())) << "the plugin that cannot be instantiated is still a failure";
         expect(!failed->second.empty()) << "a failure carries its reason";
+        expect(that % isMapped(failed->first)) << "the loader unmapped a plugin that yields no instance";
     };
 
     "a name that reads as a shared object but is not opened is reported"_test = [] {
