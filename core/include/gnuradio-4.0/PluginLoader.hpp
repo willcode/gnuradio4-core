@@ -21,7 +21,14 @@
 #include <gnuradio-4.0/YamlPmt.hpp>
 
 #ifdef INTERNAL_ENABLE_BLOCK_PLUGINS
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include "Plugin.hpp"
 
@@ -177,7 +184,7 @@ struct YamlDefinitionsLoader {
                         if (blockContent) {
                             // the stamp is written last, so an interrupted write leaves a miss rather than a
                             // fresh stamp over stale content
-                            if (std::ofstream body(cachePath); body) {
+                            if (std::ofstream body(cachePath, std::ios::binary); body) {
                                 body << *blockContent;
                                 body.close();
                                 if (std::ofstream version(versionPath); version) {
@@ -217,7 +224,6 @@ struct YamlDefinitionsLoader {
                     .plugin_version = field("plugin_version"),
                     .block_type     = field("block_type"), //
                 };
-
                 if (metadata.block_type.empty()) {
                     ++_nSkippedAssets;
                     std::println("warning: block definition {} skipped: definition_metadata carries no block_type", blockUri);
@@ -241,6 +247,26 @@ std::expected<std::shared_ptr<gr::BlockModel>, gr::Error> instantiateBlockFromYa
 
 #ifdef INTERNAL_ENABLE_BLOCK_PLUGINS
 // Plugins are not supported on WASM
+
+namespace detail {
+// Minimal shared-library shim, so that PluginHandler itself stays free of platform #ifdefs.
+#ifdef _WIN32
+[[nodiscard]] inline void* openSharedLibrary(const char* path) noexcept { return ::LoadLibraryA(path); }
+[[nodiscard]] inline void* findSharedLibrarySymbol(void* handle, const char* name) noexcept { return reinterpret_cast<void*>(::GetProcAddress(static_cast<HMODULE>(handle), name)); }
+inline void                closeSharedLibrary(void* handle) noexcept { ::FreeLibrary(static_cast<HMODULE>(handle)); }
+#else
+[[nodiscard]] inline void* openSharedLibrary(const char* path) noexcept {
+
+#ifdef __APPLE__
+    return ::dlopen(path, RTLD_LAZY | RTLD_GLOBAL);
+#else
+    return ::dlopen(path, RTLD_LAZY | RTLD_LOCAL);
+#endif
+}
+[[nodiscard]] inline void* findSharedLibrarySymbol(void* handle, const char* name) noexcept { return ::dlsym(handle, name); }
+inline void                closeSharedLibrary(void* handle) noexcept { ::dlclose(handle); }
+#endif
+} // namespace detail
 
 using plugin_create_function_t  = void (*)(gr_plugin_base**);
 using plugin_destroy_function_t = void (*)(gr_plugin_base*);
@@ -276,7 +302,7 @@ private:
         releaseInstance();
 
         if (_dl_handle && !_keepMapped) {
-            dlclose(_dl_handle);
+            detail::closeSharedLibrary(_dl_handle);
             _dl_handle = nullptr;
         }
     }
@@ -285,14 +311,7 @@ public:
     PluginHandler() = default;
 
     explicit PluginHandler(const std::string& plugin_file) {
-        // RTLD_LOCAL keeps plugin symbols isolated but breaks RTTI/dynamic_cast across dylib boundaries.
-        // On macOS (Mach-O two-level namespace), RTLD_LOCAL also risks duplicating singletons such as
-        // globalBlockRegistry(); use RTLD_GLOBAL there to match Linux ELF flat-namespace behaviour.
-#ifdef __APPLE__
-        _dl_handle = dlopen(plugin_file.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-#else
-        _dl_handle = dlopen(plugin_file.c_str(), RTLD_LAZY | RTLD_LOCAL);
-#endif
+        _dl_handle = detail::openSharedLibrary(plugin_file.c_str());
         if (!_dl_handle) {
             // the linker's reason: a missing library, a versioned name the installation lacks, an undefined symbol
             const char* reason = dlerror();
@@ -315,13 +334,13 @@ public:
         // whateever …". But we don't need to. Simply have a single 'extern "C"' symbol in the plugin which is an object
         // storing two function pointers. Then we need a single cast from the 'dlsym' result to an aggregate type and
         // can then extract the two function pointers from it. That's simpler and more likely to be conforming C++.
-        _create_fn = reinterpret_cast<plugin_create_function_t>(dlsym(_dl_handle, "gr_plugin_make"));
+        _create_fn = reinterpret_cast<plugin_create_function_t>(detail::findSharedLibrarySymbol(_dl_handle, "gr_plugin_make"));
         if (!_create_fn) {
             _status = "Failed to load symbol gr_plugin_make";
             return;
         }
 
-        _destroy_fn = reinterpret_cast<plugin_destroy_function_t>(dlsym(_dl_handle, "gr_plugin_free"));
+        _destroy_fn = reinterpret_cast<plugin_destroy_function_t>(detail::findSharedLibrarySymbol(_dl_handle, "gr_plugin_free"));
         if (!_destroy_fn) {
             _status = "Failed to load symbol gr_plugin_free";
             return;
