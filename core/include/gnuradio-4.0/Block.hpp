@@ -1043,6 +1043,9 @@ public:
         _initError.reset();
         try {
             auto applyResult = settings().applyStagedParameters();
+            if (!applyResult.failedParameters.empty()) {
+                throw gr::exception(applyResult.refusal);
+            }
             if (!applyResult.appliedParameters.empty()) {
                 notifyListeners(block::property::kSetting, settings().get());
             }
@@ -1465,7 +1468,7 @@ public:
             }
             notifyListeners(block::property::kSetting, settings().get());
             if (!applyResult.failedParameters.empty()) {
-                emitMessage("applyChangedSettings() - rejected settings", applyResult.failedParameters);
+                emitErrorMessage("applyChangedSettings() - rejected settings", applyResult.refusal);
             }
         });
 
