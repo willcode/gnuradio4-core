@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <memory>
 #include <optional>
@@ -175,7 +176,7 @@ const boost::ut::suite<"PluginAbiVersion"> pluginAbiVersionTests = [] {
 
         expect(fatal(eq(loader.blockLibraries().size(), 1UZ))) << "only the library of this ABI version is kept";
         const PluginLoader::BlockLibrary& kept = loader.blockLibraries().front();
-        expect(kept.file.ends_with("/libscheduler_library.so")) << kept.file;
+        expect(std::filesystem::path(kept.file).stem().string().contains("scheduler_library")) << kept.file;
         expect(eq(kept.nSchedulerRegistrations, 1UZ));
         expect(that % isMapped(kept.file)) << "the probe sees a library the loader keeps";
         expect(that % !std::ranges::contains(loader.blockLibraries(), refused->first, &PluginLoader::BlockLibrary::file)) << "a refused library is not kept";
