@@ -456,7 +456,7 @@ public:
         return std::ranges::any_of(_edges, [&](const Edge& e) { return e == edge; });
     }
 
-    // appends the edge as given, without the one-source check that connect() and emplaceEdge() run for stream inputs
+    // appends the edge as given, without the checks that connect() and emplaceEdge() run on an input that an edge takes
     template<typename T>
     requires std::same_as<std::remove_cvref_t<T>, Edge>
     [[nodiscard]] std::expected<std::reference_wrapper<Edge>, Error> addEdge(T&& edge, std::source_location location = std::source_location::current()) {
@@ -496,7 +496,8 @@ public:
     // throws and leaves the graph as it was. A block whose port the graph exports cannot be replaced.
     std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>> replaceBlock(std::string_view uniqueName, std::string_view type, const property_map& properties);
 
-    // returns the edges the new one displaced from its stream input
+    // returns the edges the new one displaced from its stream input. An edge into a message input that an edge already
+    // takes is refused before the ports are connected, and the error names both edges
     [[nodiscard]] std::expected<std::vector<Edge>, Error> emplaceEdge(std::string_view sourceBlock, std::string sourcePort, std::string_view destinationBlock, //
         std::string destinationPort, [[maybe_unused]] const std::size_t minBufferSize, [[maybe_unused]] const std::int32_t weight, std::string_view edgeName) {
         auto sourceBlockIt = std::ranges::find_if(_blocks, [&sourceBlock](const auto& block) { return block->uniqueName() == sourceBlock; });
@@ -524,15 +525,19 @@ public:
             return std::unexpected(Error(std::format("{}.{} can not be connected to {}.{} -- different types", sourceBlock, sourcePort, destinationBlock, destinationPort)));
         }
 
+        const bool        isArithmeticLike       = sourcePortRef.isArithmeticLikeValueType();
+        const std::size_t sanitizedMinBufferSize = minBufferSize == undefined_size ? graph::defaultMinBufferSize(isArithmeticLike) : minBufferSize;
+        Edge              newEdge(*sourceBlockIt, sourcePort, *destinationBlockIt, destinationPort, sanitizedMinBufferSize, weight, std::string(edgeName));
+        if (auto free = checkInputFree(newEdge, PortType::MESSAGE); !free) {
+            return std::unexpected(free.error());
+        }
+
         auto connectionResult = sourcePortRef.connect(destinationPortRef);
 
         if (!connectionResult) {
             return std::unexpected(Error(std::format("{}.{} can not be connected to {}.{}: {}", sourceBlock, sourcePort, destinationBlock, destinationPort, connectionResult.error().message)));
         }
 
-        const bool        isArithmeticLike       = sourcePortRef.isArithmeticLikeValueType();
-        const std::size_t sanitizedMinBufferSize = minBufferSize == undefined_size ? graph::defaultMinBufferSize(isArithmeticLike) : minBufferSize;
-        Edge              newEdge(*sourceBlockIt, sourcePort, *destinationBlockIt, destinationPort, sanitizedMinBufferSize, weight, std::string(edgeName));
         std::vector<Edge> displaced = removeEdgesDisplacedBy(newEdge);
         _edges.push_back(std::move(newEdge));
         return displaced;
@@ -602,10 +607,11 @@ public:
     std::optional<Message> propertyCallbackRegistryBlockTypes([[maybe_unused]] std::string_view propertyName, Message message);
     std::optional<Message> propertyCallbackRegistrySchedulerTypes([[maybe_unused]] std::string_view propertyName, Message message);
 
+    // a second edge into a message input is refused, and the error names both edges
     [[nodiscard]] std::expected<void, Error> connect(std::shared_ptr<BlockModel> sourceBlock, PortDefinition sourcePort, //
         std::shared_ptr<BlockModel> destinationBlock, PortDefinition destinationPort,                                    //
-        EdgeParameters                        parameters = {},                                                           //
-        [[maybe_unused]] std::source_location location   = std::source_location::current()) {
+        EdgeParameters       parameters = {},                                                                            //
+        std::source_location location   = std::source_location::current()) {
 
         auto       srcPortResult    = sourceBlock->dynamicOutputPort(sourcePort);
         const bool isArithmeticLike = srcPortResult ? srcPortResult.value()->isArithmeticLikeValueType() : true;
@@ -614,6 +620,9 @@ public:
         Edge newEdge(sourceBlock, std::move(sourcePort),  //
             destinationBlock, std::move(destinationPort), //
             std::move(parameters));
+        if (auto free = checkInputFree(newEdge, PortType::MESSAGE, location); !free) {
+            return free;
+        }
         std::ignore = removeEdgesDisplacedBy(newEdge);
         _edges.push_back(std::move(newEdge));
 
@@ -727,6 +736,9 @@ public:
         Edge newEdge(sourceBlockModel.value(), sourcePortDefinition->definition,  //
             destinationBlockModel.value(), destinationPortDefinition->definition, //
             std::move(parameters));
+        if (auto free = checkInputFree(newEdge, PortType::MESSAGE, location); !free) {
+            return free;
+        }
         std::ignore = removeEdgesDisplacedBy(newEdge);
         _edges.push_back(std::move(newEdge));
 
@@ -941,12 +953,22 @@ public:
     }
 
 private:
+    // an input of the given port type reads only the ring it was connected to last: a second edge into it leaves the
+    // first one listed with no reader
+    [[nodiscard]] std::expected<void, Error> checkInputFree(const Edge& newEdge, PortType type, std::source_location location = std::source_location::current()) const {
+        const auto taken = std::ranges::find_if(_edges, [&newEdge, type](const Edge& edge) { return edge.hasSameInput(newEdge, type); });
+        if (taken == _edges.end()) {
+            return {};
+        }
+        return std::unexpected(Error(std::format("edge {} is refused: edge {} ends at the same input", newEdge, *taken), location));
+    }
+
     // an earlier edge into the same stream input is removed and reported: the input reads only the ring it was
     // connected to last
     [[nodiscard]] std::vector<Edge> removeEdgesDisplacedBy(const Edge& newEdge) {
         std::vector<Edge> displaced;
         std::erase_if(_edges, [&newEdge, &displaced](const Edge& edge) {
-            if (!edge.hasSameStreamInput(newEdge)) {
+            if (!edge.hasSameInput(newEdge, PortType::STREAM)) {
                 return false;
             }
             std::println("edge {} replaces edge {}: a stream input takes one source", newEdge, edge);

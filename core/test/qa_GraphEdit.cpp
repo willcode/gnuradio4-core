@@ -78,6 +78,26 @@ struct Sink : gr::Block<Sink> {
     void processOne(float) { _nReceived++; }
 };
 
+// a source with a message output, for message edges
+struct MessageSource : gr::Block<MessageSource> {
+    gr::PortOut<float> out;
+    gr::MsgPortOut     cmd;
+
+    GR_MAKE_REFLECTABLE(MessageSource, out, cmd);
+
+    [[nodiscard]] constexpr float processOne() const noexcept { return 1.0f; }
+};
+
+// a sink with a message input, for message edges
+struct MessageSink : gr::Block<MessageSink> {
+    gr::PortIn<float> in;
+    gr::MsgPortIn     cmd;
+
+    GR_MAKE_REFLECTABLE(MessageSink, in, cmd);
+
+    void processOne(float) {}
+};
+
 // one connected and one deliberately unconnected optional output
 struct DualSource : gr::Block<DualSource> {
     gr::PortOut<float>               out;
@@ -1309,6 +1329,25 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         expect(eq(inspectedEdge->at(std::pmr::string(EDGE_SOURCE_BLOCK)).value_or(std::string_view{}), std::string_view(second.unique_name))) << "the inspect reply names the displaced source";
     };
 
+    "a second edge into a taken message input is refused and the refusal names both edges"_test = [] {
+        gr::Graph flow;
+        auto&     first  = flow.emplaceBlock<qa_edit::MessageSource>({{"name", std::string("first")}});
+        auto&     second = flow.emplaceBlock<qa_edit::MessageSource>({{"name", std::string("second")}});
+        auto&     sink   = flow.emplaceBlock<qa_edit::MessageSink>();
+        expect(flow.connect(first, gr::PortDefinition("cmd"), sink, gr::PortDefinition("cmd")).has_value());
+
+        const std::expected<void, gr::Error> refused = flow.connect(second, gr::PortDefinition("cmd"), sink, gr::PortDefinition("cmd"));
+        expect(fatal(!refused.has_value())) << "the second edge into the message input was accepted";
+        const std::string& reason = refused.error().message;
+        expect(reason.contains(qa_edit::portOf("first", "cmd")) && reason.contains(qa_edit::portOf("second", "cmd"))) << "the refusal must name both edges: " << reason;
+
+        expect(fatal(eq(flow.edges().size(), 1UZ))) << "the refused edge was listed";
+        expect(eq(flow.edges()[0].sourceBlock()->uniqueName(), std::string_view(first.unique_name))) << "the refusal removed the listed edge";
+        expect(flow.connectPendingEdges());
+        expect(eq(first.cmd.nReaders(), 1UZ)) << "the listed edge carries no message";
+        expect(eq(second.cmd.nReaders(), 0UZ)) << "the refused source feeds the input";
+    };
+
     "an edge emplaced into a taken stream input replaces the listed edge"_test = [] {
         using namespace gr::serialization_fields;
 
@@ -1356,6 +1395,45 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         expect(eq(displacedEdge->at(std::pmr::string(EDGE_DESTINATION_BLOCK)).value_or(std::string_view{}), std::string_view(sink.unique_name)));
         expect(eq(first.out.nReaders(), 0UZ)) << "the displaced source still feeds the input";
         expect(eq(second.out.nReaders(), 1UZ)) << "the emplaced source does not feed the input";
+
+        expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
+        for (std::size_t i = 0UZ; i < 3000UZ && scheduler.state() != STOPPED; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        expect(scheduler.state() == STOPPED);
+    };
+
+    "an edge emplaced into a taken message input is refused and the graph keeps its edges"_test = [] {
+        using namespace gr::serialization_fields;
+
+        qa_edit::TestScheduler scheduler;
+        gr::Graph              flow;
+        auto&                  first  = flow.emplaceBlock<qa_edit::MessageSource>({{"name", std::string("first")}});
+        auto&                  second = flow.emplaceBlock<qa_edit::MessageSource>({{"name", std::string("second")}});
+        auto&                  sink   = flow.emplaceBlock<qa_edit::MessageSink>();
+        expect(flow.connect<"out", "in">(first, sink).has_value());
+        expect(flow.connect(first, gr::PortDefinition("cmd"), sink, gr::PortDefinition("cmd")).has_value());
+        expect(fatal(scheduler.exchange(std::move(flow)).has_value()));
+
+        gr::MsgPortOut toScheduler;
+        gr::MsgPortIn  fromScheduler;
+        expect(toScheduler.connect(scheduler.msgIn).has_value());
+        expect(scheduler.msgOut.connect(fromScheduler).has_value());
+
+        expect(scheduler.changeStateTo(INITIALISED).has_value());
+        expect(scheduler.changeStateTo(RUNNING).has_value());
+
+        qa_edit::sendMessage(toScheduler, gr::scheduler::property::kEmplaceEdge,
+            {{std::pmr::string(EDGE_SOURCE_BLOCK), std::string(second.unique_name)}, {std::pmr::string(EDGE_SOURCE_PORT), std::string("cmd")},            //
+                {std::pmr::string(EDGE_DESTINATION_BLOCK), std::string(sink.unique_name)}, {std::pmr::string(EDGE_DESTINATION_PORT), std::string("cmd")}, //
+                {std::pmr::string(EDGE_MIN_BUFFER_SIZE), gr::undefined_Size}, {std::pmr::string(EDGE_WEIGHT), std::int32_t{0}},                           //
+                {std::pmr::string(EDGE_NAME), std::string("second command")}});
+        const std::string reason = qa_edit::awaitError(fromScheduler, gr::scheduler::property::kEdgeEmplaced);
+        expect(reason.contains(qa_edit::portOf("first", "cmd")) && reason.contains(qa_edit::portOf("second", "cmd"))) << "the refusal must name both edges: " << reason;
+
+        expect(eq(scheduler.graph().edges().size(), 2UZ)) << "the refused edge was listed";
+        expect(eq(first.cmd.nReaders(), 1UZ)) << "the listed message edge lost its reader";
+        expect(eq(second.cmd.nReaders(), 0UZ)) << "the refused source feeds the input";
 
         expect(scheduler.changeStateTo(REQUESTED_STOP).has_value());
         for (std::size_t i = 0UZ; i < 3000UZ && scheduler.state() != STOPPED; ++i) {
