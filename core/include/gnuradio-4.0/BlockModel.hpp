@@ -152,7 +152,7 @@ struct Edge {
     [[nodiscard]] bool hasSameSourcePort(const Edge& other) const;
     [[nodiscard]] bool hasSameStreamInput(const Edge& other) const;
 
-    constexpr bool operator==(const Edge& other) const noexcept {
+    bool operator==(const Edge& other) const noexcept {
         return sourceBlock() == other.sourceBlock()                                                       //
                && destinationBlock() == other.destinationBlock()                                          //
                && sourcePortDefinition().definition == other.sourcePortDefinition().definition            //
