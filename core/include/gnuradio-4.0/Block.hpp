@@ -2183,6 +2183,7 @@ public:
             _drainMark    = DrainWatermark{};
             return false;
         }
+        ++detail::drainingCalls();
         if (const DrainWatermark mark = drainWatermark(); mark != _drainMark) {
             _drainMark    = mark;
             _nDrainStalls = 0UZ;
