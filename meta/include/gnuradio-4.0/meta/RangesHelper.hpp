@@ -5,6 +5,15 @@
 #include <ranges>
 #include <vector>
 
+// MSVC ignores the standard attribute for ABI-compatibility reasons and honours only its own spelling
+#ifndef GR_NO_UNIQUE_ADDRESS
+#ifdef _MSC_VER
+#define GR_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#define GR_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
+#endif
+
 namespace gr::ranges {
 template<class R>
 concept ViewableForwardRange = std::ranges::viewable_range<R> && std::ranges::forward_range<std::views::all_t<R>>;
@@ -125,8 +134,8 @@ struct MergeView : std::ranges::view_interface<MergeView<R, TComp>> {
 
     static_assert(std::ranges::forward_range<TInView>);
 
-    TOut                        _out;
-    [[no_unique_address]] TComp _comp{};
+    TOut                       _out;
+    GR_NO_UNIQUE_ADDRESS TComp _comp{};
 
     MergeView() = default;
 
@@ -214,7 +223,7 @@ struct MergeView : std::ranges::view_interface<MergeView<R, TComp>> {
 
 template<class Comp = std::ranges::less>
 struct Merge : std::ranges::range_adaptor_closure<Merge<Comp>> {
-    [[no_unique_address]] Comp _comp{};
+    GR_NO_UNIQUE_ADDRESS Comp _comp{};
 
     Merge() = default;
 

@@ -6,7 +6,7 @@
 #include <complex>
 #include <concepts>
 #include <cstdint>
-#include <cxxabi.h>
+#include <cstdlib>
 #include <format>
 #include <map>
 #include <new>
@@ -22,6 +22,10 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#ifndef _MSC_VER
+#include <cxxabi.h>
+#endif
 
 #if __has_include(<stdfloat>) && !defined(__ADAPTIVECPP__)
 #include <stdfloat>
@@ -43,8 +47,18 @@ static_assert(std::numeric_limits<float64_t>::is_iec559 && sizeof(float64_t) * 8
 #define DISABLE_SIMD 0
 #endif
 
+// MSVC ignores the standard attribute for ABI-compatibility reasons and honours only its own spelling
+#ifndef GR_NO_UNIQUE_ADDRESS
+#ifdef _MSC_VER
+#define GR_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#define GR_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
+#endif
+
 namespace gr {
 
+#ifndef _MSC_VER
 #pragma GCC diagnostic push // suppress unavoidable float/int/size_t conversion warnings
 #pragma GCC diagnostic ignored "-Wconversion"
 #ifdef __clang__
@@ -52,6 +66,14 @@ namespace gr {
 #pragma GCC diagnostic ignored "-Wshorten-64-to-32"
 #pragma GCC diagnostic ignored "-Wimplicit-int-float-conversion"
 #pragma GCC diagnostic ignored "-Wimplicit-float-conversion"
+#endif
+#endif
+
+// N.B. deliberately distinct from the macro that AtomicRef.hpp & friends define and later `#undef`
+#ifdef _MSC_VER
+#define GR_ALWAYS_INLINE __forceinline
+#else
+#define GR_ALWAYS_INLINE [[gnu::always_inline]]
 #endif
 
 using Size_t                                = std::uint32_t; // strict type definition in view of cross-platform/cross-compiler/cross-network portability similar to 'std::size_t' (N.B. which is not portable)
@@ -65,7 +87,9 @@ T cast(U value) { /// gcc/clang warning suppressing cast
     return static_cast<T>(value);
 }
 
+#ifndef _MSC_VER
 #pragma GCC diagnostic pop
+#endif
 
 namespace meta {
 
@@ -85,8 +109,24 @@ struct null_type {};
 template<typename... Ts>
 struct print_types;
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#include <stdlib.h>
+// Break the debugger, then tell the compiler it is truly unreachable
+#define CRASH_INTRA_OP()                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       \
+    do {                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       \
+        __debugbreak();                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        \
+        __assume(0);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           \
+    } while (0)
+#elif defined(__GNUC__) || defined(__clang__)
+#define CRASH_INTRA_OP() __builtin_trap()
+#else
+#include <stdlib.h>
+#define CRASH_INTRA_OP() std::abort()
+#endif
+
 #if HAVE_SOURCE_LOCATION
-[[gnu::always_inline]] constexpr void precondition(bool cond, const std::source_location loc = std::source_location::current()) {
+GR_ALWAYS_INLINE constexpr void precondition(bool cond, const std::source_location loc = std::source_location::current()) {
     if consteval {
         if (not cond) {
             std::unreachable();
@@ -95,7 +135,7 @@ struct print_types;
         struct handle {
             [[noreturn]] static void failure(std::source_location const& loc) {
                 std::clog << "failed precondition in " << loc.file_name() << ':' << loc.line() << ':' << loc.column() << ": `" << loc.function_name() << "`\n";
-                __builtin_trap();
+                CRASH_INTRA_OP();
             }
         };
 
@@ -105,7 +145,7 @@ struct print_types;
     }
 }
 #else
-[[gnu::always_inline]] constexpr void precondition(bool cond) {
+GR_ALWAYS_INLINE constexpr void precondition(bool cond) {
     if consteval {
         if (not cond) {
             std::unreachable();
@@ -114,7 +154,7 @@ struct print_types;
         struct handle {
             [[noreturn]] static void failure() {
                 std::println(stderr, "failed precondition");
-                __builtin_trap();
+                CRASH_INTRA_OP();
             }
         };
 

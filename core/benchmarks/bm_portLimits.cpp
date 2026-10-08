@@ -62,7 +62,7 @@ struct BenchBlock : Block<BenchBlock> {
 
 template<typename T>
 inline void black_box(const T& v) {
-    asm volatile("" : : "g"(v) : "memory");
+    ::benchmark::force_store(v);
 }
 
 // ---- UT + Bench ---------------------------------------------------

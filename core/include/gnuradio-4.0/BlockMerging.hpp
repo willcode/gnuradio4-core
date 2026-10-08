@@ -665,7 +665,7 @@ public:
     mutable Feedback                   _feedback;
     mutable FeedbackConnectionPortType _state{};
 
-    [[no_unique_address]] mutable std::conditional_t<std::is_same_v<void, Monitor>, detail::Empty, Monitor> _monitor;
+    GR_NO_UNIQUE_ADDRESS mutable std::conditional_t<std::is_same_v<void, Monitor>, detail::Empty, Monitor> _monitor;
 
     FeedbackMergeBase(const FeedbackMergeBase&)            = delete;
     FeedbackMergeBase& operator=(const FeedbackMergeBase&) = delete;

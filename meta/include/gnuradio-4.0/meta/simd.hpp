@@ -6,12 +6,16 @@
 #include <type_traits>
 #include <utility>
 
+#ifndef _MSC_VER
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 #include <vir/simd.h>
 #include <vir/simdize.h>
+#ifndef _MSC_VER
 #pragma GCC diagnostic pop
+#endif
 
 namespace gr::meta {
 
