@@ -16,7 +16,51 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#include <io.h>
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
+
+namespace {
+// the few descriptor calls these captures need, under the names each CRT gives them
+#if defined(_WIN32)
+constexpr int kStdErrFd = 2;
+constexpr int kStdOutFd = 1;
+inline int    duplicateFd(int fd) { return ::_dup(fd); }
+inline int    replaceFd(int fd, int with) { return ::_dup2(fd, with); }
+inline int    closeFd(int fd) { return ::_close(fd); }
+inline int    fileNo(std::FILE* file) { return ::_fileno(file); }
+inline int    currentProcessId() { return ::_getpid(); }
+#else
+constexpr int kStdErrFd = STDERR_FILENO;
+constexpr int kStdOutFd = STDOUT_FILENO;
+inline int    duplicateFd(int fd) { return ::dup(fd); }
+inline int    replaceFd(int fd, int with) { return ::dup2(fd, with); }
+inline int    closeFd(int fd) { return ::close(fd); }
+inline int    fileNo(std::FILE* file) { return ::fileno(file); }
+inline int    currentProcessId() { return ::getpid(); }
+#endif
+} // namespace
+
+namespace {
+// Reads at an explicit offset without moving the descriptor's own offset, which stdout shares
+// through dup2.
+inline long readAt(int fd, char* buffer, std::size_t nBytes, long offset) {
+#if defined(_WIN32)
+    const long saved = ::_lseek(fd, 0, SEEK_CUR);
+    if (saved < 0 || ::_lseek(fd, offset, SEEK_SET) < 0) {
+        return -1;
+    }
+    const int nRead = ::_read(fd, buffer, static_cast<unsigned int>(nBytes));
+    ::_lseek(fd, saved, SEEK_SET);
+    return nRead;
+#else
+    return static_cast<long>(::pread(fd, buffer, nBytes, static_cast<off_t>(offset)));
+#endif
+}
+} // namespace
 
 #include <gnuradio-4.0/BlockRegistry.hpp>
 #include <gnuradio-4.0/CircularBuffer.hpp>
@@ -228,8 +272,8 @@ struct StdoutCapture {
 
     StdoutCapture() {
         std::fflush(stdout);
-        _savedFd = ::dup(STDOUT_FILENO);
-        ::dup2(::fileno(_file), STDOUT_FILENO);
+        _savedFd = duplicateFd(kStdOutFd);
+        replaceFd(fileNo(_file), kStdOutFd);
     }
 
     StdoutCapture(const StdoutCapture&)            = delete;
@@ -237,8 +281,8 @@ struct StdoutCapture {
 
     ~StdoutCapture() {
         std::fflush(stdout);
-        ::dup2(_savedFd, STDOUT_FILENO);
-        ::close(_savedFd);
+        replaceFd(_savedFd, kStdOutFd);
+        closeFd(_savedFd);
         std::fclose(_file);
     }
 
@@ -247,7 +291,7 @@ struct StdoutCapture {
         std::fflush(stdout);
         std::string           captured;
         std::array<char, 512> chunk{};
-        for (ssize_t nRead = ::pread(::fileno(_file), chunk.data(), chunk.size(), 0); nRead > 0; nRead = ::pread(::fileno(_file), chunk.data(), chunk.size(), static_cast<off_t>(captured.size()))) {
+        for (long nRead = readAt(fileNo(_file), chunk.data(), chunk.size(), 0); nRead > 0; nRead = readAt(fileNo(_file), chunk.data(), chunk.size(), static_cast<long>(captured.size()))) {
             captured.append(chunk.data(), static_cast<std::size_t>(nRead));
         }
         return captured;
