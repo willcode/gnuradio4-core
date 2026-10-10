@@ -3,6 +3,131 @@
 #include <gnuradio-4.0/meta/UnitTestHelper.hpp>
 #include <gnuradio-4.0/thread/thread_pool.hpp>
 
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <optional>
+#include <semaphore>
+#include <string>
+#include <system_error>
+#include <thread>
+#include <vector>
+
+#if not defined(__EMSCRIPTEN__) && not defined(__APPLE__)
+namespace {
+
+// Tasks that hold their workers until released. Each task records the name and the affinity mask of its worker. An
+// instance declared before the pool outlives the workers that read it.
+struct HeldWorkers {
+    struct Worker {
+        std::string       name;
+        std::vector<bool> mask;
+    };
+
+    std::mutex               mutex;
+    std::condition_variable  changed;
+    std::vector<Worker>      workers;
+    std::vector<std::string> releasedNames;
+    bool                     releasedAll = false;
+
+    // Queues up to nTasks tasks and waits until each queued task holds a worker. Returns the message of the refusal
+    // that stops the queueing, or an empty string when the pool takes every task.
+    std::string hold(gr::thread_pool::BasicThreadPool& pool, std::size_t nTasks) {
+        std::string refusal;
+        std::size_t nQueued = 0UZ;
+        try {
+            for (; nQueued < nTasks; ++nQueued) {
+                pool.execute([this] { holdWorker(); });
+            }
+        } catch (const std::exception& e) {
+            refusal = e.what();
+        }
+        std::unique_lock lock(mutex);
+        changed.wait(lock, [this, nQueued] { return workers.size() >= nQueued; });
+        return refusal;
+    }
+
+    // The mask of the worker with the given name, or an empty mask when no task ran on that worker.
+    [[nodiscard]] std::vector<bool> maskOf(std::string_view name) const {
+        const auto found = std::ranges::find(workers, name, &Worker::name);
+        return found == workers.end() ? std::vector<bool>{} : found->mask;
+    }
+
+    // Releases the task held by the worker with the given name.
+    void release(std::string name) {
+        {
+            std::scoped_lock lock(mutex);
+            releasedNames.push_back(std::move(name));
+        }
+        changed.notify_all();
+    }
+
+    void releaseAll() {
+        {
+            std::scoped_lock lock(mutex);
+            releasedAll = true;
+        }
+        changed.notify_all();
+    }
+
+private:
+    void holdWorker() {
+        std::unique_lock  lock(mutex);
+        const std::string name = gr::thread_pool::thread::getThreadName();
+        workers.push_back({.name = name, .mask = gr::thread_pool::thread::getThreadAffinity()});
+        changed.notify_all();
+        changed.wait(lock, [this, &name] { return releasedAll || std::ranges::find(releasedNames, name) != releasedNames.end(); });
+    }
+};
+
+// A worker leaves at its keep-alive without a signal. The wait polls the pool's thread count for five seconds at most.
+bool waitForNumThreads(const gr::thread_pool::BasicThreadPool& pool, std::size_t nThreads) {
+    for (std::size_t i = 0UZ; i < 5000UZ && pool.numThreads() != nThreads; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return pool.numThreads() == nThreads;
+}
+
+// Two CPUs of the calling thread. The pool's mask holds both, and each stripe holds one.
+struct TwoCpuMask {
+    std::vector<bool>                pool;
+    std::array<std::vector<bool>, 2> stripes;
+};
+
+// Returns no mask when the calling thread may run on fewer than nCallerCpus CPUs.
+std::optional<TwoCpuMask> twoCpuMask(std::size_t nCallerCpus) {
+    const std::vector<bool>  callerMask = gr::thread_pool::thread::getThreadAffinity();
+    std::vector<std::size_t> callerCpus;
+    for (std::size_t cpu = 0UZ; cpu < callerMask.size(); ++cpu) {
+        if (callerMask[cpu]) {
+            callerCpus.push_back(cpu);
+        }
+    }
+    if (callerCpus.size() < nCallerCpus) {
+        return std::nullopt;
+    }
+    TwoCpuMask mask{.pool = std::vector<bool>(callerMask.size(), false), .stripes = {}};
+    mask.stripes.fill(mask.pool);
+    for (std::size_t i = 0UZ; i < mask.stripes.size(); ++i) {
+        mask.pool[callerCpus[i]]       = true;
+        mask.stripes[i][callerCpus[i]] = true;
+    }
+    return mask;
+}
+
+std::string bits(const std::vector<bool>& mask) {
+    std::string text;
+    for (const bool cpuSet : mask) {
+        text.push_back(cpuSet ? '1' : '0');
+    }
+    return text;
+}
+
+} // namespace
+#endif
+
 const boost::ut::suite<"gr::thread_pool GR4 default"> defaultThreadPool = [] {
     using namespace boost::ut;
 
@@ -101,13 +226,12 @@ const boost::ut::suite<"gr::thread_pool GR4 default"> defaultThreadPool = [] {
                     });
                 }
                 expect(that % pool.numThreads() >= minThreads);
-                // the maximum number of threads is not a hard limit, if there is a burst of execute calls, it will spwawn more than maxThreads trheads.
                 // expect(that % pool.numThreads() == std::min(std::uint32_t(taskCount), maxThreads));
 
                 for (std::size_t i = 0UZ; i < taskCount; ++i) {
                     counter.wait(i);
                     expect(that % pool.numThreads() >= minThreads);
-                    // expect(that % pool.numThreads() <= maxThreads); // not a hard limit
+                    expect(that % pool.numThreads() <= maxThreads);
                 }
 
                 // We should have gotten back to minimum
@@ -117,6 +241,333 @@ const boost::ut::suite<"gr::thread_pool GR4 default"> defaultThreadPool = [] {
             }
         }
     };
+
+#if not defined(__EMSCRIPTEN__) && not defined(__APPLE__)
+    "ThreadPool: an affinity mask pins each worker to its stripe and leaves the calling thread's mask"_test = [] {
+        using namespace gr::thread_pool;
+
+        // The pool's mask leaves out at least one CPU of the calling thread. A pool of two workers has two stripes of
+        // one CPU each.
+        const std::vector<bool>         callerMask = thread::getThreadAffinity();
+        const std::optional<TwoCpuMask> mask       = twoCpuMask(3UZ);
+        if (!mask) {
+            boost::ut::log << "skipped: the calling thread may run on fewer than three CPUs";
+            return;
+        }
+
+        for (const TaskType taskType : {TaskType::IO_BOUND, TaskType::CPU_BOUND}) {
+            const std::string_view poolKind = taskType == TaskType::IO_BOUND ? "IO-bound" : "CPU-bound";
+            // An IO-bound worker runs on the whole mask and a CPU-bound worker on its stripe. The third worker shares the first stripe.
+            const auto expectedMask = [&](std::size_t worker) { return taskType == TaskType::IO_BOUND ? mask->pool : mask->stripes[worker % mask->stripes.size()]; };
+
+            HeldWorkers     held;
+            BasicThreadPool pool("AffinityTest", taskType, 2U, 3U);
+            pool.waitUntilInitialised();
+            pool.setAffinityMask(mask->pool);
+            // Three tasks for two idle workers make the pool start its third worker.
+            const std::string       refusal         = held.hold(pool, 3UZ);
+            const std::vector<bool> callerMaskAfter = thread::getThreadAffinity();
+            held.releaseAll();
+
+            expect(refusal.empty()) << std::format("{} pool: the third worker was refused: {}", poolKind, refusal);
+            expect(callerMaskAfter == callerMask) << std::format("{} pool: the calling thread's mask {} became {}", poolKind, bits(callerMask), bits(callerMaskAfter));
+            for (std::size_t worker = 0UZ; worker < 3UZ; ++worker) {
+                const std::vector<bool> workerMask = held.maskOf(std::format("AffinityTest#{}", worker));
+                expect(workerMask == expectedMask(worker)) << std::format("{} pool: worker {} runs on '{}', expected '{}'", poolKind, worker, bits(workerMask), bits(expectedMask(worker)));
+            }
+        }
+    };
+
+    "ThreadPool: a CPU-bound pool with more workers than CPUs in its mask pins every worker to one CPU of the mask"_test = [] {
+        using namespace gr::thread_pool;
+
+        const std::optional<TwoCpuMask> mask = twoCpuMask(2UZ);
+        if (!mask) {
+            boost::ut::log << "skipped: the calling thread may run on fewer than two CPUs";
+            return;
+        }
+
+        // Three workers share two stripes of one CPU each. A fourth task makes the pool start a fourth worker, which
+        // takes the second stripe.
+        HeldWorkers     held;
+        BasicThreadPool pool("FewCpusTest", TaskType::CPU_BOUND, 3U, 4U);
+        pool.waitUntilInitialised();
+        std::string maskFailure;
+        try {
+            pool.setAffinityMask(mask->pool);
+        } catch (const std::exception& e) {
+            maskFailure = e.what();
+        }
+        const std::string refusal = held.hold(pool, 4UZ);
+        held.releaseAll();
+
+        expect(maskFailure.empty()) << std::format("setAffinityMask() failed: {}", maskFailure);
+        expect(refusal.empty()) << std::format("the fourth worker was refused: {}", refusal);
+        for (std::size_t worker = 0UZ; worker < 4UZ; ++worker) {
+            const std::vector<bool>& expectedMask = mask->stripes[worker % mask->stripes.size()];
+            const std::vector<bool>  workerMask   = held.maskOf(std::format("FewCpusTest#{}", worker));
+            expect(workerMask == expectedMask) << std::format("worker {} runs on '{}', expected '{}'", worker, bits(workerMask), bits(expectedMask));
+        }
+    };
+
+    "ThreadPool: a worker started after another left takes the lowest index no worker holds"_test = [] {
+        using namespace gr::thread_pool;
+
+        const std::optional<TwoCpuMask> mask = twoCpuMask(2UZ);
+        if (!mask) {
+            boost::ut::log << "skipped: the calling thread may run on fewer than two CPUs";
+            return;
+        }
+
+        // Workers 0 and 2 run on the first stripe and worker 1 on the second. Worker 1 leaves at its keep-alive. The
+        // worker started in its place takes index 1. It carries that index in its name and runs on the second stripe.
+        HeldWorkers firstRound;
+        HeldWorkers secondRound;
+        // the pool starts its workers at the tasks, after the keep-alive is set
+        BasicThreadPool pool("RegrowTest", TaskType::CPU_BOUND, 0U, 3U);
+        pool.keepAliveDuration = std::chrono::milliseconds(10);
+        pool.setThreadBounds(2U, 3U);
+        pool.setAffinityMask(mask->pool);
+
+        std::string refusal = firstRound.hold(pool, 3UZ);
+        firstRound.release("RegrowTest#1");
+        const bool workerLeft = waitForNumThreads(pool, 2UZ);
+        firstRound.releaseAll();
+        if (refusal.empty()) {
+            refusal = secondRound.hold(pool, 3UZ);
+        }
+        secondRound.releaseAll();
+
+        expect(refusal.empty()) << std::format("a worker was refused: {}", refusal);
+        expect(workerLeft) << "worker 1 did not leave at its keep-alive";
+        std::vector<std::string> names;
+        for (const HeldWorkers::Worker& worker : secondRound.workers) {
+            names.push_back(worker.name);
+        }
+        std::ranges::sort(names);
+        std::string nameList;
+        for (const std::string& name : names) {
+            nameList += nameList.empty() ? name : ", " + name;
+        }
+        expect(names == std::vector<std::string>{"RegrowTest#0", "RegrowTest#1", "RegrowTest#2"}) << std::format("the workers are named {}", nameList);
+        for (std::size_t worker = 0UZ; worker < 3UZ; ++worker) {
+            const std::vector<bool>& expectedMask = mask->stripes[worker % mask->stripes.size()];
+            const std::vector<bool>  workerMask   = secondRound.maskOf(std::format("RegrowTest#{}", worker));
+            expect(workerMask == expectedMask) << std::format("worker {} runs on '{}', expected '{}'", worker, bits(workerMask), bits(expectedMask));
+        }
+    };
+
+    "ThreadPool: a pool holding a worker that left at its keep-alive takes a new mask and scheduling policy"_test = [] {
+        using namespace gr::thread_pool;
+
+        const std::vector<bool>         callerMask = thread::getThreadAffinity();
+        const std::optional<TwoCpuMask> mask       = twoCpuMask(2UZ);
+        if (!mask) {
+            boost::ut::log << "skipped: the calling thread may run on fewer than two CPUs";
+            return;
+        }
+
+        // In each round two tasks make the pool start a second worker, and one of the two workers leaves at its
+        // keep-alive. The pool holds the departed worker until a call joins it.
+        HeldWorkers maskRound;
+        HeldWorkers policyRound;
+        // the pool starts its workers at the tasks, after the keep-alive is set
+        BasicThreadPool pool("DepartedTest", TaskType::IO_BOUND, 0U, 2U);
+        pool.keepAliveDuration = std::chrono::milliseconds(10);
+        pool.setThreadBounds(1U, 2U);
+        const auto leaveOne = [&pool](HeldWorkers& round) {
+            const std::string refusal = round.hold(pool, 2UZ);
+            round.releaseAll();
+            return refusal.empty() && waitForNumThreads(pool, 1UZ) && pool.numThreadsHeld() == 2UZ;
+        };
+        const auto failureOf = [](const auto& call) -> std::string {
+            try {
+                call();
+            } catch (const std::exception& e) {
+                return e.what();
+            }
+            return {};
+        };
+
+        const bool              maskRoundLeft   = leaveOne(maskRound);
+        const std::string       maskFailure     = failureOf([&pool, &mask] { pool.setAffinityMask(mask->pool); });
+        const std::size_t       heldAfterMask   = pool.numThreadsHeld();
+        const bool              policyRoundLeft = leaveOne(policyRound);
+        const std::string       policyFailure   = failureOf([&pool] { pool.setThreadSchedulingPolicy(pool.getSchedulingPolicy(), pool.getSchedulingPriority()); });
+        const std::size_t       heldAfterPolicy = pool.numThreadsHeld();
+        const std::vector<bool> workerMask      = pool.execute([] { return thread::getThreadAffinity(); }).get();
+
+        expect(maskRoundLeft && policyRoundLeft) << "a worker did not leave at its keep-alive";
+        expect(maskFailure.empty()) << std::format("setAffinityMask() failed: {}", maskFailure);
+        expect(eq(heldAfterMask, 1UZ)) << "setAffinityMask() left the departed worker unjoined";
+        expect(policyFailure.empty()) << std::format("setThreadSchedulingPolicy() failed: {}", policyFailure);
+        expect(eq(heldAfterPolicy, 1UZ)) << "setThreadSchedulingPolicy() left the departed worker unjoined";
+        expect(workerMask == mask->pool) << std::format("the remaining worker runs on '{}', expected '{}'", bits(workerMask), bits(mask->pool));
+        expect(thread::getThreadAffinity() == callerMask) << "the calling thread's mask changed";
+    };
+
+    "ThreadPool: readers and new workers see only the masks and policies that another thread sets"_test = [] {
+        using namespace gr::thread_pool;
+
+        const std::optional<TwoCpuMask> mask = twoCpuMask(2UZ);
+        if (!mask) {
+            boost::ut::log << "skipped: the calling thread may run on fewer than two CPUs";
+            return;
+        }
+
+        // One thread sets the two stripes in turn, each followed by the default scheduling policy. Meanwhile the
+        // calling thread reads the pool's mask and policy and makes the pool start four workers. An IO-bound worker
+        // runs on the whole mask. Each worker therefore runs on one of the stripes.
+        constexpr std::size_t kRounds = 200UZ;
+        constexpr std::size_t kReads  = 100UZ;
+        HeldWorkers           held;
+        BasicThreadPool       pool("ConcurrentMaskTest", TaskType::IO_BOUND, 0U, 4U);
+        pool.setAffinityMask(mask->stripes[0]);
+        std::atomic<bool> setterDone{false};
+        std::string       setterFailure;
+        std::jthread      setter([&pool, &mask, &setterDone, &setterFailure] {
+            try {
+                for (std::size_t round = 0UZ; round < kRounds; ++round) {
+                    pool.setAffinityMask(mask->stripes[round % mask->stripes.size()]);
+                    pool.setThreadSchedulingPolicy(thread::Policy::OTHER, 0);
+                    std::this_thread::yield();
+                }
+            } catch (const std::exception& e) {
+                setterFailure = e.what();
+            }
+            setterDone = true;
+        });
+
+        const auto  isStripe    = [&mask](const std::vector<bool>& candidate) { return std::ranges::find(mask->stripes, candidate) != mask->stripes.end(); };
+        std::size_t nReads      = 0UZ;
+        std::size_t nUnsetReads = 0UZ;
+        const auto  readBack    = [&] {
+            const bool setValues = isStripe(pool.getAffinityMask()) && pool.getSchedulingPolicy() == thread::Policy::OTHER && pool.getSchedulingPriority() == 0;
+            nUnsetReads += setValues ? 0UZ : 1UZ;
+            ++nReads;
+        };
+        for (std::size_t read = 0UZ; read < kReads; ++read) {
+            readBack();
+        }
+        const std::string refusal = held.hold(pool, 4UZ);
+        while (!setterDone) {
+            readBack();
+        }
+        setter.join();
+        held.releaseAll();
+
+        expect(setterFailure.empty()) << std::format("setting the mask or the policy failed: {}", setterFailure);
+        expect(refusal.empty()) << std::format("a worker was refused: {}", refusal);
+        expect(eq(nUnsetReads, 0UZ)) << std::format("{} of {} reads returned a mask or a policy that no call set", nUnsetReads, nReads);
+        expect(eq(held.workers.size(), 4UZ)) << "a task did not start";
+        for (const HeldWorkers::Worker& worker : held.workers) {
+            expect(isStripe(worker.mask)) << std::format("worker {} runs on '{}', which is neither stripe", worker.name, bits(worker.mask));
+        }
+    };
+
+    "ThreadPool: a pool whose live worker refuses a scheduling policy keeps its earlier policy and still takes a mask and grows"_test = [] {
+        using namespace gr::thread_pool;
+
+        const std::optional<TwoCpuMask> mask = twoCpuMask(2UZ);
+        if (!mask) {
+            boost::ut::log << "skipped: the calling thread may run on fewer than two CPUs";
+            return;
+        }
+
+        // Every process is refused priority 1 under the default policy. The pool holds one live worker when the
+        // policy is set.
+        HeldWorkers     held;
+        BasicThreadPool pool("RefusedPolicyTest", TaskType::IO_BOUND, 1U, 2U);
+        pool.setAffinityMask(mask->stripes[0]);
+
+        expect(throws<std::system_error>([&pool] { pool.setThreadSchedulingPolicy(thread::Policy::OTHER, 1); })) << "the refused policy was not reported";
+        expect(pool.getSchedulingPolicy() == thread::Policy::OTHER && pool.getSchedulingPriority() == 0) << std::format("the pool keeps policy {} priority {}", pool.getSchedulingPolicy(), pool.getSchedulingPriority());
+        expect(nothrow([&pool, &mask] { pool.setAffinityMask(mask->stripes[1]); })) << "setAffinityMask() failed after the refusal";
+        const std::string refusal = held.hold(pool, 2UZ);
+        held.releaseAll();
+
+        expect(refusal.empty()) << std::format("a worker was refused: {}", refusal);
+        expect(eq(held.workers.size(), 2UZ)) << "a task did not start";
+        for (const HeldWorkers::Worker& worker : held.workers) {
+            expect(worker.mask == mask->stripes[1]) << std::format("worker {} runs on '{}', expected '{}'", worker.name, bits(worker.mask), bits(mask->stripes[1]));
+        }
+    };
+
+    "ThreadPool: a worker that refuses the pool's scheduling policy as it starts runs on the pool's mask, and the pool keeps its earlier policy and grows"_test = [] {
+        using namespace gr::thread_pool;
+
+        const std::optional<TwoCpuMask> mask = twoCpuMask(2UZ);
+        if (!mask) {
+            boost::ut::log << "skipped: the calling thread may run on fewer than two CPUs";
+            return;
+        }
+
+        // The pool holds no worker when the policy is set, and its first worker refuses the policy as it starts. That
+        // worker stays in the pool and takes the next task. Two held tasks then make the pool start a second worker.
+        HeldWorkers     held;
+        BasicThreadPool pool("RefusedAtStartTest", TaskType::IO_BOUND, 0U, 2U);
+        pool.setAffinityMask(mask->stripes[0]);
+        pool.setThreadSchedulingPolicy(thread::Policy::OTHER, 1);
+
+        expect(throws<std::system_error>([&pool] { pool.execute([] {}); })) << "the refused policy was not reported";
+        expect(pool.getSchedulingPolicy() == thread::Policy::OTHER && pool.getSchedulingPriority() == 0) << std::format("the pool keeps policy {} priority {}", pool.getSchedulingPolicy(), pool.getSchedulingPriority());
+        const std::vector<bool> startMask = pool.execute([] { return thread::getThreadAffinity(); }).get();
+        expect(nothrow([&pool, &mask] { pool.setAffinityMask(mask->stripes[1]); })) << "setAffinityMask() failed after the refusal";
+        const std::string refusal = held.hold(pool, 2UZ);
+        held.releaseAll();
+
+        expect(startMask == mask->stripes[0]) << std::format("the worker started on '{}', expected '{}'", bits(startMask), bits(mask->stripes[0]));
+        expect(refusal.empty()) << std::format("the second worker was refused: {}", refusal);
+        expect(eq(held.workers.size(), 2UZ)) << "a task did not start";
+        for (const HeldWorkers::Worker& worker : held.workers) {
+            expect(worker.mask == mask->stripes[1]) << std::format("worker {} runs on '{}', expected '{}'", worker.name, bits(worker.mask), bits(mask->stripes[1]));
+        }
+    };
+
+    "ThreadPool: a mask that one worker refuses leaves the pool's mask and every worker's mask as they were"_test = [] {
+        using namespace gr::thread_pool;
+
+        const std::vector<bool>         callerMask = thread::getThreadAffinity();
+        const std::optional<TwoCpuMask> mask       = twoCpuMask(2UZ);
+        if (!mask) {
+            boost::ut::log << "skipped: the calling thread may run on fewer than two CPUs";
+            return;
+        }
+
+        // A CPU-bound pool of two workers splits the refused mask into two stripes. The first stripe holds a CPU of the
+        // calling thread. The second holds only CPU 1000, and a worker refuses it on a machine with at most 1000 CPUs.
+        // Worker 0 takes the first stripe before worker 1 refuses the second. The pool is given the refused mask once
+        // without a mask of its own and once after it takes the two stripes of the calling thread's CPUs.
+        std::vector<bool> refusedMask = mask->stripes[0];
+        refusedMask.resize(1001UZ, false);
+        refusedMask[1000UZ] = true;
+        HeldWorkers     firstRound;
+        HeldWorkers     secondRound;
+        BasicThreadPool pool("RefusedMask", TaskType::CPU_BOUND, 2U, 2U);
+        pool.waitUntilInitialised();
+
+        expect(throws<std::system_error>([&pool, &refusedMask] { pool.setAffinityMask(refusedMask); })) << "the first refused mask was not reported";
+        const std::vector<bool> firstStoredMask = pool.getAffinityMask();
+        const std::string       firstRefusal    = firstRound.hold(pool, 2UZ);
+        firstRound.releaseAll();
+        expect(nothrow([&pool, &mask] { pool.setAffinityMask(mask->pool); })) << "setAffinityMask() failed after the refusal";
+        expect(throws<std::system_error>([&pool, &refusedMask] { pool.setAffinityMask(refusedMask); })) << "the second refused mask was not reported";
+        const std::vector<bool> secondStoredMask = pool.getAffinityMask();
+        const std::string       secondRefusal    = secondRound.hold(pool, 2UZ);
+        secondRound.releaseAll();
+
+        expect(firstStoredMask.empty()) << std::format("the pool without a mask keeps '{}'", bits(firstStoredMask));
+        expect(secondStoredMask == mask->pool) << std::format("the pool keeps '{}', expected '{}'", bits(secondStoredMask), bits(mask->pool));
+        expect(firstRefusal.empty() && secondRefusal.empty()) << std::format("a task was refused: {}{}", firstRefusal, secondRefusal);
+        for (std::size_t worker = 0UZ; worker < 2UZ; ++worker) {
+            const std::string       name       = std::format("RefusedMask#{}", worker);
+            const std::vector<bool> firstMask  = firstRound.maskOf(name);
+            const std::vector<bool> secondMask = secondRound.maskOf(name);
+            expect(firstMask == callerMask) << std::format("without a mask, worker {} runs on '{}', expected '{}'", worker, bits(firstMask), bits(callerMask));
+            expect(secondMask == mask->stripes[worker]) << std::format("on the two stripes, worker {} runs on '{}', expected '{}'", worker, bits(secondMask), bits(mask->stripes[worker]));
+        }
+    };
+#endif
 
     "ThreadPool: CPU affinity rejection"_test = [] {
         using namespace gr::thread_pool;
@@ -163,6 +614,87 @@ const boost::ut::suite<"gr::thread_pool GR4 default"> defaultThreadPool = [] {
         expect(ranAfterThrow.load()) << "the worker must keep serving tasks after one threw";
     };
 
+    "ThreadPool: a task submitted to an idle worker never waits for the keep-alive"_test = [] {
+        using namespace gr::thread_pool;
+        using Clock = std::chrono::steady_clock;
+
+        // the pool starts its only worker at the first task, after the keep-alive is set
+        BasicThreadPool pool("IdleWakeUpTest", TaskType::IO_BOUND, 0U, 1U);
+        pool.keepAliveDuration = std::chrono::seconds(1);
+
+        // the delays sweep the moment the idle worker blocks on the condition variable
+        constexpr std::size_t kSubmissions = 50'000UZ;
+        std::binary_semaphore started{0};
+        Clock::duration       longestWait{};
+        bool                  allStarted = true;
+        for (std::size_t i = 0UZ; i < kSubmissions; ++i) {
+            const Clock::time_point submitAfter = Clock::now() + std::chrono::nanoseconds((i * 37UZ) % 20'000UZ);
+            while (Clock::now() < submitAfter) {
+            }
+            const Clock::time_point submitted = Clock::now();
+            pool.execute([&started] { started.release(); });
+            // The wait is bounded. A task that never starts fails the case.
+            if (!started.try_acquire_for(2 * pool.keepAliveDuration)) {
+                allStarted = false;
+                break;
+            }
+            longestWait = std::max(longestWait, Clock::now() - submitted);
+        }
+        const auto longestWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(longestWait).count();
+        expect(allStarted) << "a task did not start";
+        expect(lt(longestWaitMs, (pool.keepAliveDuration / 2).count())) << "a task waited for the worker's keep-alive timeout";
+    };
+
+    "ThreadPool: tasks submitted at once from several threads each start on a worker of their own"_test = [] {
+        using namespace gr::thread_pool;
+        using Clock = std::chrono::steady_clock;
+
+        // Each task waits until every task of its round has started. A task queued behind a busy worker while the pool
+        // could still add one does not start within the round.
+        constexpr std::size_t kRounds = 500UZ;
+        for (const std::size_t nSubmitters : {4UZ, 8UZ}) {
+            std::size_t firstStuckRound = kRounds;
+            for (std::size_t round = 0UZ; round < kRounds && firstStuckRound == kRounds; ++round) {
+                std::atomic<std::size_t> nStarted{0UZ};
+                std::atomic<bool>        go{false};
+                std::atomic<bool>        stuck{false};
+                BasicThreadPool          pool("ConcurrentSubmitTest", TaskType::IO_BOUND, 1U, static_cast<std::uint32_t>(nSubmitters));
+                pool.waitUntilInitialised();
+                std::vector<std::thread> submitters;
+                for (std::size_t i = 0UZ; i < nSubmitters; ++i) {
+                    submitters.emplace_back([&] {
+                        // the submitters spin on the flag and reach execute() together
+                        while (!go.load(std::memory_order_acquire)) {
+                        }
+                        pool.execute([&] {
+                            nStarted.fetch_add(1UZ);
+                            const Clock::time_point deadline = Clock::now() + std::chrono::seconds(5);
+                            while (nStarted.load() < nSubmitters) {
+                                if (Clock::now() > deadline) {
+                                    stuck = true;
+                                    break;
+                                }
+                                std::this_thread::yield();
+                            }
+                        });
+                    });
+                }
+                go.store(true, std::memory_order_release);
+                for (std::thread& submitter : submitters) {
+                    submitter.join();
+                }
+                const Clock::time_point deadline = Clock::now() + std::chrono::seconds(10);
+                while (nStarted.load() < nSubmitters && !stuck.load() && Clock::now() < deadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (stuck.load() || nStarted.load() < nSubmitters) {
+                    firstStuckRound = round;
+                }
+            }
+            expect(eq(firstStuckRound, kRounds)) << std::format("with {} submitters a task did not start in round {}", nSubmitters, firstStuckRound);
+        }
+    };
+
     "ThreadPool: recycled task count increases"_test = [] {
         using namespace gr::thread_pool;
 
@@ -202,6 +734,38 @@ const boost::ut::suite<"gr::thread_pool GR4 default"> defaultThreadPool = [] {
         expect(nothrow([&] { pool.setThreadBounds(3U, 3U); }));
         expect(pool.minThreads() == 3U);
         expect(pool.maxThreads() == 3U);
+    };
+
+    "ThreadPool: a task submitted as the idle worker's keep-alive expires still runs"_test = [] {
+        using namespace gr::thread_pool;
+        using Clock = std::chrono::steady_clock;
+
+        // with no minimum, the pool's only worker leaves at its keep-alive and the next task starts a new one
+        BasicThreadPool pool("KeepAliveExitTest", TaskType::IO_BOUND, 0U, 1U);
+        pool.keepAliveDuration = std::chrono::milliseconds(1);
+
+        // the delays after each task sweep the end of the worker's keep-alive
+        constexpr std::size_t kSubmissions = 2'000UZ;
+        bool                  allStarted   = true;
+        std::size_t           maxHeld      = 0UZ;
+        for (std::size_t i = 0UZ; i < kSubmissions; ++i) {
+            auto started = std::make_shared<std::promise<void>>();
+            auto future  = started->get_future();
+            pool.execute([started] { started->set_value(); });
+            if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+                allStarted = false;
+                break;
+            }
+            // a worker that left and is not yet joined still holds its thread
+            maxHeld = std::max(maxHeld, pool.numThreadsHeld());
+
+            const Clock::time_point submitAfter = Clock::now() + pool.keepAliveDuration - std::chrono::microseconds(30) + std::chrono::nanoseconds((i * 61UZ) % 120'000UZ);
+            while (Clock::now() < submitAfter) {
+            }
+        }
+        expect(allStarted) << "a task queued as the worker left was never started";
+        expect(le(maxHeld, static_cast<std::size_t>(pool.maxThreads()))) << "the pool held more threads than its maximum";
+        expect(eq(pool.numTasksQueued(), 0UZ));
     };
 };
 
