@@ -241,7 +241,7 @@ const boost::ut::suite<"PluginAbiVersion"> pluginAbiVersionTests = [] {
 
         // replaces the factory of the key's one block version and keeps the recorded plugin ABI version, as a registry
         // without ABI versions does on a second registration of the key
-        SchedulerRegistry::Entries entries                                            = registry.takeEntries();
+        SchedulerRegistry::Entries entries                                             = registry.takeEntries();
         entries.handlers.at(std::string(kKey)).versions.begin()->second.createFunction = makeThrowingScheduler;
         registry.restoreEntries(std::move(entries), false);
 

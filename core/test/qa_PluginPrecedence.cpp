@@ -28,8 +28,8 @@ namespace qa_plugin_precedence {
 
 using namespace gr;
 
-constexpr std::string_view kPluginKey  = "test::precedence";
-constexpr std::string_view kLibraryKey = "test::precedence_library";
+constexpr std::string_view kPluginKey    = "test::precedence";
+constexpr std::string_view kLibraryKey   = "test::precedence_library";
 constexpr std::string_view kSchedulerKey = "test::precedence_scheduler";
 
 /// a block the program registers under the key the precedence plugins offer

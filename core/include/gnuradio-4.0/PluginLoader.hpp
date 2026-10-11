@@ -1022,10 +1022,10 @@ public:
                 }
                 _loadedPluginFiles.insert(fileString);
 
-                const RegistryGenerations          generationsBefore     = registryGenerations();
-                const std::vector<std::string>     keysBefore            = registryKeys();
-                const std::array<std::size_t, 5UZ> refusalsBefore        = refusalMarks();
-                const std::vector<std::string>     deviceListingsBefore  = deviceListingFamilies();
+                const RegistryGenerations          generationsBefore    = registryGenerations();
+                const std::vector<std::string>     keysBefore           = registryKeys();
+                const std::array<std::size_t, 5UZ> refusalsBefore       = refusalMarks();
+                const std::vector<std::string>     deviceListingsBefore = deviceListingFamilies();
                 SetAsideRegistrations              registrations(reachableRegistries(_registry, gr::globalBlockRegistry()), reachableRegistries(_schedulerRegistry, gr::globalSchedulerRegistry()));
 
                 if (PluginHandler handler(fileString); handler) {
@@ -1087,7 +1087,7 @@ public:
                             handler.keepMapped();
                             std::ignore                               = recordRefusals(refusalsBefore, fileString);
                             const RegistryGenerations generationsKept = registryGenerations();
-                            std::vector<std::string> added;
+                            std::vector<std::string>  added;
                             std::ranges::set_difference(registryKeys(), keysBefore, std::back_inserter(added));
                             _blockLibraries.push_back({.file = fileString, .nBlockRegistrations = generationsKept.blocks - generationsAfter.blocks, .nSchedulerRegistrations = generationsKept.schedulers - generationsAfter.schedulers, .blockTypes = std::move(added), .nDeviceListings = deviceListings});
                         }

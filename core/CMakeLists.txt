@@ -58,8 +58,8 @@ else()
   add_library(gnuradio-blocklib-core SHARED src/BlockRegistry.cpp)
   file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/gnuradio-4.0/BlockRegistry.hpp" _gr_plugin_abi_define
        REGEX "^#define[ \t]+GR_PLUGIN_CURRENT_ABI_VERSION[ \t]+[0-9]+")
-  # CMake reads the define when it configures. A change to BlockRegistry.hpp re-runs configure, and the SOVERSION follows
-  # the define.
+  # CMake reads the define when it configures. A change to BlockRegistry.hpp re-runs configure, and the SOVERSION
+  # follows the define.
   set_property(
     DIRECTORY
     APPEND

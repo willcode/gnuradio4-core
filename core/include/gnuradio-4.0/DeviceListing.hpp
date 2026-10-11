@@ -82,7 +82,9 @@ public:
 
     /// Removes the listing that holds `family`. The recorded refusals stay. A listing must be erased before the file
     /// that holds its function is closed.
-    void erase(std::string_view family) { std::erase_if(_listings, [family](const DeviceListing& listing) { return listing.family == family; }); }
+    void erase(std::string_view family) {
+        std::erase_if(_listings, [family](const DeviceListing& listing) { return listing.family == family; });
+    }
 
     /// every registration this registry refused, in the order they were offered
     [[nodiscard]] const std::vector<Refusal>& refused() const noexcept { return _refused; }
