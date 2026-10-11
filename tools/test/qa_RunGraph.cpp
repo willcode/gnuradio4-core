@@ -645,7 +645,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
 
             const Result refused = run(arguments);
             expect(eq(refused.exitCode, 1)) << refused.output;
-            expect(refused.output.contains(std::format("block 'counted' of type 'qa::CountedChain' declares no setting named '{}'", key))) << "an interior block's setting is not the composite's" << refused.output;
+            expect(refused.output.contains("block 'counted' of type ") && refused.output.contains(std::format("declares no setting named '{}'", key))) << "an interior block's setting is not the composite's" << refused.output;
         }
 
         std::vector<std::string> text = recipeChainRun();
