@@ -12,6 +12,8 @@
 #include <gnuradio-4.0/Block.hpp>
 #include <gnuradio-4.0/BlockRegistry.hpp>
 #include <gnuradio-4.0/PluginLoader.hpp>
+#include <gnuradio-4.0/Scheduler.hpp>
+#include <gnuradio-4.0/SchedulerModel.hpp>
 
 #include "build_configure.hpp"
 
@@ -19,7 +21,8 @@
  * Tests which registration answers for a key that several files offer. The search order is the block registry first,
  * then the plugins in the order they load. The block registry holds the program's own blocks and then the block
  * libraries in the order they load. The first registration of a key at a version in that order holds it. A later one
- * is refused and listed with the file that holds it. A different version of the key coexists with it.
+ * is refused and listed with the file that holds it. A different version of the key coexists with it. The scheduler
+ * registry holds its keys by the same rule.
  */
 namespace qa_plugin_precedence {
 
@@ -27,6 +30,7 @@ using namespace gr;
 
 constexpr std::string_view kPluginKey  = "test::precedence";
 constexpr std::string_view kLibraryKey = "test::precedence_library";
+constexpr std::string_view kSchedulerKey = "test::precedence_scheduler";
 
 /// a block the program registers under the key the precedence plugins offer
 struct Framework : gr::Block<Framework> {
@@ -39,6 +43,9 @@ struct Framework : gr::Block<Framework> {
 };
 
 const int kAddressInThisProgram = 0;
+
+/// the factory of the scheduler the program registers under the key the precedence scheduler library offers
+std::unique_ptr<SchedulerModel> makeProgramScheduler(property_map parameters) { return std::make_unique<SchedulerWrapper<scheduler::Simple<>>>(std::move(parameters)); }
 
 [[nodiscard]] std::string directoryOf(std::string_view fixture) { return std::format("{}/{}", TESTS_BINARY_PATH, fixture); }
 
@@ -171,6 +178,24 @@ const boost::ut::suite<"PluginPrecedence"> pluginPrecedenceTests = [] {
         std::shared_ptr<BlockModel> other = gr::globalBlockRegistry().create(behindKey, {});
         expect(fatal(other != nullptr)) << "the later library's own type name is registered";
         expect(eq(gr::globalBlockRegistry().typeName(other), behindKey)) << "a refused alias names no block";
+    };
+
+    "a block library that registers a scheduler under a key the program holds is refused, and the program's scheduler answers"_test = [] {
+        expect(fatal(gr::globalSchedulerRegistry().insert(kSchedulerKey, "", makeProgramScheduler)));
+
+        const std::vector<std::string> directories{directoryOf("precedence_library_scheduler")};
+        PluginLoader                   loader(gr::globalBlockRegistry(), gr::globalSchedulerRegistry(), directories);
+        expect(that % loader.failedPlugins().empty()) << "a refused registration fails no file";
+
+        const PluginLoader::BlockLibrary& library = blockLibrary(loader, "precedence_library_scheduler");
+        expect(eq(library.nSchedulerRegistrations, 0UZ)) << "the library adds no scheduler";
+
+        const std::vector<RefusedRegistration> refused = refusalsOf(loader, kSchedulerKey);
+        expect(fatal(eq(refused.size(), 1UZ)));
+        expect(eq(refused.front().file, library.file));
+        expect(eq(refused.front().holder, gr::detail::fileHoldingCode(&kAddressInThisProgram))) << "the program holds the key";
+
+        expect(gr::globalSchedulerRegistry().create(kSchedulerKey, {}) != nullptr) << "the library's factory, which makes no scheduler, answers for the key";
     };
 };
 

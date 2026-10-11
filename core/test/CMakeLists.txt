@@ -286,7 +286,8 @@ if(GR_ENABLE_BLOCK_REGISTRY AND INTERNAL_ENABLE_BLOCK_PLUGINS)
     precedence_plugin_second
     precedence_plugin_newer
     precedence_library_first
-    precedence_library_second)
+    precedence_library_second
+    precedence_library_scheduler)
   add_test(NAME qa_PluginPrecedenceReversed COMMAND ${CMAKE_CROSSCOMPILING_EMULATOR} $<TARGET_FILE:qa_PluginPrecedence>)
   set_tests_properties(qa_PluginPrecedenceReversed PROPERTIES ENVIRONMENT "GR_TEST_PRECEDENCE_ORDER=reversed")
   set_tests_properties(qa_PluginPrecedence qa_PluginPrecedenceReversed PROPERTIES TIMEOUT 60)

@@ -81,6 +81,9 @@ endforeach()
 add_block_library(precedence_library_first precedence_library_first)
 add_block_library(precedence_library_second precedence_library_second)
 
+# A block library that registers a scheduler under a key the loading program holds, in a directory of its own.
+add_block_library(precedence_library_scheduler precedence_library_scheduler)
+
 # One plugin at two plugin ABI versions, in a directory of their own: one at the version this core implements and one at
 # version 1. A third plugin is at the version this core implements and registers a scheduler at version 1 when it loads.
 # A single load of that directory reaches every outcome of the loader's version checks for plugins.
