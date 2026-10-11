@@ -1381,6 +1381,35 @@ connections:
         expect(changed.has_value() && changed->value_or(float{}) == 5.0f) << "the composite reads back the value now in force";
     };
 
+    "a recipe's ctx_parameters may name its exported parameter, and the context stores it"_test = [] {
+        const RecipeAssetRoot assets;
+        auto                  loader = recipeLoader({assets.path.string()});
+
+        const std::string document = R"yaml(blocks:
+  - id: qa::GainRecipe
+    parameters:
+      name: demod
+      gain_factor: !!float32 3.5
+    ctx_parameters:
+      - context: night
+        time: !!uint64 5
+        parameters:
+          gain_factor: !!float32 5.0
+)yaml";
+
+        std::string reported;
+        try {
+            const auto loaded = gr::loadGrc(loader, document);
+            expect(fatal(eq(loaded->blocks().size(), 1UZ)));
+            const BlockModel& composite = *loaded->blocks().front();
+            expect(composite.settings().readableMembers().contains("gain_factor")) << "the exported parameter is readable";
+            expect(storedInContext(composite, "night", "gain_factor") == std::optional(pmt::Value(5.0f))) << "the context's value must be stored";
+        } catch (const gr::exception& e) {
+            reported = e.message;
+        }
+        expect(reported.empty()) << "a context naming the exported parameter is refused: " << reported;
+    };
+
     "a graph file that omits a recipe's required parameter names the block and the parameter"_test = [] {
         const RecipeAssetRoot assets;
         auto                  loader = recipeLoader({assets.path.string()});
