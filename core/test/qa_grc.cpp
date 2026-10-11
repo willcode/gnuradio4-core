@@ -1032,13 +1032,13 @@ connections:
         registerTestBlocks();
         PluginLoader& loader = gr::globalPluginLoader();
 
-        const auto loaded = gr::loadGrc(loader, "blocks:\n  - id: qa::Scale\n    parameters: {name: s, note: kept, Attributes: {version: 7, labels: [status/deprecated]}}\n");
-        expect(fatal(eq(loaded->blocks().size(), 1UZ)));
-        const std::shared_ptr<BlockModel>& scale = loaded->blocks().front();
-        expect(scale->metaInformation().contains(std::string_view("note"))) << "an undeclared parameter still reaches meta_information";
-        expect(!scale->metaInformation().contains(gr::block::kAttributesMetaKey));
-        expect(eq(scale->version(), gr::block::kDefaultVersion));
-        expect(scale->status().empty());
+        std::string message;
+        try {
+            std::ignore = gr::loadGrc(loader, "blocks:\n  - id: qa::Scale\n    parameters: {name: s, Attributes: {version: 7, labels: [status/deprecated]}}\n");
+        } catch (const gr::exception& refusal) {
+            message = refusal.message;
+        }
+        expect(message.contains("block 's'") && message.contains("declares no setting named 'Attributes'")) << "the loader refuses the key the type alone declares" << message;
     };
 
     "a definition's attributes are its declared labels and the role its exported ports read"_test = [] {
