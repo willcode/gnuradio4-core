@@ -3205,7 +3205,7 @@ protected:
             std::shared_ptr<BlockModel>        oldBlock;
             {
                 std::lock_guard childLock(_childLifecycleMutex);
-                auto replacedPair = targetGraph->replaceBlock(uniqueName, type, *pinnedVersion, properties);
+                auto            replacedPair = targetGraph->replaceBlock(uniqueName, type, *pinnedVersion, properties);
                 if (!replacedPair.has_value()) {
                     return std::unexpected(replacedPair.error());
                 }

@@ -212,7 +212,7 @@ inline void registerTestBlocks() {
         BlockRegistry& registry = globalBlockRegistry();
         return registry.insert<RampSource>("=qa::RampSource") && registry.insert<Scale>("=qa::Scale")                  //
                && registry.insert<SumInputs>("=qa::SumInputs") && registry.insert<RecordingSink>("=qa::RecordingSink") //
-               && registry.insert<ConstructionRecorder>("=qa::ConstructionRecorder")                                     //
+               && registry.insert<ConstructionRecorder>("=qa::ConstructionRecorder")                                   //
                && insertGainVersion<GainV1>(registry) && insertGainVersion<GainV2>(registry);
     }();
     expect(registered) << "the test blocks must reach the global registry";
