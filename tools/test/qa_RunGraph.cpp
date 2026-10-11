@@ -634,7 +634,7 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
         arguments.insert(arguments.end(), {"--set", "started.device=named-on-the-command-line", "--set", "started.level=!!float32 2"});
 
         const Result refused = run(arguments);
-        expect(refused.output.contains("Failed to validate field 'gain' with value '2")) << "the interior block's limits refuse the derived gain" << refused.output;
+        expect(refused.output.contains("block 'recorder' refuses gain = 2") && refused.output.contains("outside the limits [0, 1]")) << "the interior block's limits refuse the derived gain" << refused.output;
     };
 
     "a recipe composite refuses a name its recipe does not export, and a value its recipe cannot derive from"_test = [] {
