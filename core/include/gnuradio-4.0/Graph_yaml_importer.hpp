@@ -344,13 +344,11 @@ inline void loadEntrySettings(BlockModel& block, const property_map& grcBlock, c
     }
 }
 
-/// The fifth element of a connection is the edge's buffer size in samples: a whole number, at
-/// least one. A floating value -- what a recipe expression produces as soon as it divides --
-/// states a minimum capacity rather than a quantity, so it rises to the next whole sample
-/// instead of refusing the fraction a scalar setting would refuse; the framework then rounds
-/// the request up to a power of two on its own. Every other spelling is refused by name: it
-/// used to become the unset marker, and an edge silently taking the default size while the
-/// document says otherwise is the failure this closes.
+/// The fifth element of a connection is the edge's buffer size in samples, a whole number of at
+/// least one. A recipe expression that divides produces a floating value. Such a value states a
+/// minimum capacity and rises to the next whole sample. The framework rounds the request up to a
+/// power of two. Every other spelling is refused by name, and an edge never takes the default
+/// size while the document names another.
 [[nodiscard]] inline std::size_t edgeBufferSizeOf(const pmt::Value& element) {
     if (element.is_integral()) {
         const auto count = pmt::convert_safely<std::size_t>(element);
