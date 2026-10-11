@@ -1412,6 +1412,44 @@ const boost::ut::suite<"settings refusals"> settingsRefusalTests = [] {
         expect(taggedLast.errors.empty()) << "a value a tag replaced is reported as an error: " << taggedLast.errors;
     };
 
+    "a setStaged() call its declared parameter refuses leaves a tag's value reported as the tag's"_test = [] {
+        LimitedGain   block{property_map{{"name", std::string("gain_stage")}}};
+        gr::MsgPortIn fromBlock;
+        expect(block.msgOut.connect(fromBlock).has_value());
+        block.init(std::make_shared<gr::Sequence>());
+
+        float                            level = 0.f;
+        gr::settings::DeclaredParameters declared;
+        declared.names = {"level"};
+        declared.check = [](const property_map& changed) -> std::expected<property_map, std::string> { return changed; };
+        declared.apply = [&level](const property_map& changed) -> std::optional<std::string> {
+            const float requested = changed.at("level").value_or(0.f);
+            if (requested < 0.f) {
+                return "level must not be negative";
+            }
+            level = requested;
+            return std::nullopt;
+        };
+        declared.read = [&level](property_map& parameters) { parameters.insert_or_assign("level", level); };
+        block._settings.declareParameters(std::move(declared));
+
+        block.settings().autoUpdate(Tag{0UZ, property_map{{"gain", 2.0f}}});
+        std::string refusal;
+        try {
+            std::ignore = block.settings().setStaged({{"level", -1.0f}, {"gain", 3.0f}});
+        } catch (const gr::exception& e) {
+            refusal = e.message;
+        }
+        expect(refusal.contains("level must not be negative")) << refusal;
+        const property_map staged = block.settings().stagedParameters();
+        expect(staged.contains("gain") && staged.at("gain") == pmt::Value(2.0f)) << "the refused call replaced the tag's value";
+
+        block.applyChangedSettings();
+        const ReportedRefusals reported = readRefusals(fromBlock);
+        expect(reported.plain.contains("refuses gain = 2")) << "the tag's value is reported as a staged value: " << reported.plain;
+        expect(reported.errors.empty()) << reported.errors;
+    };
+
     "a scheduler constructed with an undeclared key is refused naming the nearest key"_test = [] {
         std::string refusal;
         try {
