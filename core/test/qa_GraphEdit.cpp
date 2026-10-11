@@ -1402,7 +1402,7 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         qa_edit::sendMessage(toScheduler, gr::scheduler::property::kReplaceBlock, //
             {{"uniqueName", spareName}, {"type", std::string(qa_edit::kVersionedType)}, {"version", gr::Size_t(9)}});
 
-        const std::string replaceReport = qa_edit::awaitError(fromScheduler, gr::scheduler::property::kReplaceBlock);
+        const std::string replaceReport = qa_edit::awaitError(fromScheduler, gr::scheduler::property::kBlockReplaced);
         expect(!replaceReport.empty()) << "a pin that cannot be honored must be reported";
         expect(replaceReport.find("version 9") != std::string::npos) << replaceReport;
         expect(qa_edit::blocksOfType(scheduler.graph(), "Versioned").empty()) << "a block was added anyway, at a version nobody asked for";
