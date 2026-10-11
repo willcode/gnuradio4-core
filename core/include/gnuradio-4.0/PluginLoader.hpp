@@ -1067,8 +1067,10 @@ public:
                     const std::size_t         blockRegistrations     = generationsAfter.blocks - generationsBefore.blocks;
                     const std::size_t         schedulerRegistrations = generationsAfter.schedulers - generationsBefore.schedulers;
                     const std::size_t         deviceListings         = generationsAfter.deviceListings - generationsBefore.deviceListings;
+                    // the device listing registry is not set aside, so a listing refused for its family word adds nothing
+                    const bool listingRefused = gr::globalDeviceListingRegistry().refused().size() != refusalsBefore[4UZ];
 
-                    if (handler.isLoaded() && (blockRegistrations != 0UZ || schedulerRegistrations != 0UZ || deviceListings != 0UZ)) {
+                    if (handler.isLoaded() && (blockRegistrations != 0UZ || schedulerRegistrations != 0UZ || deviceListings != 0UZ || listingRefused)) {
                         if (std::optional<std::string> mismatch = registrations.schedulerAbiMismatch(); mismatch.has_value()) {
                             // The file is closed. The device listings it registered go with its other entries.
                             registrations.restore(false);
