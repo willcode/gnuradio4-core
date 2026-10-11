@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -401,23 +402,28 @@ public:
 
     /// Puts back the entries `takeEntries()` returned. With `keepRegistered`, each entry registered since then follows
     /// `detail::claimVersion()` after the taken ones. It stays where no taken entry holds its key at its version. Where
-    /// one does, the entry is refused and recorded in `refused()`. A key whose every version stays keeps its alias and
-    /// its recorded ABI version. Without `keepRegistered`, every such entry is dropped.
+    /// one does, the entry is refused and recorded in `refused()`. A key whose every version stays keeps its recorded ABI
+    /// version. It also keeps its alias where no version of the alias was refused, as in `insert()`. Without
+    /// `keepRegistered`, every such entry is dropped.
     void restoreEntries(Entries taken, bool keepRegistered) {
         std::map<std::string, TTypeHandler, std::less<>>       registered         = std::exchange(_blockTypeHandlers, std::move(taken.handlers));
         std::map<std::string, RecordedAbiVersion, std::less<>> registeredVersions = std::exchange(_abiVersions, std::move(taken.abiVersions));
         if (!keepRegistered) {
             return;
         }
+        std::set<std::string, std::less<>> refusedKeys;
         for (const auto& [key, handler] : registered) {
-            bool heldAll = true;
             for (const auto& [version, entry] : handler.versions) {
-                heldAll = claim(key, version, entry) != detail::Claim::Refused && heldAll;
+                if (claim(key, version, entry) == detail::Claim::Refused) {
+                    refusedKeys.insert(key);
+                }
             }
-            if (!heldAll || handler.versions.empty()) {
+        }
+        for (const auto& [key, handler] : registered) {
+            if (handler.versions.empty() || refusedKeys.contains(key)) {
                 continue;
             }
-            if (std::string& named = _blockTypeHandlers.find(key)->second.alias; named.empty()) {
+            if (std::string& named = _blockTypeHandlers.find(key)->second.alias; named.empty() && !refusedKeys.contains(handler.alias)) {
                 named = handler.alias;
             }
             if (const auto recorded = registeredVersions.find(key); recorded != registeredVersions.end()) {
