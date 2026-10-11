@@ -613,8 +613,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // registers the program's own schedulers before the loader runs, so that each holds its key against a library that
-    // registers the key again
+    // Registers the program's own schedulers before the loader runs. Each of them then holds its key against a library
+    // that registers the same key.
     gr::tools::registerSchedulers(gr::globalSchedulerRegistry());
 
     // The program's loader searches its directories before anything builds a graph. The first graph builds the

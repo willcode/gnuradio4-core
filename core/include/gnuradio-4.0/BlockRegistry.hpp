@@ -239,8 +239,8 @@ public:
      * `block::kDefaultVersion` when it states none. Each of the two keys follows `detail::claimVersion()`: the first
      * registration of a key at a version holds it, the same factory offered again adds nothing, and another factory is
      * refused and recorded in `refused()`. A key names the alias of the first registration that holds both the key and
-     * the alias. The `labels` join the vocabulary when the entry adds a key or a version. A key the entry is not
-     * refused under records `abiVersion`. Its default argument is evaluated at the call site. The entry therefore
+     * the alias. The `labels` join the vocabulary when the entry adds a key or a version. The entry records
+     * `abiVersion` under each key that does not refuse it. Its default argument is evaluated at the call site. The entry therefore
      * records the `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever copy of this
      * function runs. Returns whether it added a key or a version.
      */
@@ -399,11 +399,10 @@ public:
     /// the registry holds only what is registered after this call.
     [[nodiscard]] Entries takeEntries() { return {.handlers = std::exchange(_blockTypeHandlers, {}), .abiVersions = std::exchange(_abiVersions, {})}; }
 
-    /// Puts back the entries `takeEntries()` returned. With `keepRegistered`, each entry registered since then is a
-    /// later registration of its key and version than the taken ones and follows `detail::claimVersion()`: it stays
-    /// where no taken entry holds its key at its version, and is refused and recorded in `refused()` where one does.
-    /// A key every version of which stays keeps its alias and its recorded ABI version. Without it, every such entry is
-    /// dropped.
+    /// Puts back the entries `takeEntries()` returned. With `keepRegistered`, each entry registered since then follows
+    /// `detail::claimVersion()` after the taken ones. It stays where no taken entry holds its key at its version. Where
+    /// one does, the entry is refused and recorded in `refused()`. A key whose every version stays keeps its alias and
+    /// its recorded ABI version. Without `keepRegistered`, every such entry is dropped.
     void restoreEntries(Entries taken, bool keepRegistered) {
         std::map<std::string, TTypeHandler, std::less<>>       registered         = std::exchange(_blockTypeHandlers, std::move(taken.handlers));
         std::map<std::string, RecordedAbiVersion, std::less<>> registeredVersions = std::exchange(_abiVersions, std::move(taken.abiVersions));

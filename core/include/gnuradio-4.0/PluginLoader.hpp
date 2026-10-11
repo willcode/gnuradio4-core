@@ -836,9 +836,9 @@ private:
      * @brief Sets the entries of the registries a load can reach aside while one file loads, and puts them back after.
      *
      * The registries then hold exactly what the file registered, whichever copy of the registry code inserted it.
-     * `restore(true)` files each of those entries after the earlier ones, so an earlier registration of a key at a
-     * version holds it and the file's is refused. `restore(false)` drops those entries, and a file the loader refuses
-     * offers none of them.
+     * `restore(true)` files each of those entries after the earlier ones. An earlier registration of a key at a version
+     * holds it, and the file's registration is refused. `restore(false)` drops those entries, and a file the loader
+     * refuses offers none of them.
      */
     class SetAsideRegistrations {
         std::vector<std::pair<BlockRegistry*, BlockRegistry::Entries>>         _blocks;
@@ -931,8 +931,8 @@ private:
         std::size_t deviceListings = 0UZ;
     };
 
-    /// How many registrations the registries a load can reach have taken: each key, and each version under a key, a
-    /// registration added. Device listings have the process-wide registry alone.
+    /// Counts the registrations the registries a load can reach have taken: one for each key, and each version under a
+    /// key, that a registration added. Device listings have the process-wide registry alone.
     [[nodiscard]] RegistryGenerations registryGenerations() const {
         RegistryGenerations generations{.deviceListings = gr::globalDeviceListingRegistry().generation()};
         for (const BlockRegistry* registry : reachableRegistries(_registry, gr::globalBlockRegistry())) {
@@ -1070,7 +1070,7 @@ public:
 
                     if (handler.isLoaded() && (blockRegistrations != 0UZ || schedulerRegistrations != 0UZ || deviceListings != 0UZ)) {
                         if (std::optional<std::string> mismatch = registrations.schedulerAbiMismatch(); mismatch.has_value()) {
-                            // the file is closed, so the device listings it registered go with its other entries
+                            // The file is closed. The device listings it registered go with its other entries.
                             registrations.restore(false);
                             dropDeviceListings(deviceListingsBefore);
                             std::string warning = std::format("warning: library {} not loaded: {}", fileString, *mismatch);
@@ -1078,9 +1078,9 @@ public:
                             handler.refuse(std::move(*mismatch), std::move(warning));
                             _failedPlugins[fileString] = handler.status();
                         } else {
-                            // the library's entries join the earlier ones, which hold each key at the versions they
-                            // registered, and it counts what it added; a library whose every registration was refused
-                            // is kept as well
+                            // The earlier entries hold each key at the versions they registered, and the library's
+                            // entries join them. The library counts what it added. A library whose every registration
+                            // was refused stays loaded.
                             registrations.restore(true);
                             handler.keepMapped();
                             std::ignore                               = recordRefusals(refusalsBefore, fileString);
