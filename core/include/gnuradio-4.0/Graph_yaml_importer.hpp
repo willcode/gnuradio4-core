@@ -519,7 +519,9 @@ inline LoadedBlocks loadGraphFromMap(PluginLoader& loader, gr::Graph& resultGrap
             // the settings take the map once, below, and Settings::init() does not apply the constructor's copy again
             currentBlock->settings().setInitBlockParameters({});
         }
-        checkDeclared(currentBlock->settings().writableMembers(), blockName, currentBlock->typeName(), parameters);
+        // a composite from a definition is a gr::Graph. The refusal names it by the definition's id.
+        const std::string_view declaringType = split.fromDefinition ? std::string_view(blockType) : currentBlock->typeName();
+        checkDeclared(currentBlock->settings().writableMembers(), blockName, declaringType, parameters);
 
         currentBlock->setName(blockName);
         loadEntrySettings(*currentBlock, grcBlock, parameters, identity);
