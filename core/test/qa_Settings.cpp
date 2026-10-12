@@ -352,6 +352,18 @@ struct DiscardSink : Block<DiscardSink> {
     void processOne(float) noexcept {}
 };
 
+/// passes its input on unchanged. The type declares attributes, and its meta_information holds an Attributes entry.
+struct DeclaringCopy : Block<DeclaringCopy> {
+    PortIn<float>  in{};
+    PortOut<float> out{};
+
+    static constexpr auto attributes = gr::block::describe(3U, gr::block::labels::status::experimental);
+
+    GR_MAKE_REFLECTABLE(DeclaringCopy, in, out);
+
+    [[nodiscard]] constexpr float processOne(float value) const noexcept { return value; }
+};
+
 /// passes its input on scaled. The work function counts the samples in n_seen and copies that member into its settings
 /// after each call. Nothing in the block writes or copies n_foreign. Every member carries an initializer of its own, as
 /// above.
@@ -1032,6 +1044,41 @@ const boost::ut::suite<"a block copies its own members into its settings"> copyT
         expect(fatal(notice.has_value())) << "the subscriber heard nothing of the applied change";
         expect(eq(valueAt<float>(*notice, "scale").value_or(1.0f), 2.0f)) << "the first notice does not carry the applied scale";
         expect(gt(valueAt<gr::Size_t>(*notice, "n_seen").value_or(0U), gr::Size_t(0))) << "the notice carries the member's value";
+    };
+};
+
+const boost::ut::suite<"a declaring type's Attributes entry"> attributesEntryTests = [] {
+    using namespace boost::ut;
+    using namespace qa_settings;
+
+    // a key no setting takes is filed in meta_information, and the origin key shows that the filing ran
+    const property_map given{{std::pmr::string(gr::block::kAttributesMetaKey), property_map{{"version", std::uint32_t{9}}}}, {"origin", std::string("given")}};
+
+    const auto carriedEntries = [](const DeclaringCopy& block) {
+        const property_map& meta     = block.meta_information.value;
+        const auto          origin   = meta.find(std::string_view("origin"));
+        const auto          entry    = meta.find(gr::block::kAttributesMetaKey);
+        const property_map  declared = gr::block::detail::declaredAttributesMap<DeclaringCopy>();
+        expect(!declared.empty()) << "the type declares attributes";
+        expect(origin != meta.end() && origin->second == pmt::Value(std::string("given"))) << "an untaken key is filed in meta_information";
+        expect(entry != meta.end() && entry->second == pmt::Value(declared)) << "the Attributes entry holds the type's declaration";
+    };
+
+    "set() files an untaken key and leaves the Attributes entry as the type declares it"_test = [&given, &carriedEntries] {
+        DeclaringCopy block;
+        block.init(std::make_shared<gr::Sequence>());
+
+        const property_map untaken = block.settings().set(given);
+        expect(untaken.contains(gr::block::kAttributesMetaKey)) << "no setting takes the Attributes key";
+        carriedEntries(block);
+    };
+
+    "loadParametersFromPropertyMap() files an untaken key and leaves the Attributes entry as the type declares it"_test = [&given, &carriedEntries] {
+        DeclaringCopy block;
+        block.init(std::make_shared<gr::Sequence>());
+
+        block.settings().loadParametersFromPropertyMap(given);
+        carriedEntries(block);
     };
 };
 
