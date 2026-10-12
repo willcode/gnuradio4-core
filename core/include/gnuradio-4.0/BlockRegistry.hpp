@@ -241,9 +241,9 @@ public:
      * registration of a key at a version holds it, the same factory offered again adds nothing, and another factory is
      * refused and recorded in `refused()`. A key names the alias of the first registration that holds both the key and
      * the alias. The `labels` join the vocabulary when the entry adds a key or a version. The entry records
-     * `abiVersion` under each key that does not refuse it. Its default argument is evaluated at the call site. The entry therefore
-     * records the `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever copy of this
-     * function runs. Returns whether it added a key or a version.
+     * `abiVersion` under each key whose claim is not refused. Its default argument is evaluated at the call site. The
+     * entry therefore records the `GR_PLUGIN_CURRENT_ABI_VERSION` of the translation unit that registers, whichever
+     * copy of this function runs. Returns whether it added a key or a version.
      */
     bool insert(std::string_view name, std::string_view alias, Factory factory, property_map attributes = {}, std::span<const block::Label> labels = {}, std::uint8_t abiVersion = GR_PLUGIN_CURRENT_ABI_VERSION) {
         const block::Version  version = block::attributesFromMap(attributes).version;
