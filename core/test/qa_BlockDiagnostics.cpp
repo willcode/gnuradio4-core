@@ -23,20 +23,16 @@ namespace {
 // the few descriptor calls these captures need, under the names each CRT gives them
 #if defined(_WIN32)
 constexpr int kStdErrFd = 2;
-constexpr int kStdOutFd = 1;
 inline int    duplicateFd(int fd) { return ::_dup(fd); }
 inline int    replaceFd(int fd, int with) { return ::_dup2(fd, with); }
 inline int    closeFd(int fd) { return ::_close(fd); }
-inline int    fileNo(std::FILE* file) { return ::_fileno(file); }
 inline int    currentProcessId() { return ::_getpid(); }
 inline int    openTruncatedForWrite(const std::filesystem::path& file) { return ::_wopen(file.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IWRITE); }
 #else
 constexpr int kStdErrFd = STDERR_FILENO;
-constexpr int kStdOutFd = STDOUT_FILENO;
 inline int    duplicateFd(int fd) { return ::dup(fd); }
 inline int    replaceFd(int fd, int with) { return ::dup2(fd, with); }
 inline int    closeFd(int fd) { return ::close(fd); }
-inline int    fileNo(std::FILE* file) { return ::fileno(file); }
 inline int    currentProcessId() { return ::getpid(); }
 inline int    openTruncatedForWrite(const std::filesystem::path& file) { return ::open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600); }
 #endif
