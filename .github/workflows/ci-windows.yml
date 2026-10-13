@@ -39,10 +39,16 @@ jobs:
           key: fetchContent-win32-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: |
             fetchContent-win32-${{ matrix.os }}
+      - name: Install cpp-httplib
+        shell: bash
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install cpp-httplib --triplet ${{ matrix.os == 'windows-11-arm' && 'arm64-windows' || 'x64-windows' }}
       - name: Configure and Generate
         shell: bash
         run: |
           cmake -S . -B build \
+          -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.os == 'windows-11-arm' && 'arm64-windows' || 'x64-windows' }} \
           -DCMAKE_COLOR_DIAGNOSTICS=ON \
           -DDISABLE_EXTERNAL_DEPS_WARNINGS=ON \
           -DCMAKE_BUILD_TYPE=Debug \
