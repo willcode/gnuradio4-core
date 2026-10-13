@@ -1,6 +1,9 @@
 name: "GNURadio Windows CI"
 
 on:
+  push:
+    branches:
+    - ci/msvc-check-*
   workflow_dispatch:
   workflow_call:
   pull_request:
