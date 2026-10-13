@@ -254,6 +254,21 @@ namespace detail {
 [[nodiscard]] inline void* openSharedLibrary(const char* path) noexcept { return ::LoadLibraryA(path); }
 [[nodiscard]] inline void* findSharedLibrarySymbol(void* handle, const char* name) noexcept { return reinterpret_cast<void*>(::GetProcAddress(static_cast<HMODULE>(handle), name)); }
 inline void                closeSharedLibrary(void* handle) noexcept { ::FreeLibrary(static_cast<HMODULE>(handle)); }
+// the system's text for the calling thread's last error, empty when there is no error
+[[nodiscard]] inline std::string sharedLibraryError() {
+    const DWORD code = ::GetLastError();
+    if (code == 0) {
+        return {};
+    }
+    char*       text    = nullptr;
+    const DWORD length  = ::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0, reinterpret_cast<LPSTR>(&text), 0, nullptr);
+    std::string message = length == 0 ? std::format("error {}", code) : std::string(text, length);
+    ::LocalFree(text);
+    while (!message.empty() && (message.back() == '\n' || message.back() == '\r')) { // the system text ends with CR LF
+        message.pop_back();
+    }
+    return message;
+}
 #else
 [[nodiscard]] inline void* openSharedLibrary(const char* path) noexcept {
 
@@ -265,6 +280,11 @@ inline void                closeSharedLibrary(void* handle) noexcept { ::FreeLib
 }
 [[nodiscard]] inline void* findSharedLibrarySymbol(void* handle, const char* name) noexcept { return ::dlsym(handle, name); }
 inline void                closeSharedLibrary(void* handle) noexcept { ::dlclose(handle); }
+// the dynamic linker's text for the last failure, empty when there is none
+[[nodiscard]] inline std::string sharedLibraryError() {
+    const char* reason = ::dlerror();
+    return reason == nullptr ? std::string() : std::string(reason);
+}
 #endif
 } // namespace detail
 
@@ -314,8 +334,8 @@ public:
         _dl_handle = detail::openSharedLibrary(plugin_file.c_str());
         if (!_dl_handle) {
             // the linker's reason: a missing library, a versioned name the installation lacks, an undefined symbol
-            const char* reason = dlerror();
-            _status            = reason == nullptr ? "Failed to load the plugin file" : std::format("Failed to load the plugin file: {}", reason);
+            const std::string reason = detail::sharedLibraryError();
+            _status                  = reason.empty() ? "Failed to load the plugin file" : std::format("Failed to load the plugin file: {}", reason);
             return;
         }
 
