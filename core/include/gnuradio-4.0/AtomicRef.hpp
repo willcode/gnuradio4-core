@@ -155,10 +155,18 @@ template<typename T>
  * TSAN: atomic store on a dummy variable (TSAN doesn't instrument std::atomic_thread_fence).
  * Weakly-ordered architectures (ARM64, RISC-V, POWER, etc.): std::atomic_thread_fence(release).
  */
+// MSVC's preprocessor parses __has_feature(...) even where defined(__has_feature) is false, so the call stays out of
+// any #if that MSVC evaluates
+#if defined(__has_feature)
+#define GR_ATOMIC_REF_HAS_TSAN_FEATURE __has_feature(thread_sanitizer)
+#else
+#define GR_ATOMIC_REF_HAS_TSAN_FEATURE 0
+#endif
+
 inline void atomicThreadFence() noexcept {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     // x86 TSO: all stores are release stores — fence is a no-op
-#elif defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
+#elif defined(__SANITIZE_THREAD__) || GR_ATOMIC_REF_HAS_TSAN_FEATURE
     // TSAN doesn't instrument std::atomic_thread_fence; use an atomic store to make the ordering visible
     alignas(sizeof(std::size_t)) static std::size_t tsanDummy = 0;
     gr::atomic_ref(tsanDummy).store_release(1);

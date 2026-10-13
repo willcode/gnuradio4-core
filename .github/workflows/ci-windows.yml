@@ -17,6 +17,7 @@ concurrency:
 jobs:
   win-build:
     strategy:
+      fail-fast: false
       matrix:
         os:
           - windows-latest # vs26
