@@ -108,8 +108,8 @@ function(setup_test TEST_NAME)
   setup_test_no_asan(${TEST_NAME})
 endfunction()
 
-# Puts the directories holding the shared libraries a test loads, directly or through a tool it
-# runs, on PATH. Windows resolves them there and has no RPATH equivalent. A no-op elsewhere.
+# Puts the directories holding the shared libraries a test loads, directly or through a tool it runs, on PATH. Windows
+# resolves them there and has no RPATH equivalent. A no-op elsewhere.
 function(gr_test_add_dll_directories)
   if(NOT WIN32)
     return()
