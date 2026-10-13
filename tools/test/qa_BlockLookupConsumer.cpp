@@ -8,7 +8,7 @@
 
 // The tools' own headers sit beside their sources, and this program is built without that directory on its include
 // path. The lookup below reaches it through core's include directory, which the installation copies.
-#if __has_include("RegistryDoc.hpp") || __has_include("GraphDoc.hpp")
+#if __has_include("DocWriter.hpp") || __has_include("GraphDoc.hpp")
 #error "the tools' source directory is on the include path of the lookup's consumer"
 #endif
 
