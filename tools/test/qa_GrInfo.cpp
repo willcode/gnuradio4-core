@@ -993,6 +993,33 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         expect(json.output.contains("\"label\": \"holds/testbus\"")) << json.output;
         expect(json.output.contains("\"physical\": true")) << json.output;
     };
+
+    "the labels, a block and a list narrowed by --label carry their text form's lines in both documents"_test = [] {
+        const Result labels = run(overVersionedPlugin({"labels", "--markdown"}), Streams::standardOutput);
+        expect(eq(labels.exitCode, 0)) << labels.output;
+        expect(labels.output.starts_with("# grinfo labels\n")) << "the command is the title" << labels.output;
+        expect(labels.output.contains("\n## holds\n")) << "a section per class" << labels.output;
+        expect(labels.output.contains("- **testbus**: Opens the test plugin's own bus.\n")) << "a word with its meaning" << labels.output;
+
+        const Result labelsHtml = run(overVersionedPlugin({"labels", "--html"}), Streams::standardOutput);
+        expect(eq(labelsHtml.exitCode, 0)) << labelsHtml.output;
+        expect(labelsHtml.output.contains("<li><strong>testbus</strong>: Opens the test plugin's own bus.</li>")) << labelsHtml.output;
+
+        const Result block = run(overVersionedPlugin({"block", "test::versioned", "--markdown"}), Streams::standardOutput);
+        expect(eq(block.exitCode, 0)) << block.output;
+        expect(block.output.contains("- **holds/device**: Opens a hardware unit attached to the host.\n")) << "a label with its meaning" << block.output;
+        expect(block.output.contains("- **role**: processor, read from the stream ports\n")) << block.output;
+
+        const Result narrowed = run(overTestDirectories({"blocks", "--label", "holds/device", "--markdown", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}), Streams::standardOutput);
+        expect(eq(narrowed.exitCode, 0)) << narrowed.output;
+        expect(narrowed.output.contains("\nblocks carrying holds/device\n")) << "the document names the narrowing" << narrowed.output;
+        expect(narrowed.output.contains("- **block keys**: 2\n")) << "the totals count the kept keys" << narrowed.output;
+        expect(!narrowed.output.contains("LibraryDoubler")) << narrowed.output;
+
+        const Result outside = run(overTestDirectories({"blocks", "--label", "holds/gpib", "--html", "--plugin-dir", GR_TOOLS_VERSIONED_PLUGIN}), Streams::standardOutput);
+        expect(eq(outside.exitCode, 0)) << outside.output;
+        expect(outside.output.contains("<p>holds/gpib is outside the loaded vocabulary</p>")) << outside.output;
+    };
 #endif
 
 #ifdef GR_TOOLS_DEVICE_LISTING
@@ -1066,6 +1093,27 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
 
         const Result version = run({"version", "--json", "--no-installed-dir", "--plugin-dir", GR_TOOLS_CORE_TEST_PLUGINS});
         expect(version.output.contains("Good Math Plugin")) << "the plugins load" << version.output;
+    };
+
+    "devices --markdown and --html carry a section per family with its units, and the refused listings"_test = [] {
+        const Result markdown = run(overDeviceListings({"devices", "--markdown"}), Streams::standardOutput);
+        expect(eq(markdown.exitCode, 0)) << markdown.output;
+        expect(markdown.output.starts_with("# grinfo devices\n")) << "the command is the title" << markdown.output;
+        expect(markdown.output.contains("\n## fakeplugin (receive and transmit)\n")) << "a section per family" << markdown.output;
+        expect(markdown.output.contains("- **fakeplugin:serial=FAKE0001**: Fake unit A\n")) << "a unit by its selector and its label" << markdown.output;
+        expect(markdown.output.contains("\nnot listed: the fake bus does not answer\n")) << "why a family listed none" << markdown.output;
+        expect(markdown.output.contains("is asked with --allow-open")) << markdown.output;
+        expect(!markdown.output.contains("Refused listings")) << markdown.output;
+
+        const Result html = run(overDeviceListings({"devices", "--html"}), Streams::standardOutput);
+        expect(eq(html.exitCode, 0)) << html.output;
+        expect(html.output.starts_with("<!DOCTYPE html>\n")) << html.output;
+        expect(html.output.contains("<li><strong>fakeplugin:serial=FAKE0001</strong>: Fake unit A</li>")) << html.output;
+
+        const Result refused = run({"devices", "--markdown", "--no-installed-dir", "--plugin-dir", GR_TOOLS_DEVICE_LISTING, "--plugin-dir", GR_TOOLS_DEVICE_LISTING_DUPLICATE}, Streams::standardOutput);
+        expect(eq(refused.exitCode, 0)) << refused.output;
+        expect(refused.output.contains("\n## Refused listings\n")) << refused.output;
+        expect(refused.output.contains("libdevice_listing_duplicate_plugin.so")) << refused.output;
     };
 
     "no line of the device report is wider than a terminal"_test = [] {

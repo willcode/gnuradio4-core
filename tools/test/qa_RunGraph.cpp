@@ -733,6 +733,11 @@ const boost::ut::suite<"RunGraph"> runGraphTests = [] {
             expect(eq(text.exitCode, 0)) << text.output;
             expect(text.output.contains("\nrefused registrations\n")) << command << text.output;
             expect(text.output.contains("\n  test::origin v1 from\n")) << "the key and version open the entry, and the files follow" << command << text.output;
+
+            const Result document = runProgram(GR_TOOLS_GRINFO, {std::string(command), "--markdown", "--plugin-dir", GR_TOOLS_FIXTURE_FIRST});
+            expect(eq(document.exitCode, 0)) << document.output;
+            expect(document.output.contains("\n## Refused registrations\n")) << command << document.output;
+            expect(document.output.contains(std::format("\n- {}\n", refusal))) << "the document lists the refusal as the text does" << command << document.output;
         }
 #endif
     };
