@@ -1,7 +1,17 @@
 #include <benchmark.hpp>
 #include <boost/ut.hpp>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <sys/resource.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -34,8 +44,9 @@
  *   - throughput: a source, a chain of 4 or 16 processOne blocks and a sink, in samples per second. Each arm repeats
  *     its run kLoadedRuns times after one discarded run.
  *   - idle: a source that never publishes and never ends the stream, into a sink. The figure is the process CPU time
- *     from getrusage() over the wall time of the window, in cores. The row "no scheduler" measures the same window
- *     with no graph running, which is the floor of the process. The idle rows also give the value of each round.
+ *     from getrusage() (GetProcessTimes() on Win32) over the wall time of the window, in cores. The row "no scheduler"
+ *     measures the same window with no graph running, which is the floor of the process. The idle rows also give the
+ *     value of each round.
  *   - wake: a source whose worker waits inside work() until the sink's worker is idle, then publishes one chunk. The
  *     latency is the time from the publication to the sink's receipt. A multi-threaded policy runs the source and the
  *     sink on two workers. Under multiThreaded the sink's worker sleeps in the idle back-off. Under
@@ -241,10 +252,21 @@ void registerPool() {
 }
 
 [[nodiscard]] std::chrono::duration<double> processCpuTime() {
+#if defined(_WIN32)
+    FILETIME creationTime{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    ::GetProcessTimes(::GetCurrentProcess(), &creationTime, &exitTime, &kernelTime, &userTime);
+    // a FILETIME counts 100 ns intervals
+    const auto seconds = [](const FILETIME& t) { return 1e-7 * static_cast<double>((static_cast<std::uint64_t>(t.dwHighDateTime) << 32U) | t.dwLowDateTime); };
+    return std::chrono::duration<double>(seconds(userTime) + seconds(kernelTime));
+#else
     rusage usage{};
     getrusage(RUSAGE_SELF, &usage);
     const auto seconds = [](const timeval& t) { return static_cast<double>(t.tv_sec) + 1e-6 * static_cast<double>(t.tv_usec); };
     return std::chrono::duration<double>(seconds(usage.ru_utime) + seconds(usage.ru_stime));
+#endif
 }
 
 // runs runAndWait() on a thread pinned for the policy; `whileRunning` runs on the caller's thread meanwhile
