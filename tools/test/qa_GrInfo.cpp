@@ -478,7 +478,7 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         const std::string fromVariable = "gr4_qa_grinfo_cache, from GR_DATA_CACHE_DIR";
         {
             const EnvironmentVariable unset("GR_DATA_CACHE_DIR", std::nullopt);
-            const Result              compiled = run({"version", "--json"});
+            const Result              compiled = run({"version", "--json", "--no-installed-dir"});
             expect(eq(compiled.exitCode, 0)) << compiled.output;
             expect(compiled.output.contains("\"dataCacheOrigin\": \"")) << "the instrument: the report names an origin" << compiled.output;
             expect(!compiled.output.contains("\"dataCacheOrigin\": \"environment\"")) << "without the variable the origin is not the environment" << compiled.output;
@@ -491,12 +491,12 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
         }
 
         const EnvironmentVariable variable("GR_DATA_CACHE_DIR", named);
-        const Result              json = run({"version", "--json"});
+        const Result              json = run({"version", "--json", "--no-installed-dir"});
         expect(eq(json.exitCode, 0)) << json.output;
         expect(json.output.contains(std::format("\"dataCacheDirectory\": \"{}\"", named))) << json.output;
         expect(json.output.contains("\"dataCacheOrigin\": \"environment\"")) << json.output;
 
-        const Result text = run({"version"});
+        const Result text = run({"version", "--no-installed-dir"});
         expect(eq(text.exitCode, 0)) << text.output;
         expect(withSingleSpaces(text.output).contains(fromVariable)) << text.output;
     };
@@ -692,7 +692,7 @@ const boost::ut::suite<"GrInfo"> grInfoTests = [] {
     };
 
     "a plugin refused for its plugin ABI version is reported on standard error and not in the document"_test = [] {
-        const std::vector<std::string> arguments{"blocks", "--markdown", "--plugin-dir", GR_TOOLS_TEST_PLUGIN_ABI};
+        const std::vector<std::string> arguments{"blocks", "--markdown", "--no-installed-dir", "--plugin-dir", GR_TOOLS_TEST_PLUGIN_ABI};
         const Result                   document = run(arguments, Streams::standardOutput);
         expect(eq(document.exitCode, 0)) << document.output;
         expect(document.output.starts_with("# grinfo blocks\n")) << "the document opens standard output" << document.output;
