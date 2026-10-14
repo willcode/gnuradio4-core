@@ -1295,9 +1295,9 @@ void printPortsAndSettings(const BlockTables& tables, std::string_view indent) {
     }
 }
 
-// The facts of one block as `name  value` pairs: the file it came from, its types, its category, the type it is an
-// alias of, and the error its settings gave, if any. A block that could not be read has its error in place of the
-// category.
+// The facts of one block as `name  value` pairs: its library, its types, its category, its labels, its role and any
+// note on it, its version, the type it is an alias of and the error its settings gave. A block that could not be read
+// gives its library, its types, its labels, its version and the error.
 [[nodiscard]] std::vector<std::pair<std::string, std::string>> factsOf(const Context& context, const NamedBlock& block) {
     std::vector<std::pair<std::string, std::string>> facts;
     facts.emplace_back("library", block.file.empty() ? std::string(nameOf(block.origin)) : std::format("{} ({})", std::filesystem::path(block.file).filename().string(), nameOf(block.origin)));
