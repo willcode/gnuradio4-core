@@ -61,8 +61,10 @@
 // which a host reaches a plugin's block at a pinned version. `BlockModel` carries no `version()` or `status()`
 // virtual: both read the block's attributes from its meta information. A block registration carries the labels of
 // its type, and the attributes cross the boundary in their map form. `gr_plugin_base` ends with `deviceListings()`,
-// and a `gr::DeviceListing` crosses the boundary through it.
-#define GR_PLUGIN_CURRENT_ABI_VERSION 14
+// and a `gr::DeviceListing` crosses the boundary through it. The port wrapper of a plugin's block returns its
+// `DynamicPort::Handlers` to the host by value through `DynamicPort::HandlerAccess`, and the layout of that record
+// crosses the boundary too.
+#define GR_PLUGIN_CURRENT_ABI_VERSION 15
 
 namespace gr {
 
