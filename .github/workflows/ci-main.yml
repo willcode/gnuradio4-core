@@ -2,7 +2,7 @@ name: main branch CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci-check/**"]
 
 jobs:
   build:
@@ -53,6 +53,13 @@ jobs:
             cc: clang
             cxx: clang++
             cmake-build-type: Release
+            cmake_flags: "-DADDRESS_SANITIZER=ON"
+          - name: "Fedora 44 | clang | Debug"
+            cache_key: fedora-44-clang-debug
+            image: ghcr.io/gnuradio/ci:fedora-44-4.0
+            cc: clang
+            cxx: clang++
+            cmake-build-type: Debug
             cmake_flags: "-DADDRESS_SANITIZER=ON"
           - name: "Ubuntu 24.04 | Emscripten | Release"
             cache_key: ubuntu-2404-emscripten-release
