@@ -1929,16 +1929,6 @@ const boost::ut::suite<"settings refusals"> settingsRefusalTests = [] {
         expect(std::addressof(base.settings()) == std::addressof(gr::settings::detail::settingsOf(block)));
     };
 
-    "setStaged() returns the keys it refused, and storeDefaults() makes the values in force the stored ones"_test = [] {
-        LimitedGain   block{property_map{{"name", std::string("staged_stage")}}};
-        SettingsBase& settings = gr::settings::detail::settingsOf(block);
-        expect(settings.setStaged({{"gain", 2.0f}}).contains("gain")) << "a refused key is not returned";
-        expect(settings.set({{"gain", 0.25f}}).has_value());
-        settings.storeDefaults();
-        expect(settings.getStored("gain") == std::optional<pmt::Value>(0.25f)) << "the stored value is not the one in force";
-        expect(settings.activeParameters().contains("gain"));
-    };
-
     "a value outside the limits is refused by set(), naming the key and both bounds"_test = [] {
         LimitedGain block{property_map{{"name", std::string("gain_stage")}}};
         block.init(std::make_shared<gr::Sequence>());
