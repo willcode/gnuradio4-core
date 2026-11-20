@@ -58,7 +58,8 @@ using Rejected = std::vector<Rejection>;
 }
 
 // the causes of a call's pending value; where several apply, the first is given. A call on a scheduler's worker thread
-// never waits, since the wait could hold the thread that runs the block's work call. A read's pending value gives none
+// never waits, since the wait could hold the thread that runs the block's work call, and a `noWait` call names the work
+// call as well. A read's pending value gives none
 inline constexpr std::string_view kPendingNotRunning = "not running";
 inline constexpr std::string_view kPendingOnWorker   = "applies at the block's next work call";
 inline constexpr std::string_view kPendingTimeout    = "timeout";

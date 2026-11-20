@@ -116,12 +116,21 @@ inline RecipeParameterSplit splitRecipeParameters(PluginLoader& loader, std::str
     return split;
 }
 
-/// loads a split's `remaining` keys into `block`'s settings; a refusal names the block, its type and the refused key
+/// loads a split's `remaining` keys into `block`'s settings, and each key the block declares no setting of into its
+/// `meta_information`; a refusal names the block, its type and the refused key
 inline std::expected<void, gr::Error> loadRemainingSettings(BlockModel& block, std::string_view blockName, std::string_view blockType, const property_map& remaining) {
-    try {
-        block.settings().loadParametersFromPropertyMap(remaining);
-    } catch (const gr::exception& refusal) {
-        return std::unexpected(gr::Error(std::format("Unable to create block '{}' of type '{}': {}", blockName, blockType, refusal.message), refusal.sourceLocation));
+    const std::set<std::string> writable = block.settings().writableMembers();
+    property_map                changes;
+    for (const auto& [key, value] : remaining) {
+        if (writable.contains(std::string(key))) {
+            changes.insert_or_assign(key, value);
+        } else {
+            block.metaInformation().insert_or_assign(key, value);
+        }
+    }
+    const std::expected<settings::Values, settings::Rejected> loaded = block.settings().set(changes);
+    if (const settings::Rejected refused = loaded ? settings::detail::failedKeys(*loaded) : loaded.error(); !refused.empty()) {
+        return std::unexpected(gr::Error(std::format("Unable to create block '{}' of type '{}': {}", blockName, blockType, settings::describeRejected(refused))));
     }
     return {};
 }
