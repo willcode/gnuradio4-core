@@ -750,7 +750,7 @@ blocks:
 
 // a call on the composite's settings that waits for nothing, its refusal as one text
 [[nodiscard]] std::expected<void, std::string> setParameters(const std::shared_ptr<gr::BlockModel>& composite, const gr::property_map& changes) {
-    const std::expected<gr::settings::Values, gr::settings::Rejected> result = composite->settings().set(changes, gr::settings::noWait);
+    const std::expected<gr::settings::Values, gr::settings::Rejected> result = composite->set(changes, gr::settings::noWait);
     if (!result) {
         return std::unexpected(gr::settings::describeRejected(result.error()));
     }
@@ -780,13 +780,13 @@ const boost::ut::suite<"RecipeDefinitions"> recipeDefinitionTests = [] {
         }
 
         const double expectedGain = 48000.0 / (2.0 * std::numbers::pi * 2500.0);
-        const auto   gain         = inner->settings().get<float>("gain");
+        const auto   gain         = inner->get<float>("gain");
         expect(gain.has_value());
         expect(eq(gain.value_or(float{}), static_cast<float>(expectedGain))) << "the derivation reached the interior setting";
-        const auto rate = inner->settings().get<float>("rate");
+        const auto rate = inner->get<float>("rate");
         expect(rate.has_value());
         expect(eq(rate.value_or(float{}), 48000.0f)) << "a bare reference forwards";
-        const auto label = inner->settings().get<std::string>("label");
+        const auto label = inner->get<std::string>("label");
         expect(label.has_value());
         expect(eq(label.value_or(std::string{}), std::string("=verbatim"))) << "the escape yields a literal '='";
     };
@@ -897,7 +897,7 @@ blocks:
         change["deviation"] = 5000.0f;
         const auto applied  = setParameters(*composite, change);
         expect(applied.has_value()) << (applied.has_value() ? "" : applied.error());
-        const auto staged = gr::settings::heldValues(inner->settings().get());
+        const auto staged = gr::settings::heldValues(inner->get());
         const auto gainIt = staged.find("gain");
         expect(gainIt != staged.end()) << "the derived setting reaches the interior block";
         if (gainIt != staged.end()) {
@@ -926,7 +926,7 @@ blocks:
         next["sample_rate"]    = 96000.0f;
         const auto nextApplied = setParameters(*composite, next);
         expect(nextApplied.has_value()) << (nextApplied.has_value() ? "" : nextApplied.error());
-        const auto stagedAfter = gr::settings::heldValues(inner->settings().get());
+        const auto stagedAfter = gr::settings::heldValues(inner->get());
         const auto gainAfter   = stagedAfter.find("gain");
         expect(gainAfter != stagedAfter.end());
         if (gainAfter != stagedAfter.end()) {
@@ -1037,7 +1037,7 @@ blocks:
             return;
         }
 
-        const auto taps = inner->settings().get<std::vector<float>>("taps");
+        const auto taps = inner->get<std::vector<float>>("taps");
         expect(taps.has_value());
         const std::vector<float>* derived = taps.has_value() ? &*taps : nullptr;
         expect(derived != nullptr) << "the derived sequence reaches the setting in the member's own element type";
@@ -1057,7 +1057,7 @@ blocks:
         change["peak"]     = 0.8f;
         const auto applied = setParameters(*composite, change);
         expect(applied.has_value()) << (applied.has_value() ? "" : applied.error());
-        const auto staged = gr::settings::heldValues(inner->settings().get());
+        const auto staged = gr::settings::heldValues(inner->get());
         const auto tapsIt = staged.find("taps");
         expect(tapsIt != staged.end()) << "the whole sequence is staged, because a setting is staged whole";
         if (tapsIt != staged.end()) {
@@ -1101,7 +1101,7 @@ blocks:
         if (first == nullptr || wrapper == nullptr) {
             return;
         }
-        const auto gain = first->settings().get<float>("gain");
+        const auto gain = first->get<float>("gain");
         expect(gain.has_value());
         expect(eq(gain.value_or(float{}), 32768.0f)) << "the floor reached the interior setting";
 
@@ -1109,7 +1109,7 @@ blocks:
         change["sample_rate"] = 2000000.0f;
         const auto applied    = setParameters(*composite, change);
         expect(applied.has_value()) << (applied.has_value() ? "" : applied.error());
-        const auto staged = gr::settings::heldValues(first->settings().get());
+        const auto staged = gr::settings::heldValues(first->get());
         const auto gainIt = staged.find("gain");
         expect(gainIt != staged.end()) << "the clamped derivation re-evaluates through the binding";
         if (gainIt != staged.end()) {
@@ -1133,22 +1133,22 @@ blocks:
         gr::property_map refusedChange;
         refusedChange["level"] = 2.0f;
         refusedChange["count"] = std::int64_t{100};
-        const auto refused     = (*composite)->settings().set(refusedChange, gr::settings::noWait);
+        const auto refused     = (*composite)->set(refusedChange, gr::settings::noWait);
         expect(fatal(!refused.has_value())) << "the second block refuses the derived gain";
         expect(eq(refused.error().size(), 1UZ)) << gr::settings::describeRejected(refused.error());
         const gr::settings::Rejection& entry = refused.error().front();
         expect(eq(entry.key, std::string("count"))) << "the refusal names the parameter the refused gain derives from";
         expect(entry.reason.contains("second") && entry.reason.contains("gain")) << "the reason names the inner block and key: " << entry.reason;
-        expect(eq(first->settings().get<float>("gain").value_or(0.0f), 1.0f)) << "the first block keeps its gain";
-        expect(eq(second->settings().get<float>("gain").value_or(0.0f), 1.0f)) << "the second block keeps its gain";
-        expect(eq((*composite)->settings().get<float>("level").value_or(0.0f), 1.0f)) << "the refused call stores no parameter";
+        expect(eq(first->get<float>("gain").value_or(0.0f), 1.0f)) << "the first block keeps its gain";
+        expect(eq(second->get<float>("gain").value_or(0.0f), 1.0f)) << "the second block keeps its gain";
+        expect(eq((*composite)->get<float>("level").value_or(0.0f), 1.0f)) << "the refused call stores no parameter";
 
         gr::property_map next;
         next["level"] = 3.0f;
         expect(setParameters(*composite, next).has_value());
-        expect(eq(first->settings().get<float>("gain").value_or(0.0f), 3.0f)) << "the next change reaches the first block";
-        expect(eq(second->settings().get<float>("gain").value_or(0.0f), 1.0f)) << "a block no parameter of the call reaches keeps its gain";
-        expect(eq((*composite)->settings().get<std::int64_t>("count").value_or(0), std::int64_t{1})) << "the refused count was never stored";
+        expect(eq(first->get<float>("gain").value_or(0.0f), 3.0f)) << "the next change reaches the first block";
+        expect(eq(second->get<float>("gain").value_or(0.0f), 1.0f)) << "a block no parameter of the call reaches keeps its gain";
+        expect(eq((*composite)->get<std::int64_t>("count").value_or(0), std::int64_t{1})) << "the refused count was never stored";
     };
 
     "a literal definition is untouched, and parameters against it are refused"_test = [] {
@@ -1164,7 +1164,7 @@ blocks:
         if (inner == nullptr) {
             return;
         }
-        const auto gain = inner->settings().get<float>("gain");
+        const auto gain = inner->get<float>("gain");
         expect(gain.has_value());
         expect(eq(gain.value_or(float{}), 2.5f));
 
@@ -1285,7 +1285,7 @@ blocks:
     return *composite;
 }
 
-[[nodiscard]] float floatOf(const std::shared_ptr<gr::BlockModel>& block, std::string_view key) { return block->settings().get<float>(key).value_or(-1.0f); }
+[[nodiscard]] float floatOf(const std::shared_ptr<gr::BlockModel>& block, std::string_view key) { return block->get<float>(key).value_or(-1.0f); }
 
 // emits zeros until the run stops
 struct RecipeSource : gr::Block<RecipeSource> {
@@ -1382,7 +1382,7 @@ struct RunningComposite {
         expect(fatal(toScheduler.connect(scheduler.msgIn).has_value()));
         expect(fatal(scheduler.msgOut.connect(fromScheduler).has_value()));
         runner = std::thread([this] { std::ignore = scheduler.runAndWait(); });
-        expect(fatal(waitUntil([this] { return gr::settings::detail::FrameworkAccess::isRunning(interiorBlockNamed(composite, "stage")->settings()); }))) << "the composite's stage does not run";
+        expect(fatal(waitUntil([this] { return gr::settings::detail::FrameworkAccess::isRunning(gr::settings::detail::settingsOf(*interiorBlockNamed(composite, "stage"))); }))) << "the composite's stage does not run";
     }
 
     RunningComposite(const RunningComposite&)            = delete;
@@ -1403,12 +1403,12 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         const auto shaper    = interiorBlockNamed(composite, "shaper");
         expect(fatal(stage != nullptr && shaper != nullptr));
 
-        const std::expected<Values, Rejected> both = composite->settings().set(property_map{{"level", 4.0}, {"disconnect_on_done", false}}, gr::settings::noWait);
+        const std::expected<Values, Rejected> both = composite->set(property_map{{"level", 4.0}, {"disconnect_on_done", false}}, gr::settings::noWait);
         expect(both.has_value()) << textOf(both);
         expect(eq(floatOf(stage, "gain"), 4.0f)) << "the parameter reached the stage";
         expect(eq(floatOf(shaper, "gain"), 8.0f)) << "the parameter reached the shaper's expression";
-        expect(!composite->settings().get<bool>("disconnect_on_done").value_or(true)) << "the own key applied at the call";
-        expect(eq(composite->settings().get<float>("level").value_or(0.0f), 4.0f)) << "the parameter reads as sent";
+        expect(!composite->get<bool>("disconnect_on_done").value_or(true)) << "the own key applied at the call";
+        expect(eq(composite->get<float>("level").value_or(0.0f), 4.0f)) << "the parameter reads as sent";
     };
 
     "a refused parameter changes no own key, and a refused own key changes no inner block"_test = [] {
@@ -1416,30 +1416,30 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         const auto stage     = interiorBlockNamed(composite, "stage");
         expect(fatal(stage != nullptr));
 
-        const std::expected<Values, Rejected> refusedParameter = composite->settings().set(property_map{{"level", 50.0}, {"disconnect_on_done", false}}, gr::settings::noWait);
+        const std::expected<Values, Rejected> refusedParameter = composite->set(property_map{{"level", 50.0}, {"disconnect_on_done", false}}, gr::settings::noWait);
         expect(fatal(!refusedParameter.has_value()));
         expect(std::ranges::all_of(refusedParameter.error(), [](const auto& entry) { return entry.key == "level"; })) << textOf(refusedParameter);
         expect(refusedParameter.error().front().reason.contains("stage")) << "the reason names the inner block: " << textOf(refusedParameter);
-        expect(composite->settings().get<bool>("disconnect_on_done").value_or(false)) << "the own key stays";
+        expect(composite->get<bool>("disconnect_on_done").value_or(false)) << "the own key stays";
         expect(eq(floatOf(stage, "gain"), 1.0f)) << "no inner block changes";
 
-        const std::expected<Values, Rejected> refusedOwnKey = composite->settings().set(property_map{{"level", 5.0}, {"levle", 1.0}}, gr::settings::noWait);
+        const std::expected<Values, Rejected> refusedOwnKey = composite->set(property_map{{"level", 5.0}, {"levle", 1.0}}, gr::settings::noWait);
         expect(fatal(!refusedOwnKey.has_value()));
         expect(eq(refusedOwnKey.error().size(), 1UZ) && refusedOwnKey.error().front().key == "levle") << textOf(refusedOwnKey);
         expect(eq(floatOf(stage, "gain"), 1.0f)) << "the inner blocks stay";
-        expect(eq(composite->settings().get<float>("level").value_or(0.0f), 1.0f)) << "the parameter stays";
+        expect(eq(composite->get<float>("level").value_or(0.0f), 1.0f)) << "the parameter stays";
     };
 
     "a check of a parameter refuses as the call does and stores nothing"_test = [] {
         const auto composite = levelsComposite(1.0f);
         const auto stage     = interiorBlockNamed(composite, "stage");
         expect(fatal(stage != nullptr));
-        const std::expected<void, Rejected> refused = composite->settings().check(property_map{{"level", 50.0}});
+        const std::expected<void, Rejected> refused = composite->check(property_map{{"level", 50.0}});
         expect(fatal(!refused.has_value()));
         expect(eq(refused.error().front().key, std::string("level")));
-        expect(composite->settings().check(property_map{{"level", 6.0}}).has_value());
+        expect(composite->check(property_map{{"level", 6.0}}).has_value());
         expect(eq(floatOf(stage, "gain"), 1.0f)) << "a check reaches no inner block";
-        expect(eq(composite->settings().get<float>("level").value_or(0.0f), 1.0f)) << "a check stores no parameter";
+        expect(eq(composite->get<float>("level").value_or(0.0f), 1.0f)) << "a check stores no parameter";
     };
 
     "set(get()) on a composite changes nothing"_test = [] {
@@ -1447,25 +1447,25 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         const auto stage     = interiorBlockNamed(composite, "stage");
         const auto shaper    = interiorBlockNamed(composite, "shaper");
         expect(fatal(stage != nullptr && shaper != nullptr));
-        const std::expected<Values, Rejected> read = composite->settings().get();
+        const std::expected<Values, Rejected> read = composite->get();
         expect(fatal(read.has_value())) << textOf(read);
         expect(read->contains("level") && read->contains("offset") && read->contains("taps")) << "get() adds every parameter";
-        const std::expected<Values, Rejected> again = composite->settings().set(gr::testing::writableValues(composite->settings(), read), gr::settings::noWait);
+        const std::expected<Values, Rejected> again = composite->set(gr::testing::writableValues(gr::settings::detail::settingsOf(*composite), read), gr::settings::noWait);
         expect(again.has_value()) << textOf(again);
         expect(eq(floatOf(stage, "gain"), 3.0f));
         expect(eq(floatOf(shaper, "gain"), 6.0f));
-        expect(eq(composite->settings().get<float>("level").value_or(0.0f), 3.0f));
+        expect(eq(composite->get<float>("level").value_or(0.0f), 3.0f));
     };
 
     "the parameter record holds the parameters a call gave"_test = [] {
         const auto composite = levelsComposite(1.0f);
-        expect(gr::settings::detail::FrameworkAccess::isGiven(composite->settings(), "level")) << "the parameter the composite was built with is given";
-        expect(!gr::settings::detail::FrameworkAccess::isGiven(composite->settings(), "offset")) << "a parameter at its default is not given";
-        expect(!gr::settings::detail::FrameworkAccess::savedValues(composite->settings()).contains("offset"));
+        expect(gr::settings::detail::FrameworkAccess::isGiven(gr::settings::detail::settingsOf(*composite), "level")) << "the parameter the composite was built with is given";
+        expect(!gr::settings::detail::FrameworkAccess::isGiven(gr::settings::detail::settingsOf(*composite), "offset")) << "a parameter at its default is not given";
+        expect(!gr::settings::detail::FrameworkAccess::savedValues(gr::settings::detail::settingsOf(*composite)).contains("offset"));
 
         expect(setParameters(composite, property_map{{"offset", 5.0}}).has_value());
-        expect(gr::settings::detail::FrameworkAccess::isGiven(composite->settings(), "offset"));
-        const property_map saved = gr::settings::detail::FrameworkAccess::savedValues(composite->settings());
+        expect(gr::settings::detail::FrameworkAccess::isGiven(gr::settings::detail::settingsOf(*composite), "offset"));
+        const property_map saved = gr::settings::detail::FrameworkAccess::savedValues(gr::settings::detail::settingsOf(*composite));
         expect(saved.contains("offset") && saved.at("offset") == gr::pmt::Value(5.0)) << "a saved graph keeps the parameter at the value given";
         expect(saved.contains("level"));
     };
@@ -1475,10 +1475,10 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         const auto shaper    = interiorBlockNamed(composite, "shaper");
         expect(fatal(shaper != nullptr));
         expect(setParameters(composite, property_map{{"taps", std::vector<double>{0.5, 0.25}}}).has_value());
-        const std::expected<std::vector<float>, Rejected> stored = composite->settings().get<std::vector<float>>("taps");
+        const std::expected<std::vector<float>, Rejected> stored = composite->get<std::vector<float>>("taps");
         expect(fatal(stored.has_value())) << "the parameter reads back in its declared element type";
         expect(*stored == std::vector<float>{0.5f, 0.25f});
-        expect(shaper->settings().get<std::vector<float>>("taps").value_or(std::vector<float>{}) == std::vector<float>{0.5f, 0.25f}) << "the inner key receives the floats";
+        expect(shaper->get<std::vector<float>>("taps").value_or(std::vector<float>{}) == std::vector<float>{0.5f, 0.25f}) << "the inner key receives the floats";
 
         const std::expected<void, std::string> refused = setParameters(composite, property_map{{"taps", std::vector<std::string>{"a"}}});
         expect(!refused.has_value()) << "an element the type cannot hold refuses the parameter";
@@ -1488,19 +1488,19 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         RunningComposite run(levelsComposite(1.0f));
         const auto       stage = interiorBlockNamed(run.composite, "stage");
 
-        const std::expected<Values, Rejected> rounded = run.composite->settings().set(property_map{{"level", 2.4}});
+        const std::expected<Values, Rejected> rounded = run.composite->set(property_map{{"level", 2.4}});
         expect(fatal(rounded.has_value())) << textOf(rounded);
         expect(fatal(rounded->contains("level"))) << textOf(rounded);
         const Entry& level = rounded->at("level");
         expect(level.isValue() && eq(level.as<float>().value_or(0.0f), 2.4f)) << "the parameter's entry carries its stored value";
         expect(level.reason.contains("stage") && level.reason.contains("gain") && level.reason.contains("runs")) << level.reason;
-        expect(eq(run.composite->settings().get<float>("level").value_or(0.0f), 2.4f)) << "the parameter reads as sent";
+        expect(eq(run.composite->get<float>("level").value_or(0.0f), 2.4f)) << "the parameter reads as sent";
         expect(eq(floatOf(stage, "gain"), 2.0f)) << "the stage runs the whole gain";
     };
 
     "a tag on a parameter's key reaches each inner block at its sample, a repeated one stages nothing and a refused one changes none"_test = [] {
         const auto composite = levelsComposite(1.0f);
-        expect(fatal(composite->settings().setTagCouplings(property_map{{"level", std::string("qa:level")}, {"offset", std::string("qa:offset")}}).has_value()));
+        expect(fatal(composite->setTagCouplings(property_map{{"level", std::string("qa:level")}, {"offset", std::string("qa:offset")}}).has_value()));
         auto* stage = static_cast<RecipeWatched*>(interiorBlockNamed(composite, "stage")->raw());
 
         gr::Graph   flow;
@@ -1522,16 +1522,16 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         expect(std::ranges::all_of(sink.values | std::views::take(1000), [](float value) { return value == 2.0f; })) << "no sample before the tag sees the new values";
         expect(std::ranges::all_of(sink.values | std::views::drop(1000), [](float value) { return value == 18.0f; })) << "the refused tag changes no inner block";
         expect(eq(stage->nGainSets, nGainSetsBefore + 1UZ)) << "the repeated tag stages nothing";
-        expect(eq(composite->settings().get<float>("level").value_or(0.0f), 3.0f)) << "the tag stores the parameter";
-        expect(eq(composite->settings().get<double>("offset").value_or(0.0), 2.0)) << "the tag stores the other parameter";
-        expect(!gr::settings::detail::FrameworkAccess::isGiven(composite->settings(), "offset")) << "a tag's value makes no parameter given";
+        expect(eq(composite->get<float>("level").value_or(0.0f), 3.0f)) << "the tag stores the parameter";
+        expect(eq(composite->get<double>("offset").value_or(0.0), 2.0)) << "the tag stores the other parameter";
+        expect(!gr::settings::detail::FrameworkAccess::isGiven(gr::settings::detail::settingsOf(*composite), "offset")) << "a tag's value makes no parameter given";
         expect(sink.tagKeys.contains("qa:level")) << "the tag goes on down the stream";
         expect(std::ranges::none_of(sink.tagKeys, [](const std::string& key) { return key.starts_with(gr::settings::kInnerTagKeyPrefix); })) << "the composite's output drops the inner tag keys";
     };
 
     "a tag reaches an inner block fed by an output that also leaves the composite, and no output that leaves carries the inner tag keys"_test = [] {
         const auto composite = levelsComposite(1.0f, kTappedLevelsRecipe);
-        expect(fatal(composite->settings().setTagCouplings(property_map{{"level", std::string("qa:level")}}).has_value()));
+        expect(fatal(composite->setTagCouplings(property_map{{"level", std::string("qa:level")}}).has_value()));
         const auto shaper = interiorBlockNamed(composite, "shaper");
         expect(fatal(shaper != nullptr));
 
@@ -1572,7 +1572,7 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         std::vector<ParameterDeclaration> declarations{{.name = "boost", .type = "float32", .defaultValue = gr::pmt::Value(1.0f), .doc = ""}};
         std::vector<gr::recipe::Binding>  bindings{{.namePath = {"tail"}, .settingKey = "gain", .expression = {}, .substituted = 0UZ, .sequence = {}}};
         expect(fatal(outer->attachRecipeBindings({.declarations = std::move(declarations), .bindings = std::move(bindings), .values = {gr::pmt::Value(1.0f)}}).has_value()));
-        expect(fatal(outer->settings().setTagCouplings(property_map{{"boost", std::string("qa:boost")}}).has_value()));
+        expect(fatal(outer->setTagCouplings(property_map{{"boost", std::string("qa:boost")}}).has_value()));
 
         gr::Graph   flow;
         TaggedOnes& source                           = flow.emplaceBlock<TaggedOnes>();
@@ -1611,9 +1611,9 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         expect(fatal(subgraph->exportPort(true, stage.unique_name, gr::PortDirection::OUTPUT, "out", "out").has_value()));
         RunningComposite run(subgraph);
 
-        const std::expected<Values, Rejected> result = run.composite->settings().set(property_map{{"disconnect_on_done", false}}, gr::settings::noWait);
+        const std::expected<Values, Rejected> result = run.composite->set(property_map{{"disconnect_on_done", false}}, gr::settings::noWait);
         expect(result.has_value()) << textOf(result);
-        expect(!run.composite->settings().get<bool>("disconnect_on_done").value_or(true)) << "no work call reaches a subgraph, so the key applies at the call";
+        expect(!run.composite->get<bool>("disconnect_on_done").value_or(true)) << "no work call reaches a subgraph, so the key applies at the call";
     };
 
     "a call whose composite version moved since its prepare prepares again and keeps the other call's parameters"_test = [] {
@@ -1623,7 +1623,7 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         stage->holdAtGain           = 3.0f;
 
         std::expected<Values, Rejected> first;
-        std::thread                     caller([&composite, &first] { first = composite->settings().set(property_map{{"level", 3.0}}, gr::settings::noWait); });
+        std::thread                     caller([&composite, &first] { first = composite->set(property_map{{"level", 3.0}}, gr::settings::noWait); });
         expect(fatal(waitUntil([stage] { return stage->held.load(); }))) << "the first call's prepare reached the stage's check";
         expect(setParameters(composite, property_map{{"other", 2.0}}).has_value()) << "a call that reaches no held block commits meanwhile";
         stage->released = true;
@@ -1631,8 +1631,8 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
 
         expect(first.has_value()) << textOf(first);
         expect(ge(stage->nChecks.load(), heldAt + 2UZ)) << "the first call checked the stage again after the version moved";
-        expect(eq(composite->settings().get<float>("level").value_or(0.0f), 3.0f));
-        expect(eq(composite->settings().get<double>("other").value_or(0.0), 2.0)) << "the retry stores the other call's parameter with its own";
+        expect(eq(composite->get<float>("level").value_or(0.0f), 3.0f));
+        expect(eq(composite->get<double>("other").value_or(0.0), 2.0)) << "the retry stores the other call's parameter with its own";
         expect(eq(floatOf(interiorBlockNamed(composite, "stage"), "gain"), 3.0f));
         expect(eq(floatOf(interiorBlockNamed(composite, "shaper"), "gain"), 2.0f));
     };
@@ -1642,7 +1642,7 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         RecipeLatched* stage     = static_cast<RecipeLatched*>(interiorBlockNamed(composite, "stage")->raw());
         stage->refuseFrom        = stage->nChecks.load() + 2UZ; // the prepare's check passes, the commit's refuses
 
-        const std::expected<Values, Rejected> result = composite->settings().set(property_map{{"level", 3.0}, {"other", 2.0}}, gr::settings::noWait);
+        const std::expected<Values, Rejected> result = composite->set(property_map{{"level", 3.0}, {"other", 2.0}}, gr::settings::noWait);
         expect(fatal(result.has_value() && result->contains("level"))) << textOf(result);
         expect(result->at("level").isFailed() && result->at("level").reason.contains("stage")) << textOf(result);
         expect(eq(floatOf(interiorBlockNamed(composite, "stage"), "gain"), 1.0f)) << "the refusing block keeps its gain";
@@ -1651,7 +1651,7 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
 
     "a tag that enters while a call commits prepares again over the call's parameters"_test = [] {
         const auto composite = levelsComposite(1.0f, kLatchedRecipe);
-        expect(fatal(composite->settings().setTagCouplings(property_map{{"level", std::string("qa:level")}}).has_value()));
+        expect(fatal(composite->setTagCouplings(property_map{{"level", std::string("qa:level")}}).has_value()));
         RecipeLatched* stage = static_cast<RecipeLatched*>(interiorBlockNamed(composite, "stage")->raw());
         stage->holdAtGain    = 3.0f; // the tag's check, on the worker
 
@@ -1676,8 +1676,8 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
         expect(fatal(held)) << "the tag's prepare reached the stage's check";
         expect(ran.has_value());
 
-        expect(eq(composite->settings().get<float>("level").value_or(0.0f), 3.0f)) << "the tag came after the call";
-        expect(eq(composite->settings().get<double>("other").value_or(0.0), 2.0)) << "the tag's retry keeps the call's other parameter";
+        expect(eq(composite->get<float>("level").value_or(0.0f), 3.0f)) << "the tag came after the call";
+        expect(eq(composite->get<double>("other").value_or(0.0), 2.0)) << "the tag's retry keeps the call's other parameter";
         expect(fatal(eq(sink.values.size(), 4096UZ)));
         expect(std::ranges::all_of(sink.values | std::views::take(1000), [](float value) { return value == 1.0f || value == 2.0f; })) << "no sample before the tag sees its value";
         expect(eq(sink.values.back(), 6.0f)) << "the stage runs the tag's 3 and the shaper the call's 2";
@@ -1685,7 +1685,7 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
 
     "a tag whose value a parameter's inner block refuses notifies the refusal and changes nothing"_test = [] {
         const auto composite = levelsComposite(1.0f);
-        expect(fatal(composite->settings().setTagCouplings(property_map{{"level", std::string("qa:level")}}).has_value()));
+        expect(fatal(composite->setTagCouplings(property_map{{"level", std::string("qa:level")}}).has_value()));
 
         gr::Graph   flow;
         TaggedOnes& source                           = flow.emplaceBlock<TaggedOnes>();
@@ -1710,19 +1710,19 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
             readText += std::format("[{} {} {}: {}] ", notification.block, notification.key, gr::settings::notificationLevelName(notification.level), notification.reason);
         }
         expect(std::ranges::any_of(read, [](const gr::settings::Notification& notification) { return notification.level == gr::settings::NotificationLevel::error && notification.reason.contains("level: the tag's value is refused") && notification.reason.contains("stage"); })) << "the refusal reached the reader: " << readText;
-        expect(eq(composite->settings().get<float>("level").value_or(0.0f), 1.0f)) << "the parameter stays";
+        expect(eq(composite->get<float>("level").value_or(0.0f), 1.0f)) << "the parameter stays";
         expect(std::ranges::all_of(sink.values, [](float value) { return value == 2.0f; })) << "no inner block changes";
     };
 
     "set(get()) on a running composite changes nothing"_test = [] {
         RunningComposite                      run(levelsComposite(3.0f));
-        const std::expected<Values, Rejected> read = run.composite->settings().get();
+        const std::expected<Values, Rejected> read = run.composite->get();
         expect(fatal(read.has_value())) << textOf(read);
-        const std::expected<Values, Rejected> again = run.composite->settings().set(gr::testing::writableValues(run.composite->settings(), read));
+        const std::expected<Values, Rejected> again = run.composite->set(gr::testing::writableValues(gr::settings::detail::settingsOf(*run.composite), read));
         expect(again.has_value()) << textOf(again);
         expect(eq(floatOf(interiorBlockNamed(run.composite, "stage"), "gain"), 3.0f));
         expect(eq(floatOf(interiorBlockNamed(run.composite, "shaper"), "gain"), 6.0f));
-        expect(eq(run.composite->settings().get<float>("level").value_or(0.0f), 3.0f));
+        expect(eq(run.composite->get<float>("level").value_or(0.0f), 3.0f));
     };
 
     "a Set message holding a parameter and an own key applies both"_test = [] {
@@ -1731,7 +1731,7 @@ const boost::ut::suite<"a call on a recipe composite"> compositeCallTests = [] {
 
         run.send(property_map{{"level", 3.0}, {"disconnect_on_done", false}});
         expect(fatal(waitUntil([&] { return floatOf(stage, "gain") == 3.0f; }))) << "the parameter did not apply";
-        expect(fatal(waitUntil([&] { return !run.composite->settings().get<bool>("disconnect_on_done").value_or(true); }))) << "the own key did not apply";
+        expect(fatal(waitUntil([&] { return !run.composite->get<bool>("disconnect_on_done").value_or(true); }))) << "the own key did not apply";
     };
 
     "an export change on a running recipe composite is refused naming the run, and applies once the composite is stopped"_test = [] {

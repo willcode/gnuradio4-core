@@ -942,7 +942,7 @@ public:
         linkBlockSettings(*_graph, false);
         std::lock_guard guard(_zombieBlocksMutex);
         for (const std::shared_ptr<BlockModel>& zombie : _zombieBlocks) { // a job list may keep one past the scheduler
-            settings::detail::FrameworkAccess::detachScheduler(zombie->settings(), &_settingsLink);
+            settings::detail::FrameworkAccess::detachScheduler(settings::detail::settingsOf(*zombie), &_settingsLink);
         }
     }
 
@@ -1873,7 +1873,7 @@ protected:
             if (block->blockCategory() == block::Category::ScheduledBlockGroup) {
                 return;
             }
-            for (const settings::Rejection& entry : settings::detail::FrameworkAccess::checkStart(block->settings())) {
+            for (const settings::Rejection& entry : settings::detail::FrameworkAccess::checkStart(settings::detail::settingsOf(*block))) {
                 refusals += std::format("{}{}{}{}: {}", refusals.empty() ? "" : "; ", block->uniqueName(), entry.key.empty() ? "" : ".", entry.key, entry.reason);
             }
         });
@@ -2596,9 +2596,9 @@ protected:
     void notifyStartValues() {
         using settings::detail::FrameworkAccess;
         graph::forEachBlock<block::Category::All>(*_graph, [](const std::shared_ptr<BlockModel>& block) {
-            for (const auto& [key, entry] : FrameworkAccess::runOutcome(block->settings())) {
+            for (const auto& [key, entry] : FrameworkAccess::runOutcome(settings::detail::settingsOf(*block))) {
                 if (entry.isValue()) {
-                    FrameworkAccess::notify(block->settings(), settings::NotificationLevel::info, settings::NotificationKind::changed, key, entry.reason.empty() ? std::string_view("the value in force differs") : std::string_view(entry.reason));
+                    FrameworkAccess::notify(settings::detail::settingsOf(*block), settings::NotificationLevel::info, settings::NotificationKind::changed, key, entry.reason.empty() ? std::string_view("the value in force differs") : std::string_view(entry.reason));
                 }
             }
         });
@@ -2610,7 +2610,7 @@ protected:
             if (attach) {
                 joinBlockSettings(*block);
             } else {
-                settings::detail::FrameworkAccess::detachScheduler(block->settings(), &_settingsLink);
+                settings::detail::FrameworkAccess::detachScheduler(settings::detail::settingsOf(*block), &_settingsLink);
             }
         });
     }
@@ -2619,10 +2619,10 @@ protected:
     // counts of its name afresh: a notification of a block of that name that retired may have counted after the
     // delivery that erased its counts
     void joinBlockSettings(BlockModel& block) {
-        if (settings::detail::FrameworkAccess::schedulerLink(block.settings()) != &_settingsLink) {
+        if (settings::detail::FrameworkAccess::schedulerLink(settings::detail::settingsOf(block)) != &_settingsLink) {
             erasePrintedAtJoin(block.uniqueName());
         }
-        settings::detail::FrameworkAccess::attachScheduler(block.settings(), &_settingsLink);
+        settings::detail::FrameworkAccess::attachScheduler(settings::detail::settingsOf(block), &_settingsLink);
     }
 
     void erasePrintedAtJoin(std::string_view name) {
@@ -2663,7 +2663,7 @@ protected:
     // nested in it. Its settings leave the link after each notification of the stop went to this scheduler's readers,
     // and its counts leave the top. A nested scheduler's blocks keep the link to their own scheduler
     void retireBlockSettings(BlockModel& block) {
-        settings::detail::FrameworkAccess::detachScheduler(block.settings(), &_settingsLink);
+        settings::detail::FrameworkAccess::detachScheduler(settings::detail::settingsOf(block), &_settingsLink);
         forgetPrinted(block.uniqueName());
         if (block.blockCategory() == TransparentBlockGroup || block.blockCategory() == ScheduledBlockGroup) {
             std::ranges::for_each(block.blocks(), [this](const std::shared_ptr<BlockModel>& inner) { retireBlockSettings(*inner); });
@@ -3611,7 +3611,7 @@ protected:
             if (checkedBlock) {
                 const auto             nameIt    = blockProperties.find("name");
                 const std::string_view blockName = nameIt != blockProperties.end() ? nameIt->second.value_or(checkedBlock->name()) : checkedBlock->name();
-                gr::detail::checkDeclared(checkedBlock->settings().writableMembers(), blockName, checkedBlock->typeName(), blockProperties);
+                gr::detail::checkDeclared(checkedBlock->writableMembers(), blockName, checkedBlock->typeName(), blockProperties);
             }
         }
 

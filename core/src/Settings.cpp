@@ -334,6 +334,11 @@ bool SettingsBase::runsApply() const noexcept {
     return false;
 }
 
+bool SettingsBase::isSetUp() const {
+    std::lock_guard lock(_lock);
+    return _setUp;
+}
+
 void SettingsBase::restoreUnpublishedFields(const ValueMap& fields) {
     for (const auto& [name, declaration] : _table.keys) {
         if (declaration.source != DeclarationSource::reflected || declaration.writeField == nullptr || declaration.published || _toWrite.contains(name)) {

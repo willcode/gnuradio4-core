@@ -1923,12 +1923,6 @@ const boost::ut::suite<"settings refusals"> settingsRefusalTests = [] {
     using namespace boost::ut;
     using namespace qa_refusals;
 
-    "a holder of the block's base reaches its settings object through settings()"_test = [] {
-        LimitedGain               block{property_map{{"name", std::string("base_holder")}}};
-        const Block<LimitedGain>& base = block;
-        expect(std::addressof(base.settings()) == std::addressof(gr::settings::detail::settingsOf(block)));
-    };
-
     "a value outside the limits is refused by set(), naming the key and both bounds"_test = [] {
         LimitedGain block{property_map{{"name", std::string("gain_stage")}}};
         block.init(std::make_shared<gr::Sequence>());
