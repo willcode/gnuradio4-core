@@ -16,11 +16,6 @@
 #include <span>
 #include <vector>
 
-#if __has_include(<mdspan>)
-#include <mdspan>
-#define TENSOR_HAVE_MDSPAN 1
-#endif
-
 namespace gr {
 
 struct tensor_extents_tag {};
@@ -94,13 +89,6 @@ inline constexpr std::size_t kMaxRank = GR_TENSOR_MAX_RANK;
  * @code
  * Tensor<int, 3, 3> static_tensor{...};
  * Tensor<double> dynamic_tensor(static_tensor);  // int→double, static→dynamic
- * @endcode
- *
- * ## mdspan/mdarray compatibility
- * @code
- * auto view = tensor.to_mdspan();  // get mdspan view
- * view(i, j) = value;               // mdspan-style access
- * tensor.stride(0);                 // get stride for dimension
  * @endcode
  *
  * @note row-major (C/C++-style) ordering is used exclusively
@@ -316,26 +304,6 @@ struct TensorBase {
         }
         std::ranges::fill(_metaInfo.extents, 0UZ);
         _data.clear();
-    }
-
-    // Resize specific dimension
-    void resize_dim(std::size_t dim, std::size_t new_extent)
-    requires(!detail::all_static_v<Ex...>)
-    {
-        if (dim >= rank()) {
-            throw std::out_of_range("resize_dim: dimension out of range");
-        }
-
-        if (_metaInfo.extents[dim] == new_extent) {
-            return;
-        }
-
-        _metaInfo.extents[dim]     = new_extent;
-        std::size_t new_total_size = product(extents());
-        recomputeStrides();
-
-        _data.resize(new_total_size); // May need more sophisticated copying for interior dimensions
-        // this is a simplified version - the full implementation would need element-wise padding/truncating
     }
 
     void resize(std::initializer_list<std::size_t> new_extents, const T& value = {}) { resize(std::span(new_extents), value); }
@@ -586,42 +554,6 @@ struct TensorBase {
         }
     }
 
-#if defined(TENSOR_HAVE_MDSPAN)
-    template<std::size_t Rank>
-    auto to_mdspan() noexcept {
-        using index_t = std::size_t;
-        auto e        = extents(); // copy to ensure a contiguous buffer for constructor
-        // Use layout_right (row-major)
-        return std::mdspan<T, std::dextents<index_t, Rank>>(data(), e);
-    }
-    template<std::size_t Rank>
-    auto to_mdspan() const noexcept {
-        using index_t = std::size_t;
-        auto e        = extents();
-        return std::mdspan<const T, std::dextents<index_t, Rank>>(data(), e);
-    }
-#else
-    template<bool is_const>
-    struct View {
-        using TPtr = std::conditional_t<is_const, const T*, T*>;
-
-    private:
-        TPtr                          ptr_;
-        std::span<const std::size_t>  extents_;
-        std::pmr::vector<std::size_t> strides_;
-
-    public:
-        View(TPtr ptr, std::span<const std::size_t> ex, std::pmr::vector<std::size_t> st) : ptr_(ptr), extents_(ex), strides_(std::move(st)) {}
-
-        TPtr data() const noexcept { return ptr_; }
-        auto extents() const noexcept { return extents_; }
-        auto strides() const noexcept { return std::span<const std::size_t>(strides_); }
-    };
-
-    [[nodiscard]] auto to_mdspan() noexcept { return View<false>{data(), extents(), strides()}; }
-    [[nodiscard]] auto to_mdspan() const noexcept { return View<true>{data(), extents(), strides()}; }
-#endif
-
     [[nodiscard]] explicit constexpr operator std::array<T, (Ex * ... * 1UZ)>() const
     requires(detail::all_static_v<Ex...>)
     {
@@ -694,34 +626,6 @@ struct TensorBase {
         }
 
         return TensorView(const_cast<T*>(_data.data()) + offset, new_extents, new_strides);
-    }
-
-    template<typename Range>
-    [[nodiscard]] TensorView<T> slice(const Range& ranges) const {
-        static_assert(std::is_same_v<typename Range::value_type, std::pair<std::size_t, std::size_t>>, "slice range must hold pairs of (start, end) indices");
-
-        assert(ranges.size() <= rank());
-
-        std::vector<std::size_t> new_extents;
-        std::vector<std::size_t> new_strides;
-        std::size_t              offset = 0;
-
-        auto range_it = ranges.begin();
-        for (std::size_t dim = 0; dim < rank(); ++dim) {
-            if (range_it != ranges.end()) {
-                auto [start, end] = *range_it;
-                assert(start <= end && end <= extents()[dim]);
-                new_extents.push_back(end - start);
-                new_strides.push_back(strides()[dim]);
-                offset += start * strides()[dim];
-                ++range_it;
-            } else {
-                new_extents.push_back(extents()[dim]);
-                new_strides.push_back(strides()[dim]);
-            }
-        }
-
-        return TensorView<T>(_data.data() + offset, new_extents, new_strides);
     }
 
     [[nodiscard]] TensorView<T> transpose() const {
@@ -979,15 +883,6 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully static
 
     Tensor& operator=(std::initializer_list<T> initializer_list) {
         const auto n = initializer_list.size();
-
-        // fully dynamic rank & no extents yet → define 1D shape from init-list
-        if (base_t::extents().empty()) {
-            base_t::_metaInfo.extents[0UZ] = n;
-            base_t::_data.assign(initializer_list.begin(), initializer_list.end());
-            return *this;
-        }
-
-        // shape already defined → size must match
         if (n != base_t::size()) {
             throw std::runtime_error("TensorBase::operator=: initializer_list size mismatch");
         }
@@ -995,29 +890,10 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully static
         return *this;
     }
 
-    [[nodiscard]] static constexpr Tensor identity() {
-        constexpr std::size_t N        = (Ex * ...);
-        Tensor<T, N>          identity = T(0);
-        for (std::size_t i = 0UZ; i < N; ++i) {
-            identity[i, i] = T{1};
-        }
-        return identity;
-    }
-
     template<std::ranges::range Range>
     requires std::same_as<std::ranges::range_value_t<Range>, T>
     Tensor& assign(const Range& range) {
         const auto n = static_cast<std::size_t>(std::ranges::size(range));
-
-        // dynamic tensors w/o shape -> create 1D shape
-        if (base_t::_metaInfo.rank == 0UZ) {
-            base_t::_metaInfo.rank       = 1;
-            base_t::_metaInfo.extents[0] = n;
-            base_t::_data.resize(n);
-            std::ranges::copy(range, base_t::_data.begin());
-            return *this;
-        }
-
         if (n != base_t::size()) {
             throw std::runtime_error("TensorBase::assign: range size doesn't match tensor size");
         }
@@ -1064,41 +940,6 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
         base_t::_data = make_container(mr);
     }
 
-    template<typename OtherT, std::size_t... OtherEx>
-    explicit Tensor(Tensor<OtherT, OtherEx...>&& other, std::pmr::memory_resource* mr = std::pmr::get_default_resource()) {
-        base_t::_data = make_container(mr);
-
-        // copy shape info
-        if constexpr (sizeof...(Ex) == 0UZ) {
-            base_t::_metaInfo.rank = other.rank();
-        }
-        std::ranges::copy_n(other._metaInfo.extents.begin(), static_cast<std::ptrdiff_t>(other.rank()), base_t::_metaInfo.extents.begin());
-        std::ranges::copy_n(other._metaInfo.strides.begin(), static_cast<std::ptrdiff_t>(other.rank()), base_t::_metaInfo.strides.begin());
-
-        // move data
-        base_t::_data.reserve(other._data.size());
-        for (auto& elem : other._data) {
-            base_t::_data.push_back(static_cast<T>(std::move(elem)));
-        }
-    }
-    template<typename OtherT, std::size_t... OtherEx>
-    explicit Tensor(const Tensor<OtherT, OtherEx...>& other, std::pmr::memory_resource* mr = std::pmr::get_default_resource()) {
-        base_t::_data = make_container(mr);
-
-        // Copy shape info
-        if constexpr (sizeof...(Ex) == 0UZ) {
-            base_t::_metaInfo.rank = other.rank();
-        }
-        std::ranges::copy_n(other._metaInfo.extents.begin(), static_cast<std::ptrdiff_t>(other.rank()), base_t::_metaInfo.extents.begin());
-        std::ranges::copy_n(other._metaInfo.strides.begin(), static_cast<std::ptrdiff_t>(other.rank()), base_t::_metaInfo.strides.begin());
-
-        // Copy data with conversion
-        base_t::_data.reserve(other._data.size());
-        for (const auto& elem : other._data) {
-            base_t::_data.push_back(static_cast<T>(elem));
-        }
-    }
-
     template<std::ranges::range Extents>
     requires(std::same_as<std::ranges::range_value_t<Extents>, std::size_t> && !std::same_as<std::remove_cvref_t<Extents>, std::initializer_list<std::size_t>>)
     explicit Tensor(const Extents& extents_, std::pmr::memory_resource* mr = std::pmr::get_default_resource()) {
@@ -1112,6 +953,7 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
         } else if (sizeof...(Ex) != ext_size) {
             throw std::runtime_error("Tensor: rank mismatch");
         }
+        checkStaticExtents(extents_);
 
         std::ranges::copy_n(std::ranges::begin(extents_), static_cast<std::ptrdiff_t>(ext_size), base_t::_metaInfo.extents.begin());
         base_t::recomputeStrides();
@@ -1182,26 +1024,6 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
         base_t::_data = gr::pmr::vector<T, true>(values.begin(), values.end(), mr);
     }
 
-    template<std::ranges::range Extents, std::ranges::range Data>
-    requires(std::same_as<std::ranges::range_value_t<Extents>, std::size_t> && std::same_as<std::ranges::range_value_t<Data>, T>)
-    Tensor(const Extents& extents_, const Data& data, std::pmr::memory_resource* mr = std::pmr::get_default_resource()) {
-        if (extents.size() > detail::kMaxRank) {
-            throw std::runtime_error("Tensor: rank too large for Tensor.");
-        }
-        if constexpr (sizeof...(Ex) == 0UZ) {
-            base_t::_metaInfo.rank = extents_.size();
-        } else if (sizeof...(Ex) != extents_.size()) {
-            throw std::runtime_error("Tensor: provided rank incompatible to pre-defined extents.");
-        }
-        std::ranges::copy_n(extents_, extents_.size(), base_t::_metaInfo.extents.begin());
-        base_t::recomputeStrides();
-
-        base_t::_data = container_type(std::ranges::begin(data), std::ranges::end(data), mr);
-        if (base_t::_data.size() != base_t::checked_size(base_t::extents())) {
-            throw std::runtime_error("TensorBase: data size doesn't match extents product.");
-        }
-    }
-
     template<std::ranges::range Range>
     requires std::same_as<std::ranges::range_value_t<Range>, std::size_t>
     Tensor(tensor_extents_tag, const Range& extents_, std::pmr::memory_resource* mr = std::pmr::get_default_resource()) {
@@ -1213,6 +1035,7 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
         } else if (sizeof...(Ex) != extents_.size()) {
             throw std::runtime_error("Tensor: provided rank incompatible to pre-defined extents.");
         }
+        checkStaticExtents(extents_);
         std::ranges::copy_n(extents_.begin(), static_cast<std::ptrdiff_t>(std::ranges::size(extents_)), base_t::_metaInfo.extents.begin());
         base_t::recomputeStrides();
 
@@ -1275,6 +1098,7 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
         } else if (sizeof...(Ex) != extents_.size()) {
             throw std::runtime_error("Tensor: provided rank incompatible to pre-defined extents.");
         }
+        checkStaticExtents(extents_);
         std::ranges::copy_n(extents_.begin(), static_cast<std::ptrdiff_t>(extents_.size()), base_t::_metaInfo.extents.begin());
         base_t::recomputeStrides();
 
@@ -1296,6 +1120,7 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
         } else if (sizeof...(Ex) != extents_.size()) {
             throw std::runtime_error("Tensor: provided rank incompatible to pre-defined extents.");
         }
+        checkStaticExtents(extents_);
         std::ranges::copy_n(extents_.begin(), static_cast<std::ptrdiff_t>(extents_.size()), base_t::_metaInfo.extents.begin());
         base_t::recomputeStrides();
 
@@ -1354,53 +1179,8 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
         std::copy(other._data.begin(), other._data.end(), base_t::_data.begin());
     }
 
-    // 2D nested initializer list
-    constexpr Tensor(std::initializer_list<std::initializer_list<T>> values)
-    requires(sizeof...(Ex) == 2UZ)
-    {
-        constexpr std::array<std::size_t, 2UZ> dims{Ex...};
-        if (values.size() != dims[0UZ]) {
-            throw std::runtime_error("Wrong number of rows");
-        }
-
-        std::size_t idx = 0UZ;
-        for (auto row : values) {
-            if (row.size() != dims[1UZ]) {
-                throw std::runtime_error("Wrong number of columns");
-            }
-            for (auto val : row) {
-                base_t::_data[idx++] = val;
-            }
-        }
-    }
-
-    // 3D nested initializer list
-    constexpr Tensor(std::initializer_list<std::initializer_list<std::initializer_list<T>>> values)
-    requires(sizeof...(Ex) == 3UZ)
-    {
-        constexpr std::array<std::size_t, 3> dims{Ex...};
-        if (values.size() != dims[0]) {
-            throw std::runtime_error("Wrong dimension 0 size");
-        }
-
-        std::size_t idx = 0;
-        for (auto plane : values) {
-            if (plane.size() != dims[1]) {
-                throw std::runtime_error("Wrong dimension 1 size");
-            }
-            for (auto row : plane) {
-                if (row.size() != dims[2]) {
-                    throw std::runtime_error("Wrong dimension 2 size");
-                }
-                for (auto val : row) {
-                    base_t::_data[idx++] = val;
-                }
-            }
-        }
-    }
-
     template<typename OtherT, std::size_t... OtherEx>
-    requires(std::convertible_to<OtherT, T> && (sizeof...(Ex) == 0 || sizeof...(OtherEx) == 0 || sizeof...(Ex) == sizeof...(OtherEx)))
+    requires(std::constructible_from<T, const OtherT&> && (sizeof...(Ex) == 0 || sizeof...(OtherEx) == 0 || sizeof...(Ex) == sizeof...(OtherEx)))
     explicit Tensor(const Tensor<OtherT, OtherEx...>& other, std::pmr::memory_resource* mr = std::pmr::get_default_resource()) {
         if (other.rank() > detail::kMaxRank) {
             throw std::runtime_error("Tensor: rank too large for Tensor.");
@@ -1410,11 +1190,15 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
         } else if (sizeof...(Ex) != other.rank()) {
             throw std::runtime_error("Tensor: provided rank incompatible to pre-defined extents.");
         }
+        checkStaticExtents(other.extents());
         std::ranges::copy_n(other._metaInfo.extents.begin(), static_cast<std::ptrdiff_t>(other.rank()), base_t::_metaInfo.extents.begin());
         base_t::recomputeStrides();
 
         base_t::_data = make_container(mr);
-        base_t::_data.assign(other.begin(), other.end());
+        base_t::_data.reserve(other.size());
+        for (const auto& value : other) {
+            base_t::_data.emplace_back(value); // direct-initialization also takes an element type convertible only explicitly
+        }
     }
 
     Tensor& operator=(Tensor&& other) noexcept {
@@ -1613,6 +1397,20 @@ struct Tensor<T, Ex...> : TensorBase<T, true, Ex...> { // fully or partially dyn
 
 private:
     static container_type make_container(std::pmr::memory_resource* mr) { return container_type(mr); }
+
+    // a given extent must equal the extent the type fixes for that dimension; the rank is checked before
+    template<typename TExtents>
+    static void checkStaticExtents(const TExtents& givenExtents) {
+        if constexpr (sizeof...(Ex) != 0UZ) {
+            auto given = std::ranges::begin(givenExtents);
+            for (const std::size_t fixedExtent : {Ex...}) {
+                if (fixedExtent != std::dynamic_extent && fixedExtent != *given) {
+                    throw std::runtime_error("Tensor: a given extent differs from the type's static extent.");
+                }
+                ++given;
+            }
+        }
+    }
 }; // struct Tensor -- partially/fully dynamic
 
 // ---- CTAD guides ----
@@ -1624,9 +1422,6 @@ Tensor(std::initializer_list<std::initializer_list<T>>) -> Tensor<T>;
 
 template<typename T, std::size_t N>
 Tensor(const std::array<T, N>&) -> Tensor<T>;
-
-template<std::ranges::range Extents, std::ranges::range Data>
-Tensor(const Extents&, const Data&, std::pmr::memory_resource* = std::pmr::get_default_resource()) -> Tensor<std::ranges::range_value_t<Data>>;
 
 template<std::ranges::range Range>
 Tensor(tensor_data_tag, const Range&, std::pmr::memory_resource* = std::pmr::get_default_resource()) -> Tensor<std::ranges::range_value_t<Range>>;

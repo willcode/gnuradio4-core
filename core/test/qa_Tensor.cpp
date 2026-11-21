@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -280,6 +281,16 @@ const boost::ut::suite<"Tensor<T> Conversion"> _tensorConversion = [] {
             Tensor<double, 2UZ, 2UZ> dest;
             expect(throws([&] { dest = wrong_size; }));
         };
+
+        // std::complex<double> converts to std::complex<float> only explicitly
+        "rank-2 complex<double> to complex<float>"_test = [] {
+            const Tensor<std::complex<double>> source({2UZ, 2UZ}, std::vector<std::complex<double>>{{1.0, 2.0}, {3.0, 4.0}, {5.0, 6.0}, {7.0, 1.5}});
+            const Tensor<std::complex<float>>  narrowed(source);
+            expect(eq(narrowed.rank(), 2UZ));
+            expect(eq(narrowed.extent(0UZ), 2UZ));
+            expect(eq(narrowed.extent(1UZ), 2UZ));
+            expect(narrowed.data()[3UZ] == std::complex<float>(7.0f, 1.5f));
+        };
     };
 
     "static 1D tensor -> std::array/std::vector/std::pmr::vector"_test = [] {
@@ -487,20 +498,6 @@ const boost::ut::suite<"Tensor<T> Shape Operations"> _tensorShape = [] {
             expect(tensor.empty());
             expect(eq(tensor.rank(), 0UZ));
         };
-    };
-
-    "Dimension-specific resize"_test = [] {
-        Tensor<int> tensor({3UZ, 4UZ});
-        std::iota(tensor.begin(), tensor.end(), 0);
-
-        expect(eq(tensor.extent(1UZ), 4UZ));
-        tensor.resize_dim(1UZ, 6UZ);
-        expect(eq(tensor.extent(0UZ), 3UZ));
-        expect(eq(tensor.extent(1UZ), 6UZ));
-        expect(eq(tensor.size(), 18UZ));
-
-        // Invalid dimension
-        expect(throws([&] { tensor.resize_dim(5UZ, 10UZ); }));
     };
 
     "Strides"_test = [] {
@@ -943,6 +940,23 @@ const boost::ut::suite<"Tensor<T> Error Handling"> _tensorErrors = [] {
     "Conversion errors"_test = [] {
         Tensor<int> dynamic_source(gr::extents_from, {2, 2, 2});
         expect(throws([&] { Tensor<int, std::dynamic_extent, std::dynamic_extent>{dynamic_source}; }));
+    };
+
+    "a conversion from a temporary of another rank throws"_test = [] {
+        using Rank2 = Tensor<int, std::dynamic_extent, std::dynamic_extent>;
+        using Rank3 = Tensor<int, std::dynamic_extent, std::dynamic_extent, std::dynamic_extent>;
+        expect(throws([] { [[maybe_unused]] const Rank2 converted(Rank3(gr::extents_from, {1UZ, 2UZ, 3UZ})); }));
+    };
+
+    "a given extent that differs from a static extent throws"_test = [] {
+        using FixedColumns = Tensor<int, std::dynamic_extent, 4UZ>;
+        expect(throws([] { [[maybe_unused]] const FixedColumns tensor(gr::extents_from, {2UZ, 3UZ}); }));
+        expect(throws([] { [[maybe_unused]] const FixedColumns tensor{{1, 2}, {3, 4}}; })) << "two lists read as extents {1, 2} and data {3, 4}";
+        const Tensor<int> wide(gr::extents_from, {2UZ, 3UZ});
+        expect(throws([&wide] { [[maybe_unused]] const FixedColumns tensor(wide); }));
+
+        const FixedColumns matching(gr::extents_from, {2UZ, 4UZ});
+        expect(eq(matching.extent(1UZ), 4UZ));
     };
 
     "Extents-data mismatch"_test = [] {
