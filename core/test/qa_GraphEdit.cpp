@@ -1041,6 +1041,30 @@ struct ReplacementRecord {
         {std::pmr::string(EDGE_DESTINATION_BLOCK), std::string(destinationBlock)}, {std::pmr::string(EDGE_DESTINATION_PORT), std::string("in")}};
 }
 
+// the count (n_readers or n_writers) that a GraphInspect reply of the graph gives for the edge at the index, empty when the
+// reply lacks it
+[[nodiscard]] std::optional<std::size_t> inspectedCount(gr::Graph& graph, std::size_t edgeIndex, std::string_view countField) {
+    const std::optional<gr::Message> inspected = graph.propertyCallbackGraphInspect(gr::graph::property::kGraphInspect, {});
+    if (!inspected.has_value() || !inspected->data.has_value()) {
+        return std::nullopt;
+    }
+    const auto edges = inspected->data->find(std::pmr::string(gr::serialization_fields::BLOCK_EDGES));
+    if (edges == inspected->data->end() || edges->second.get_if<gr::property_map>() == nullptr) {
+        return std::nullopt;
+    }
+    const gr::property_map& edgeList = *edges->second.get_if<gr::property_map>();
+    const auto              edge     = edgeList.find(std::pmr::string(std::to_string(edgeIndex)));
+    if (edge == edgeList.end() || edge->second.get_if<gr::property_map>() == nullptr) {
+        return std::nullopt;
+    }
+    const gr::property_map& fields = *edge->second.get_if<gr::property_map>();
+    const auto              count  = fields.find(std::pmr::string(countField));
+    if (count == fields.end() || count->second.get_if<gr::Size_t>() == nullptr) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(*count->second.get_if<gr::Size_t>());
+}
+
 // Runs first -> sink and a second source without an edge, which stops at its first call. The case then adds the edge
 // from the second source to the sink. The added edge displaces the first source's edge, and the second source runs
 // again and feeds the sink
@@ -1454,8 +1478,6 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         expect(!stage.out.isConnected()) << "the sink still reads the replaced block's ring";
         for (const gr::Edge& edge : flow.edges()) {
             expect(edge.sourceBlock() != oldBlock && edge.destinationBlock() != oldBlock) << std::format("{}", edge) << ": the edge names the replaced block";
-            expect(edge._sourcePort == edge.sourceBlock()->dynamicOutputPort("out").value()) << std::format("{}", edge) << ": the edge names another source port";
-            expect(edge._destinationPort == edge.destinationBlock()->dynamicInputPort("in").value()) << std::format("{}", edge) << ": the edge names another destination port";
         }
 
         oldBlock.reset();
@@ -1634,6 +1656,83 @@ const boost::ut::suite<"graph editing"> graphEditTests = [] {
         expect(inner.connectPendingEdges());
 
         expect(eq(producer.out.nReaders(), 2UZ)) << "the boundary split the fan-out across two buffers, so one consumer starves";
+    };
+
+    // Unexporting a port removes it from the subgraph's list of output ports. The ports after it move up one place.
+    "an edge from an exported output reports its port's readers after an earlier port is unexported"_test = [] {
+        gr::Graph                             flow;
+        auto                                  wrapper   = std::make_shared<gr::GraphWrapper<gr::Graph>>();
+        auto&                                 inner     = *wrapper->graph();
+        auto&                                 earlier   = inner.emplaceBlock<qa_edit::Source>();
+        auto&                                 connected = inner.emplaceBlock<qa_edit::Source>();
+        auto&                                 later     = inner.emplaceBlock<qa_edit::Source>();
+        const std::shared_ptr<gr::BlockModel> subgraph  = flow.addBlock(wrapper);
+        expect(fatal(wrapper->exportPort(true, earlier.unique_name, gr::PortDirection::OUTPUT, "out", "earlier").has_value()));
+        expect(fatal(wrapper->exportPort(true, connected.unique_name, gr::PortDirection::OUTPUT, "out", "connected").has_value()));
+        expect(fatal(wrapper->exportPort(true, later.unique_name, gr::PortDirection::OUTPUT, "out", "later").has_value()));
+        std::ignore = flow.emplaceBlock<qa_edit::Sink>();
+        expect(fatal(flow.connect(subgraph, gr::PortDefinition{"connected"}, flow.blocks()[1], gr::PortDefinition{"in"}).has_value()));
+        expect(fatal(flow.connectPendingEdges()));
+        expect(fatal(eq(connected.out.nReaders(), 1UZ)));
+        expect(fatal(eq(later.out.nReaders(), 0UZ)));
+
+        expect(fatal(wrapper->exportPort(false, earlier.unique_name, gr::PortDirection::OUTPUT, "out", {}).has_value()));
+
+        const std::optional<std::size_t> nReaders = qa_edit::inspectedCount(flow, 0UZ, gr::serialization_fields::EDGE_N_READERS);
+        expect(fatal(nReaders.has_value())) << "the inspection lists no reader count for the edge";
+        expect(eq(*nReaders, connected.out.nReaders())) << "the edge reports the port that moved into the place of its own";
+    };
+
+    // The input side of the case above: an unexport shifts the exported inputs behind the removed one.
+    "an edge into an exported input reports its port's writers after an earlier port is unexported"_test = [] {
+        gr::Graph                             flow;
+        auto                                  wrapper   = std::make_shared<gr::GraphWrapper<gr::Graph>>();
+        auto&                                 inner     = *wrapper->graph();
+        auto&                                 earlier   = inner.emplaceBlock<qa_edit::Sink>();
+        auto&                                 connected = inner.emplaceBlock<qa_edit::Sink>();
+        auto&                                 later     = inner.emplaceBlock<qa_edit::Sink>();
+        const std::shared_ptr<gr::BlockModel> subgraph  = flow.addBlock(wrapper);
+        expect(fatal(wrapper->exportPort(true, earlier.unique_name, gr::PortDirection::INPUT, "in", "earlier").has_value()));
+        expect(fatal(wrapper->exportPort(true, connected.unique_name, gr::PortDirection::INPUT, "in", "connected").has_value()));
+        expect(fatal(wrapper->exportPort(true, later.unique_name, gr::PortDirection::INPUT, "in", "later").has_value()));
+        std::ignore = flow.emplaceBlock<qa_edit::Source>();
+        expect(fatal(flow.connect(flow.blocks()[1], gr::PortDefinition{"out"}, subgraph, gr::PortDefinition{"connected"}).has_value()));
+        expect(fatal(flow.connectPendingEdges()));
+        expect(fatal(eq(connected.in.nWriters(), 1UZ)));
+        expect(fatal(eq(later.in.nWriters(), 0UZ)));
+
+        expect(fatal(wrapper->exportPort(false, earlier.unique_name, gr::PortDirection::INPUT, "in", {}).has_value()));
+
+        const std::optional<std::size_t> nWriters = qa_edit::inspectedCount(flow, 0UZ, gr::serialization_fields::EDGE_N_WRITERS);
+        expect(fatal(nWriters.has_value())) << "the inspection lists no writer count for the edge";
+        expect(eq(*nWriters, connected.in.nWriters())) << "the edge reports the port that moved into the place of its own";
+    };
+
+    // Each export appends a port to the subgraph's list of output ports. The case exports ports until the list moves to
+    // new storage.
+    "an edge from an exported output reports its port's readers after later exports move the subgraph's port list"_test = [] {
+        gr::Graph                             flow;
+        auto                                  wrapper  = std::make_shared<gr::GraphWrapper<gr::Graph>>();
+        auto&                                 inner    = *wrapper->graph();
+        auto&                                 producer = inner.emplaceBlock<qa_edit::Source>();
+        const std::shared_ptr<gr::BlockModel> subgraph = flow.addBlock(wrapper);
+        expect(fatal(wrapper->exportPort(true, producer.unique_name, gr::PortDirection::OUTPUT, "out", "first").has_value()));
+        std::ignore = flow.emplaceBlock<qa_edit::Sink>();
+        expect(fatal(flow.connect(subgraph, gr::PortDefinition{"first"}, flow.blocks()[1], gr::PortDefinition{"in"}).has_value()));
+        expect(fatal(flow.connectPendingEdges()));
+        expect(fatal(eq(producer.out.nReaders(), 1UZ)));
+
+        const std::size_t capacity  = wrapper->dynamicOutputPorts().capacity();
+        std::size_t       nExported = 1UZ;
+        while (wrapper->dynamicOutputPorts().capacity() == capacity) {
+            auto& later = inner.emplaceBlock<qa_edit::Source>();
+            expect(fatal(wrapper->exportPort(true, later.unique_name, gr::PortDirection::OUTPUT, "out", std::format("later{}", nExported)).has_value()));
+            ++nExported;
+        }
+
+        const std::optional<std::size_t> nReaders = qa_edit::inspectedCount(flow, 0UZ, gr::serialization_fields::EDGE_N_READERS);
+        expect(fatal(nReaders.has_value())) << "the inspection lists no reader count for the edge";
+        expect(eq(*nReaders, producer.out.nReaders())) << std::format("the edge reports another port after {} exports", nExported);
     };
 
     "an unconnected optional output is sized with its connected sibling"_test = [] {

@@ -104,37 +104,26 @@ std::pair<std::shared_ptr<BlockModel>, std::shared_ptr<BlockModel>> Graph::repla
         if (std::ranges::none_of(pairs, [&replacedPort](const PortPair& pair) { return pair.replacedPort == *replacedPort; })) {
             pairs.push_back({*replacedPort, *newPort});
         }
-        return *newPort;
     };
 
-    struct EdgePorts {
-        std::size_t  index;
-        DynamicPort* source;
-        DynamicPort* destination;
-    };
-    std::vector<EdgePorts> takenOver;
-    for (std::size_t index = 0UZ; index < _edges.size(); ++index) {
-        const Edge& edge = _edges[index];
-        if (edge._sourceBlock != replaced && edge._destinationBlock != replaced) {
-            continue;
+    for (const Edge& edge : _edges) {
+        if (edge._sourceBlock == replaced) {
+            pairPort(edge._sourcePortDefinition, true);
         }
-        DynamicPort* source      = edge._sourceBlock == replaced ? pairPort(edge._sourcePortDefinition, true) : edge._sourcePort;
-        DynamicPort* destination = edge._destinationBlock == replaced ? pairPort(edge._destinationPortDefinition, false) : edge._destinationPort;
-        takenOver.push_back({index, source, destination});
+        if (edge._destinationBlock == replaced) {
+            pairPort(edge._destinationPortDefinition, false);
+        }
     }
 
     for (const PortPair& pair : pairs) {
         pair.replacedPort->exchangeHandlers(*pair.newPort);
     }
-    for (const EdgePorts& ports : takenOver) {
-        Edge& edge = _edges[ports.index];
+    for (Edge& edge : _edges) {
         if (edge._sourceBlock == replaced) {
             edge._sourceBlock = newBlock;
-            edge._sourcePort  = ports.source;
         }
         if (edge._destinationBlock == replaced) {
             edge._destinationBlock = newBlock;
-            edge._destinationPort  = ports.destination;
         }
     }
     unlinkSettings(*replaced);
@@ -190,9 +179,7 @@ void Graph::SettingsLink::refreshPorts() {
     // the edges bind their ports again at the next start
     for (Edge& edge : graph->_edges) {
         if (edge._sourceBlock.get() == block || edge._destinationBlock.get() == block) {
-            edge._sourcePort      = edge._sourceBlock.get() == block ? nullptr : edge._sourcePort;
-            edge._destinationPort = edge._destinationBlock.get() == block ? nullptr : edge._destinationPort;
-            edge._state           = Edge::EdgeState::WaitingToBeConnected;
+            edge._state = Edge::EdgeState::WaitingToBeConnected;
         }
     }
 }

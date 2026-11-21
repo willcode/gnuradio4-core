@@ -1043,8 +1043,6 @@ public:
             edge._state                 = connectionResult && resizeResult ? Edge::EdgeState::Connected : Edge::EdgeState::ErrorConnecting;
             edge._actualBufferSize      = sourcePort.bufferSize();
             edge._edgeType              = port::decodePortType(sourcePort.portMaskInfo());
-            edge._sourcePort            = std::addressof(sourcePort);
-            edge._destinationPort       = std::addressof(destinationPort);
         }
 
         return edge._state;

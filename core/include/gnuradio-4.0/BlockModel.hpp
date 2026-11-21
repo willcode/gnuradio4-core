@@ -83,8 +83,6 @@ struct Edge {
     EdgeState                   _state            = EdgeState::WaitingToBeConnected;
     std::size_t                 _actualBufferSize = -1UZ;
     PortType                    _edgeType         = PortType::ANY;
-    DynamicPort*                _sourcePort       = nullptr; /// non-owning reference
-    DynamicPort*                _destinationPort  = nullptr; /// non-owning reference
 
     // User-controlled member variables
     std::size_t                _minBufferSize;
@@ -99,7 +97,7 @@ struct Edge {
 
     Edge() = delete;
 
-    Edge(const Edge& other) : _sourceBlock(other._sourceBlock), _destinationBlock(other._destinationBlock), _sourcePortDefinition(other._sourcePortDefinition), _destinationPortDefinition(other._destinationPortDefinition), _state(other._state), _actualBufferSize(other._actualBufferSize), _edgeType(other._edgeType), _sourcePort(other._sourcePort), _destinationPort(other._destinationPort), _minBufferSize(other._minBufferSize), _weight(other._weight), _name(other._name), _dataResource(other._dataResource), _tagResource(other._tagResource), _domain(other._domain), _domainStr(other._domainStr), _uiConstraints(other._uiConstraints) {
+    Edge(const Edge& other) : _sourceBlock(other._sourceBlock), _destinationBlock(other._destinationBlock), _sourcePortDefinition(other._sourcePortDefinition), _destinationPortDefinition(other._destinationPortDefinition), _state(other._state), _actualBufferSize(other._actualBufferSize), _edgeType(other._edgeType), _minBufferSize(other._minBufferSize), _weight(other._weight), _name(other._name), _dataResource(other._dataResource), _tagResource(other._tagResource), _domain(other._domain), _domainStr(other._domainStr), _uiConstraints(other._uiConstraints) {
         if (!_domainStr.empty()) {
             _domain = ComputeDomain::parse(_domainStr); // re-parse so string_views point into our _domainStr
         }
@@ -144,8 +142,8 @@ struct Edge {
     constexpr void setName(std::string name) { _name = std::move(name); }
 
     constexpr std::size_t             bufferSize() const { return _actualBufferSize; }
-    constexpr std::size_t             nReaders() const { return _sourcePort ? _sourcePort->nReaders() : -1UZ; }
-    constexpr std::size_t             nWriters() const { return _destinationPort ? _destinationPort->nWriters() : -1UZ; }
+    [[nodiscard]] std::size_t         nReaders() const;
+    [[nodiscard]] std::size_t         nWriters() const;
     constexpr PortType                edgeType() const { return _edgeType; }
     [[nodiscard]] property_map&       uiConstraints() noexcept { return *_uiConstraints; }
     [[nodiscard]] const property_map& uiConstraints() const { return *_uiConstraints; }
@@ -640,6 +638,25 @@ inline bool Edge::hasSameSourcePort(const Edge& other) const {
     const auto port      = _sourceBlock->dynamicOutputPort(_sourcePortDefinition);
     const auto otherPort = other._sourceBlock->dynamicOutputPort(other._sourcePortDefinition);
     return port.has_value() && otherPort.has_value() && *port.value() == *otherPort.value();
+}
+
+// nReaders() and nWriters() find the edge's port from its block and port definition on every call. An export or an
+// unexport on a subgraph moves the ports in its list. Every edge on one port reports that port's count, connected or not.
+// A port that does not resolve counts as -1UZ.
+inline std::size_t Edge::nReaders() const {
+    if (!_sourceBlock) {
+        return -1UZ;
+    }
+    const auto port = _sourceBlock->dynamicOutputPort(_sourcePortDefinition);
+    return port.has_value() ? port.value()->nReaders() : -1UZ;
+}
+
+inline std::size_t Edge::nWriters() const {
+    if (!_destinationBlock) {
+        return -1UZ;
+    }
+    const auto port = _destinationBlock->dynamicInputPort(_destinationPortDefinition);
+    return port.has_value() ? port.value()->nWriters() : -1UZ;
 }
 
 // true when both edges end at one input of one block and the input is of the given port type, which PortType::ANY

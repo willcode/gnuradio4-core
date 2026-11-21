@@ -55,8 +55,9 @@
 // reads it from a plugin's scheduler. BlockModel::requestFinish() adds a virtual
 // entry and Block stores its cooperative finish flag. The scheduler drain virtual
 // interface requires matching plugins to be rebuilt.
-// Composition appends two scheduler virtual entries beyond cooperative finish.
-#define GR_PLUGIN_CURRENT_ABI_VERSION 15
+// Composition appends two scheduler virtual entries beyond cooperative finish. `BlockModel::edges()` hands a block
+// group's `gr::Edge` records across the boundary, and the layout of `gr::Edge` crosses it with them.
+#define GR_PLUGIN_CURRENT_ABI_VERSION 16
 
 namespace gr {
 
