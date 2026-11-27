@@ -2,7 +2,7 @@ name: SDK image
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci-check/**"]
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ jobs:
   publish:
     name: "${{ matrix.name }}"
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/ci-check/')
     strategy:
       fail-fast: false
       matrix:

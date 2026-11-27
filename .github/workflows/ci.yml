@@ -2,10 +2,13 @@ name: common/pull-request CI
 
 on:
   pull_request:
+  push:
+    branches: ["ci-check/**"]
 
 jobs:
   dco:
     name: "DCO"
+    if: github.event_name == 'pull_request'
     runs-on: "ubuntu-latest"
     steps:
       - name: Check commit signoffs
@@ -31,6 +34,7 @@ jobs:
 
   restyled:
     name: "Restyled"
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     concurrency:
       group: Restyled-${{ github.ref }}
@@ -62,6 +66,7 @@ jobs:
   build:
     name: "${{ matrix.name }}"
     needs: [dco, restyled]
+    if: ${{ !cancelled() && !failure() }}
     runs-on: "ubuntu-latest"
     concurrency:
       # Cancel running builds inside work (PR) branches, build all revisions for the main branch
